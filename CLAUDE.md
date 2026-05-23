@@ -1,5 +1,7 @@
 # CLAUDE.md — bifrost-trade-api
 
+> 本项目是 bifrost-trader-engine 重构的一部分。迁移进度见 `bifrost-trade-infra/docs/MIGRATION_TRACKING.md`。
+
 与本项目用户的所有对话一律使用中文。
 
 ## 职责范围
@@ -16,7 +18,9 @@
 | strategy | `bifrost_api.strategy` | 8770 | 结构模板、Gate 配置、机会发现 |
 | portfolio | `bifrost_api.portfolio` | 8771 | 多账户、Greeks 聚合 |
 | market | `bifrost_api.market` | 8772 | 实时行情 SSE、采集状态 |
-| research | `bifrost_api.research` | 8773 | 回测、历史 Greeks 分析 |
+| research | `bifrost_api.research` | 8773 | 回测、历史 Greeks 分析（HTTP API 展示层，读 PostgreSQL 返回 SEPA 结果） |
+
+> **research 域（8773）分工说明**：本 repo 的 research 域负责 HTTP API 展示层——读取 PostgreSQL 中的 SEPA 结果并返回给前端。SEPA 四阶段计算引擎（写入 PostgreSQL）由 `bifrost-trade-research` 的 research-worker 负责。
 
 ## 依赖
 
