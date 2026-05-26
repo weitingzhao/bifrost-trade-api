@@ -18,9 +18,14 @@
 | strategy | `bifrost_api.strategy` | 8770 | 结构模板、Gate 配置、机会发现 |
 | portfolio | `bifrost_api.portfolio` | 8771 | 多账户、Greeks 聚合 |
 | market | `bifrost_api.market` | 8772 | 实时行情 SSE、采集状态 |
-| research | `bifrost_api.research` | 8773 | 回测、历史 Greeks 分析（HTTP API 展示层，读 PostgreSQL 返回 SEPA 结果） |
+| research | `bifrost_api.research` | 8773 | SEPA 四阶段筛选引擎 + 回测 + 历史 Greeks（完整业务逻辑） |
 
-> **research 域（8773）分工说明**：本 repo 的 research 域负责 HTTP API 展示层——读取 PostgreSQL 中的 SEPA 结果并返回给前端。SEPA 四阶段计算引擎（写入 PostgreSQL）由 `bifrost-trade-research` 的 research-worker 负责。
+`bifrost_api.research` 包含以下子模块：
+- `research/sepa/` — Phase 1–4 筛选流水线（基本面 → 技术面 → 期权结构 → 综合评分）
+- `research/screener/` — 股票筛选器、SEPA 评分
+- `research/indicators/` — 技术指标（均线、IV Cone、波动率）
+- `research/routers/` — HTTP 路由（触发流水线、查询结果）
+- `research/schemas/` — Pydantic 模型
 
 ## 依赖
 
@@ -49,7 +54,7 @@ pytest                                   # 所有 API 测试
 - `POST /control/{action}` — 控制指令（daemon）
 - `GET /*/stream` — SSE 推送（market 域为主）
 
-所有服务**只读** PostgreSQL，不写。写操作由 daemon 和 workers 负责。
+除 `research` 域（SEPA 流水线写入 `strategy_opportunity` 表）外，其余服务**只读** PostgreSQL。写操作由 daemon 和 workers 负责。
 
 ## SSE 注意事项
 
