@@ -1,0 +1,2664 @@
+"""SEPA universe + stock_day readiness snapshot (shared by Research API and scripts)."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+import logging
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
+from bifrost_core.persistence.postgres.connection import _get_conn_params
+
+logger = logging.getLogger(__name__)
+
+# SEPA Data Ready Step 3 (per-symbol stock_day backfill check): symbols that need attention.
+# Primary: cache_stock_snapshot.last_minute_updated → NY calendar date vs max(stock_day.bar_time)
+# for source=massive (all history). Raw vendor date gap: vendor_day > last_bar_max (or no bars).
+# Then clear vendor gap if latest massive daily close matches cache.session_close (abs diff < eps).
+# If session_close is NULL on the snapshot row, skip **all** snapshot-driven gap checks for that symbol
+# (no vendor gap, no readiness fallback — stock_day / price_ready are ignored for Step 3 gaps).
+# No row in cache_stock_snapshot for a symbol: never a gap (ignore stock_day / readiness for that symbol).
+# Exclude tickers.instrument_type = 'WARRANT' (case-insensitive) from all gaps.
+# Fallback when snapshot row exists, session_close and last_minute_updated semantics apply:
+# last_minute_updated NULL only then NOT price_ready on v_sepa_symbol_price_readiness (or no p row);
+# still excluding warrants. session_close must be non-null (same as vendor path).
+# Close "equality" uses absolute tolerance (same as SQL) — see _STOCK_DAY_GAP_CLOSE_MATCH_ABS_EPS.
+_STOCK_DAY_GAP_CLOSE_MATCH_ABS_EPS = 0.0001
+
+# Fast-path lookback window for the latest massive daily bar via LATERAL + partition prune.
+# Most actively-traded tickers have a bar within a few trading days; 90 calendar days is a
+# comfortable headroom and prunes ~60 monthly partitions to ~3-4 per probe.
+_STOCK_DAY_GAP_LATEST_BAR_LOOKBACK_DAYS = 90
+
+# SEPA Data Ready Step 3 — two-stage CTE pipeline.
+#   1. cand_fast  : MATERIALIZED 90-day LATERAL probe per snap symbol (hot path; ~12k rows).
+#   2. older_lookup: MATERIALIZED full-history LATERAL only for symbols where the fast probe
+#      returned NULL (cold path; typically <100 rows), so SPAC units / thinly traded tickers
+#      whose latest bar is older than 90 days are still considered.
+#   3. cand       : combine via COALESCE(recent, older) and evaluate vendor / fallback gap.
+# `MATERIALIZED` is essential here so the small `older_lookup` set is computed once on the
+# pre-filtered subset; without it the planner inlines the LATERAL into every reference and
+# the query degrades to whole-table scans.
+_STOCK_DAY_VENDOR_GAP_CANDIDATE_SQL = f"""
+cand_fast AS MATERIALIZED (
+    SELECT
+        u.symbol,
+        c.last_minute_updated,
+        c.session_close,
+        recent.bt AS last_bar_max_recent,
+        recent.cl AS last_bar_day_close_recent
+    FROM public.v_us_equity_universe u
+    JOIN public.cache_stock_snapshot c
+        ON c.symbol = u.symbol
+       AND c.session_close IS NOT NULL
+    LEFT JOIN LATERAL (
+        SELECT sd.bar_time::date AS bt, sd.close AS cl
+        FROM public.stock_day sd
+        WHERE sd.symbol = c.symbol
+          AND sd.source = 'massive'
+          AND sd.bar_time >= (CURRENT_DATE - integer '{_STOCK_DAY_GAP_LATEST_BAR_LOOKBACK_DAYS}')::date
+        ORDER BY sd.bar_time DESC NULLS LAST
+        LIMIT 1
+    ) recent ON true
+    WHERE lower(coalesce(u.instrument_type, '')) <> 'warrant'
+),
+older_lookup AS MATERIALIZED (
+    SELECT s.symbol, dl.bt AS last_bar_max_older, dl.cl AS last_bar_day_close_older
+    FROM (SELECT symbol FROM cand_fast WHERE last_bar_max_recent IS NULL) s
+    LEFT JOIN LATERAL (
+        SELECT sd.bar_time::date AS bt, sd.close AS cl
+        FROM public.stock_day sd
+        WHERE sd.symbol = s.symbol
+          AND sd.source = 'massive'
+        ORDER BY sd.bar_time DESC NULLS LAST
+        LIMIT 1
+    ) dl ON true
+),
+fallback_p AS MATERIALIZED (
+    SELECT
+        sd.symbol,
+        count(*)::integer AS bar_rows,
+        min(sd.bar_time)::date AS first_bar_date,
+        max(sd.bar_time)::date AS last_bar_date,
+        count(*) FILTER (WHERE sd.close IS NULL)::integer AS null_close_rows,
+        count(*) FILTER (WHERE sd.volume IS NULL)::integer AS null_volume_rows,
+        (
+            count(*) >= 240
+            AND max(sd.bar_time) >= (CURRENT_DATE - integer '7')::date
+            AND count(*) FILTER (WHERE sd.close IS NULL) = 0
+            AND count(*) FILTER (WHERE sd.volume IS NULL) = 0
+        ) AS price_ready
+    FROM public.stock_day sd
+    JOIN public.cache_stock_snapshot fc
+      ON fc.symbol = sd.symbol
+     AND fc.session_close IS NOT NULL
+     AND fc.last_minute_updated IS NULL
+    WHERE sd.source = 'massive'
+      AND sd.bar_time >= (CURRENT_DATE - integer '420')::date
+      AND sd.bar_time <= CURRENT_DATE
+    GROUP BY sd.symbol
+),
+cand AS (
+    SELECT
+        cf.symbol,
+        cf.last_minute_updated,
+        (cf.last_minute_updated AT TIME ZONE 'America/New_York')::date AS vendor_day,
+        COALESCE(cf.last_bar_max_recent, ol.last_bar_max_older) AS last_bar_max,
+        COALESCE(cf.last_bar_day_close_recent, ol.last_bar_day_close_older) AS last_bar_day_close,
+        cf.session_close,
+        COALESCE(p.bar_rows, 0)::integer AS bar_rows,
+        p.first_bar_date::text AS first_bar_date,
+        p.last_bar_date::text AS last_bar_date,
+        COALESCE(p.null_close_rows, 0)::integer AS null_close_rows,
+        COALESCE(p.null_volume_rows, 0)::integer AS null_volume_rows,
+        p.price_ready,
+        (
+            cf.last_minute_updated IS NOT NULL
+            AND (
+                COALESCE(cf.last_bar_max_recent, ol.last_bar_max_older) IS NULL
+                OR (cf.last_minute_updated AT TIME ZONE 'America/New_York')::date
+                       > COALESCE(cf.last_bar_max_recent, ol.last_bar_max_older)
+            )
+            AND NOT (
+                COALESCE(cf.last_bar_day_close_recent, ol.last_bar_day_close_older) IS NOT NULL
+                AND abs(
+                    COALESCE(cf.last_bar_day_close_recent, ol.last_bar_day_close_older)
+                    - cf.session_close
+                ) < {_STOCK_DAY_GAP_CLOSE_MATCH_ABS_EPS!s}
+            )
+        ) AS is_vendor_gap,
+        (
+            cf.last_minute_updated IS NULL
+            AND (p.symbol IS NULL OR NOT COALESCE(p.price_ready, false))
+        ) AS is_fallback_gap
+    FROM cand_fast cf
+    LEFT JOIN older_lookup ol ON ol.symbol = cf.symbol
+    LEFT JOIN fallback_p p ON p.symbol = cf.symbol
+)
+""".strip()
+
+# Shipped with GET /readiness/summary for UI: raw DB objects vs derived views/tables (English labels).
+READINESS_DATA_CATALOG: Dict[str, Any] = {
+    "raw_sources": [
+        {
+            "id": "tickers",
+            "object": "public.tickers",
+            "role": "Massive reference universe (All Tickers).",
+            "typical_ingest": "Celery kind feed_stocks_tickers_reference_universe",
+            "data_points": [
+                "ticker",
+                "name",
+                "market",
+                "locale",
+                "primary_exchange",
+                "instrument_type",
+                "active",
+                "delisted_utc",
+                "cik",
+                "composite_figi",
+                "share_class_figi",
+                "last_updated_utc",
+            ],
+        },
+        {
+            "id": "ticker_overview",
+            "object": "public.ticker_overview",
+            "role": "Per-ticker detail joined to tickers (sector, list_date, …).",
+            "typical_ingest": "Celery kind feed_stocks_tickers_overview",
+            "data_points": [
+                "tickers_id (FK)",
+                "sector",
+                "industry",
+                "exchange",
+                "list_date",
+                "ticker_root",
+                "market_cap",
+                "description",
+                "overview_updated_at",
+            ],
+        },
+        {
+            "id": "stock_day",
+            "object": "public.stock_day",
+            "role": "Daily OHLCV bars; SEPA Phase1/CRS read source=massive.",
+            "typical_ingest": "Celery kind feed_stocks_aggregate (and related)",
+            "data_points": [
+                "symbol",
+                "bar_time",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "source",
+                "vwap (optional)",
+                "trade_count (optional)",
+                "adjusted (optional)",
+            ],
+        },
+        {
+            "id": "cache_stock_snapshot",
+            "object": "public.cache_stock_snapshot",
+            "role": "Massive GET /v3/snapshot via ticker.any_of (no type param) — per-symbol session + last_minute baseline before stock_day backfill.",
+            "typical_ingest": "POST /research/screening/sepa/readiness/stock-unified-snapshot",
+            "data_points": [
+                "symbol (PK)",
+                "fetched_at",
+                "updated_at",
+                "last_minute_updated",
+                "snapshot_asset_type",
+                "market_status",
+                "snapshot_display_name",
+                "session_* OHLC/volume/change scalars",
+                "last_minute_* bar scalars",
+                "last_trade_* / last_quote_* scalars",
+                "source",
+            ],
+        },
+    ],
+    "computed_layers": [
+        {
+            "id": "v_us_equity_universe",
+            "object": "public.v_us_equity_universe",
+            "role": "Filtered US equity candidate list from tickers + overview.",
+            "depends_on": ["tickers", "ticker_overview"],
+            "data_points": [
+                "tickers_id",
+                "symbol",
+                "name",
+                "market",
+                "locale",
+                "primary_exchange",
+                "instrument_type",
+                "active",
+                "delisted_utc",
+                "list_date",
+                "sector",
+                "industry",
+            ],
+        },
+        {
+            "id": "v_sepa_symbol_price_readiness",
+            "object": "public.v_sepa_symbol_price_readiness",
+            "role": "Per-symbol bar counts and price_ready over a fixed lookback window (live).",
+            "depends_on": ["stock_day"],
+            "data_points": [
+                "as_of_date",
+                "symbol",
+                "price_source",
+                "bar_rows",
+                "first_bar_date",
+                "last_bar_date",
+                "null_close_rows",
+                "null_volume_rows",
+                "price_ready (boolean)",
+            ],
+        },
+        {
+            "id": "research_sepa_fundamentals_cache",
+            "object": "public.research_sepa_fundamentals_cache",
+            "role": "Cached income-statement payload for SEPA fundamentals / Phase4.",
+            "typical_ingest": "Written by SEPA Phase4 or fundamentals batch jobs",
+            "data_points": [
+                "symbol",
+                "rule_version",
+                "payload (jsonb: evaluation + rows)",
+                "source",
+                "fetched_at",
+                "expire_at",
+                "updated_at",
+            ],
+        },
+        {
+            "id": "stock_readiness_daily",
+            "object": "public.stock_readiness_daily",
+            "role": "Materialized daily snapshot (UPSERT) combining universe + bars + financial coverage + SEPA fundamental results written directly by run_fundamentals_local_backfill.",
+            "depends_on": [
+                "v_us_equity_universe",
+                "stock_day",
+                "stock_income_statements",
+            ],
+            "data_points": [
+                "as_of_date",
+                "symbol",
+                "tickers_id",
+                "universe_rule_version",
+                "price_source",
+                "included_in_universe",
+                "bar_count_lookback",
+                "first_bar_date",
+                "last_bar_date",
+                "null_close_rows",
+                "null_volume_rows",
+                "price_ready",
+                "fund_cache_present",
+                "fund_cache_expire_at",
+                "notes",
+                "computed_at",
+            ],
+        },
+        {
+            "id": "v_sepa_symbol_fund_cache_readiness",
+            "object": "public.v_sepa_symbol_fund_cache_readiness",
+            "role": "Symbols with non-expired fundamentals cache (optional view).",
+            "depends_on": ["research_sepa_fundamentals_cache"],
+            "data_points": [
+                "symbol",
+                "rule_version",
+                "fund_cache_valid",
+                "expire_at",
+                "fetched_at",
+            ],
+        },
+    ],
+}
+
+
+def _split_qualified_object_name(obj: str) -> Tuple[str, str]:
+    s = (obj or "").strip()
+    if not s:
+        return ("public", "")
+    if "." not in s:
+        return ("public", s)
+    schema, name = s.split(".", 1)
+    return ((schema or "public").strip(), name.strip())
+
+
+def _read_object_columns(
+    cur: Any,
+    *,
+    schema: str,
+    name: str,
+) -> List[str]:
+    if not schema or not name:
+        return []
+    cur.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND table_name = %s
+        ORDER BY ordinal_position
+        """,
+        (schema, name),
+    )
+    rows = cur.fetchall() or []
+    cols: List[str] = []
+    for r in rows:
+        c = (r or {}).get("column_name")
+        if isinstance(c, str) and c.strip():
+            cols.append(c.strip())
+    return cols
+
+
+def _read_view_query(
+    cur: Any,
+    *,
+    schema: str,
+    name: str,
+) -> Optional[str]:
+    if not schema or not name:
+        return None
+    fq_name = f"{schema}.{name}"
+    try:
+        cur.execute(
+            """
+            SELECT pg_get_viewdef(to_regclass(%s), true) AS view_sql
+            """,
+            (fq_name,),
+        )
+        row = cur.fetchone() or {}
+        sql = row.get("view_sql")
+        if isinstance(sql, str) and sql.strip():
+            return sql.strip()
+    except Exception:
+        pass
+    # Fallback: information_schema.views (works when pg_get_viewdef path is restricted).
+    try:
+        cur.execute(
+            """
+            SELECT view_definition
+            FROM information_schema.views
+            WHERE table_schema = %s
+              AND table_name = %s
+            """,
+            (schema, name),
+        )
+        row = cur.fetchone() or {}
+        sql = row.get("view_definition")
+        if isinstance(sql, str) and sql.strip():
+            return sql.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _build_runtime_data_catalog(cur: Any) -> Dict[str, Any]:
+    """Return catalog with dynamic data_points from current DB object columns."""
+    catalog = deepcopy(READINESS_DATA_CATALOG)
+    for bucket in ("raw_sources", "computed_layers"):
+        entries = catalog.get(bucket) or []
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            schema, name = _split_qualified_object_name(str(entry.get("object") or ""))
+            try:
+                dynamic_cols = _read_object_columns(cur, schema=schema, name=name)
+                if dynamic_cols:
+                    entry["data_points"] = dynamic_cols
+            except Exception as e:
+                logger.debug("read object columns failed for %s.%s: %s", schema, name, e)
+            try:
+                view_query = _read_view_query(cur, schema=schema, name=name)
+                if view_query:
+                    entry["view_query"] = view_query
+            except Exception as e:
+                logger.debug("read view query failed for %s.%s: %s", schema, name, e)
+    return catalog
+
+_ENSURE_FUND_CACHE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS public.research_sepa_fundamentals_cache (
+    symbol text NOT NULL,
+    rule_version text NOT NULL,
+    payload jsonb NOT NULL,
+    source text DEFAULT 'massive',
+    fetched_at timestamptz NOT NULL DEFAULT now(),
+    expire_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (symbol, rule_version)
+)
+"""
+
+_ENSURE_FUND_CACHE_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_research_sepa_fund_cache_expire
+ON public.research_sepa_fundamentals_cache (expire_at)
+"""
+
+_SNAPSHOT_INSERT_SQL = """
+INSERT INTO public.stock_readiness_daily (
+    as_of_date,
+    symbol,
+    tickers_id,
+    universe_rule_version,
+    price_source,
+    included_in_universe,
+    bar_count_lookback,
+    first_bar_date,
+    last_bar_date,
+    null_close_rows,
+    null_volume_rows,
+    price_ready,
+    fund_cache_present,
+    fund_cache_expire_at,
+    notes,
+    computed_at,
+    income_stmt_q_count,
+    income_stmt_a_count,
+    income_stmt_ready,
+    balance_sheet_present,
+    cash_flow_present,
+    ratios_present,
+    short_interest_present,
+    short_volume_present,
+    fundamental_pass,
+    fundamental_pass_count,
+    fundamental_insufficient,
+    fundamental_eval,
+    technical_pass,
+    technical_pass_count,
+    technical_insufficient,
+    technical_eval
+)
+WITH params AS (
+    SELECT
+        CURRENT_DATE AS as_of_date,
+        'v1'::text AS universe_rule_version,
+        'massive'::text AS price_source,
+        (CURRENT_DATE - integer '420') AS window_start,
+        240::integer AS min_bar_rows,
+        7::integer AS max_stale_calendar_days
+),
+u AS (
+    SELECT v.tickers_id, v.symbol
+    FROM public.v_us_equity_universe v
+),
+bars AS (
+    SELECT
+        p.as_of_date,
+        upper(trim(sd.symbol)) AS symbol,
+        p.price_source,
+        count(*)::integer AS bar_rows,
+        min(sd.bar_time)::date AS first_bar_date,
+        max(sd.bar_time)::date AS last_bar_date,
+        count(*) FILTER (WHERE sd.close IS NULL)::integer AS null_close_rows,
+        count(*) FILTER (WHERE sd.volume IS NULL)::integer AS null_volume_rows
+    FROM params p
+    JOIN public.stock_day sd
+        ON sd.source = p.price_source
+       AND sd.bar_time >= p.window_start
+       AND sd.bar_time <= p.as_of_date
+    GROUP BY p.as_of_date, p.price_source, p.window_start, upper(trim(sd.symbol))
+),
+symbols AS (
+    SELECT symbol FROM u
+    UNION
+    SELECT symbol FROM bars
+),
+-- Stage 2 financial coverage aggregates (one full-table pass each)
+inc_agg AS MATERIALIZED (
+    SELECT upper(trim(symbol)) AS symbol,
+           count(*) FILTER (WHERE timeframe = 'quarterly')::integer AS q_count,
+           count(*) FILTER (WHERE timeframe = 'annual')::integer    AS a_count
+    FROM public.stock_income_statements
+    WHERE source = 'massive'
+    GROUP BY upper(trim(symbol))
+),
+bs_agg AS MATERIALIZED (
+    SELECT DISTINCT upper(trim(symbol)) AS symbol
+    FROM public.stock_balance_sheets
+    WHERE source = 'massive'
+),
+cf_agg AS MATERIALIZED (
+    SELECT DISTINCT upper(trim(symbol)) AS symbol
+    FROM public.stock_cash_flows
+    WHERE source = 'massive'
+),
+rat_agg AS MATERIALIZED (
+    SELECT DISTINCT upper(trim(symbol)) AS symbol
+    FROM public.stock_ratios
+),
+-- Stage 3 short data coverage aggregates
+si_agg AS MATERIALIZED (
+    SELECT DISTINCT upper(trim(symbol)) AS symbol
+    FROM public.stock_short_interest
+),
+sv_agg AS MATERIALIZED (
+    SELECT DISTINCT upper(trim(symbol)) AS symbol
+    FROM public.stock_short_volume
+)
+SELECT
+    p.as_of_date,
+    s.symbol,
+    u.tickers_id,
+    p.universe_rule_version,
+    p.price_source,
+    (u.tickers_id IS NOT NULL) AS included_in_universe,
+    coalesce(b.bar_rows, 0) AS bar_count_lookback,
+    b.first_bar_date,
+    b.last_bar_date,
+    coalesce(b.null_close_rows, 0) AS null_close_rows,
+    coalesce(b.null_volume_rows, 0) AS null_volume_rows,
+    (
+        coalesce(b.bar_rows, 0) >= p.min_bar_rows
+        AND b.last_bar_date IS NOT NULL
+        AND b.last_bar_date >= (
+            p.as_of_date - (p.max_stale_calendar_days || ' days')::interval
+        )::date
+        AND coalesce(b.null_close_rows, 0) = 0
+        AND coalesce(b.null_volume_rows, 0) = 0
+    ) AS price_ready,
+    false AS fund_cache_present,
+    NULL::timestamptz AS fund_cache_expire_at,
+    CASE
+        WHEN u.tickers_id IS NULL THEN 'symbol not in v_us_equity_universe'
+        WHEN coalesce(b.bar_rows, 0) < p.min_bar_rows THEN 'insufficient stock_day rows in lookback window'
+        WHEN b.last_bar_date IS NULL THEN 'no stock_day rows in window'
+        WHEN b.last_bar_date < (
+            p.as_of_date - (p.max_stale_calendar_days || ' days')::interval
+        )::date THEN 'stale last bar_time'
+        WHEN coalesce(b.null_close_rows, 0) > 0 OR coalesce(b.null_volume_rows, 0) > 0
+            THEN 'null close or volume in window'
+        ELSE NULL
+    END AS notes,
+    now() AS computed_at,
+    -- Stage 2 financial coverage columns
+    coalesce(inc.q_count, 0) AS income_stmt_q_count,
+    coalesce(inc.a_count, 0) AS income_stmt_a_count,
+    (coalesce(inc.q_count, 0) >= 5 AND coalesce(inc.a_count, 0) >= 4) AS income_stmt_ready,
+    (bs.symbol IS NOT NULL)  AS balance_sheet_present,
+    (cf.symbol IS NOT NULL)  AS cash_flow_present,
+    (rat.symbol IS NOT NULL) AS ratios_present,
+    -- Stage 3 short data coverage columns
+    (si.symbol IS NOT NULL)  AS short_interest_present,
+    (sv.symbol IS NOT NULL)  AS short_volume_present,
+    -- Stage 4 SEPA fundamental result columns (written by run_fundamentals_local_backfill, preserved on conflict)
+    false       AS fundamental_pass,
+    0           AS fundamental_pass_count,
+    false       AS fundamental_insufficient,
+    NULL::jsonb AS fundamental_eval,
+    -- Stage 5 SEPA technical result columns (written by run_technical_local_backfill, preserved on conflict)
+    false       AS technical_pass,
+    0           AS technical_pass_count,
+    false       AS technical_insufficient,
+    NULL::jsonb AS technical_eval
+FROM params p
+CROSS JOIN symbols s
+LEFT JOIN u ON u.symbol = s.symbol
+LEFT JOIN bars b
+    ON b.symbol = s.symbol
+   AND b.as_of_date = p.as_of_date
+   AND b.price_source = p.price_source
+LEFT JOIN inc_agg   inc ON inc.symbol = s.symbol
+LEFT JOIN bs_agg    bs  ON bs.symbol  = s.symbol
+LEFT JOIN cf_agg    cf  ON cf.symbol  = s.symbol
+LEFT JOIN rat_agg   rat ON rat.symbol = s.symbol
+LEFT JOIN si_agg    si  ON si.symbol  = s.symbol
+LEFT JOIN sv_agg    sv  ON sv.symbol  = s.symbol
+ON CONFLICT (as_of_date, symbol, universe_rule_version, price_source)
+DO UPDATE SET
+    tickers_id              = EXCLUDED.tickers_id,
+    included_in_universe    = EXCLUDED.included_in_universe,
+    bar_count_lookback      = EXCLUDED.bar_count_lookback,
+    first_bar_date          = EXCLUDED.first_bar_date,
+    last_bar_date           = EXCLUDED.last_bar_date,
+    null_close_rows         = EXCLUDED.null_close_rows,
+    null_volume_rows        = EXCLUDED.null_volume_rows,
+    price_ready             = EXCLUDED.price_ready,
+    fund_cache_present      = CASE WHEN EXCLUDED.fundamental_eval IS NOT NULL THEN EXCLUDED.fund_cache_present ELSE stock_readiness_daily.fund_cache_present END,
+    fund_cache_expire_at    = CASE WHEN EXCLUDED.fundamental_eval IS NOT NULL THEN EXCLUDED.fund_cache_expire_at ELSE stock_readiness_daily.fund_cache_expire_at END,
+    notes                   = EXCLUDED.notes,
+    computed_at             = EXCLUDED.computed_at,
+    income_stmt_q_count     = EXCLUDED.income_stmt_q_count,
+    income_stmt_a_count     = EXCLUDED.income_stmt_a_count,
+    income_stmt_ready       = EXCLUDED.income_stmt_ready,
+    balance_sheet_present   = EXCLUDED.balance_sheet_present,
+    cash_flow_present       = EXCLUDED.cash_flow_present,
+    ratios_present          = EXCLUDED.ratios_present,
+    short_interest_present  = EXCLUDED.short_interest_present,
+    short_volume_present    = EXCLUDED.short_volume_present,
+    fundamental_pass        = CASE WHEN EXCLUDED.fundamental_eval IS NOT NULL THEN EXCLUDED.fundamental_pass ELSE stock_readiness_daily.fundamental_pass END,
+    fundamental_pass_count  = CASE WHEN EXCLUDED.fundamental_eval IS NOT NULL THEN EXCLUDED.fundamental_pass_count ELSE stock_readiness_daily.fundamental_pass_count END,
+    fundamental_insufficient = CASE WHEN EXCLUDED.fundamental_eval IS NOT NULL THEN EXCLUDED.fundamental_insufficient ELSE stock_readiness_daily.fundamental_insufficient END,
+    fundamental_eval        = COALESCE(EXCLUDED.fundamental_eval, stock_readiness_daily.fundamental_eval),
+    technical_pass          = CASE WHEN EXCLUDED.technical_eval IS NOT NULL THEN EXCLUDED.technical_pass ELSE stock_readiness_daily.technical_pass END,
+    technical_pass_count    = CASE WHEN EXCLUDED.technical_eval IS NOT NULL THEN EXCLUDED.technical_pass_count ELSE stock_readiness_daily.technical_pass_count END,
+    technical_insufficient  = CASE WHEN EXCLUDED.technical_eval IS NOT NULL THEN EXCLUDED.technical_insufficient ELSE stock_readiness_daily.technical_insufficient END,
+    technical_eval          = COALESCE(EXCLUDED.technical_eval, stock_readiness_daily.technical_eval);
+"""
+
+
+def _db_ok(status_config: Optional[dict]) -> bool:
+    if not status_config:
+        return False
+    return status_config.get("sink") == "postgres" or bool(status_config.get("postgres"))
+
+
+def run_sepa_universe_readiness_snapshot(
+    status_config: dict,
+    *,
+    statement_timeout_ms: int = 120_000,
+) -> Dict[str, Any]:
+    """Ensure fund cache table, then upsert today's stock_readiness_daily rows."""
+    if not _db_ok(status_config):
+        return {"ok": False, "error": "PostgreSQL not configured"}
+    params = _get_conn_params(status_config)
+    params["connect_timeout"] = 15
+    t0 = time.monotonic()
+    try:
+        conn = psycopg2.connect(**params)
+    except Exception as e:
+        logger.warning("readiness snapshot connect failed: %s", e)
+        return {"ok": False, "error": str(e)}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SET statement_timeout = {int(max(5_000, statement_timeout_ms))}")
+            # Retain only today's snapshot — historical rows are not meaningful
+            cur.execute(
+                "DELETE FROM public.stock_readiness_daily WHERE as_of_date < CURRENT_DATE"
+            )
+            cur.execute(_SNAPSHOT_INSERT_SQL)
+            n = cur.rowcount
+        conn.commit()
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        return {"ok": True, "rows_affected": n, "elapsed_ms": elapsed_ms}
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.warning("readiness snapshot failed: %s", e)
+        return {"ok": False, "error": str(e)}
+    finally:
+        conn.close()
+
+
+def _view_exists(conn, schema: str, name: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.views
+                WHERE table_schema = %s AND table_name = %s
+            )
+            """,
+            (schema, name),
+        )
+        row = cur.fetchone()
+    return bool(row and row[0])
+
+
+def _pg_rel_exists(cur: Any, rel: str) -> bool:
+    cur.execute("SELECT to_regclass(%s) IS NOT NULL AS ex", (rel,))
+    return bool((cur.fetchone() or {}).get("ex"))
+
+
+def _fetch_fundamentals_symbol_counts_by_instrument_type(cur: Any) -> Optional[List[Dict[str, Any]]]:
+    """Distinct symbols per ``tickers.instrument_type`` with Massive rows in raw fundamentals tables.
+
+    Join: ``upper(trim(tickers.ticker)) = fundamentals.symbol``, universe filter matches Step 2 snapshot
+    breakdown (active US ``stocks`` market).
+    """
+    specs: List[Tuple[str, str]] = []
+    if _pg_rel_exists(cur, "public.stock_income_statements"):
+        specs.append(("income_statement_symbols", "stock_income_statements"))
+    if _pg_rel_exists(cur, "public.stock_balance_sheets"):
+        specs.append(("balance_sheet_symbols", "stock_balance_sheets"))
+    if _pg_rel_exists(cur, "public.stock_cash_flows"):
+        specs.append(("cash_flow_symbols", "stock_cash_flows"))
+    if _pg_rel_exists(cur, "public.stock_ratios"):
+        specs.append(("ratio_symbols", "stock_ratios"))
+    if not specs:
+        return []
+
+    _join_tickers = """
+        INNER JOIN public.tickers t
+            ON upper(trim(t.ticker)) = f.symbol
+           AND t.active = true
+           AND lower(coalesce(t.locale, '')) = 'us'
+           AND lower(coalesce(t.market, '')) = 'stocks'
+    """
+
+    by_code: Dict[str, Dict[str, Any]] = {}
+    try:
+        cur.execute(
+            """
+            SELECT DISTINCT COALESCE(NULLIF(instrument_type, ''), '(unknown)') AS code
+            FROM public.tickers
+            WHERE active = true
+              AND lower(coalesce(locale, '')) = 'us'
+              AND lower(coalesce(market, '')) = 'stocks'
+            """
+        )
+        for r in cur.fetchall() or []:
+            code = str(r.get("code") or "(unknown)")
+            by_code[code] = {
+                "code": code,
+                "income_statement_symbols": 0,
+                "balance_sheet_symbols": 0,
+                "cash_flow_symbols": 0,
+                "ratio_symbols": 0,
+            }
+
+        for col, tbl in specs:
+            cur.execute(
+                f"""
+                SELECT COALESCE(NULLIF(t.instrument_type, ''), '(unknown)') AS code,
+                       count(DISTINCT f.symbol)::bigint AS n
+                FROM public.{tbl} f
+                {_join_tickers}
+                WHERE f.source = 'massive'
+                GROUP BY 1
+                """
+            )
+            for r in cur.fetchall() or []:
+                code = str(r.get("code") or "(unknown)")
+                if code not in by_code:
+                    by_code[code] = {
+                        "code": code,
+                        "income_statement_symbols": 0,
+                        "balance_sheet_symbols": 0,
+                        "cash_flow_symbols": 0,
+                        "ratio_symbols": 0,
+                    }
+                by_code[code][col] = int(r.get("n") or 0)
+    except Exception as e:
+        logger.debug("fundamentals_symbol_count_by_type failed: %s", e)
+        return None
+
+    rows = list(by_code.values())
+    rows.sort(key=lambda x: str(x.get("code") or ""))
+    return rows
+
+
+def fetch_sepa_readiness_summary(status_config: dict) -> Dict[str, Any]:
+    """Aggregate counts for UI (live views + today's snapshot table)."""
+    if not _db_ok(status_config):
+        return {"ok": False, "error": "PostgreSQL not configured"}
+    params = _get_conn_params(status_config)
+    params["connect_timeout"] = 15
+    out: Dict[str, Any] = {"ok": True}
+    try:
+        conn = psycopg2.connect(**params)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # JIT helps long analytical queries but adds latency to short summary queries; disable per-session.
+            try:
+                cur.execute("SET LOCAL jit = off")
+            except Exception:
+                pass
+            cur.execute("SELECT count(*)::bigint AS n FROM public.v_us_equity_universe")
+            out["universe_count"] = int((cur.fetchone() or {}).get("n") or 0)
+
+            # Tickers table counts and last-sync timestamp (Step 1 check)
+            cur.execute(
+                """
+                SELECT
+                    count(*)::bigint AS active_count,
+                    max(updated_at)::text AS last_synced_at
+                FROM public.tickers
+                WHERE active = true AND locale = 'us' AND market = 'stocks'
+                """
+            )
+            tr = cur.fetchone() or {}
+            out["tickers_active_count"] = int(tr.get("active_count") or 0)
+            out["tickers_last_synced_at"] = tr.get("last_synced_at")
+
+            cur.execute(
+                """
+                SELECT
+                    count(*)::bigint AS total,
+                    count(*) FILTER (WHERE price_ready)::bigint AS price_ready
+                FROM public.v_sepa_symbol_price_readiness
+                """
+            )
+            pr = cur.fetchone() or {}
+            out["price_readiness_live"] = {
+                "total_symbols": int(pr.get("total") or 0),
+                "price_ready": int(pr.get("price_ready") or 0),
+            }
+
+            out["fund_cache_view_exists"] = True
+            try:
+                cur.execute(
+                    """
+                    SELECT count(*)::bigint AS n
+                    FROM public.stock_readiness_daily
+                    WHERE as_of_date = CURRENT_DATE
+                      AND universe_rule_version = 'v1'
+                      AND price_source = 'massive'
+                      AND fundamental_eval IS NOT NULL
+                      AND fund_cache_expire_at > now()
+                    """
+                )
+                out["fund_cache_valid_count"] = int((cur.fetchone() or {}).get("n") or 0)
+            except Exception:
+                out["fund_cache_valid_count"] = None
+
+            try:
+                cur.execute(
+                    """
+                    SELECT count(*)::bigint AS n, max(fetched_at)::text AS mx
+                    FROM public.cache_stock_snapshot
+                    """
+                )
+                cr = cur.fetchone() or {}
+                out["stock_unified_snapshot_row_count"] = int(cr.get("n") or 0)
+                out["stock_unified_snapshot_last_fetched_at"] = cr.get("mx")
+            except Exception:
+                out["stock_unified_snapshot_row_count"] = None
+                out["stock_unified_snapshot_last_fetched_at"] = None
+
+            # Step 2 breakdown: cache_stock_snapshot rows grouped by tickers.instrument_type,
+            # joined to ticker_types (asset_class='stocks', locale='us') for human-readable label.
+            # Includes a coverage column (universe_ticker_count) so users can spot which types
+            # are under-snapshotted vs. their baseline universe footprint.
+            try:
+                cur.execute(
+                    """
+                    WITH snap_by_type AS (
+                        SELECT
+                            COALESCE(NULLIF(t.instrument_type, ''), '(unknown)') AS code,
+                            count(*)::bigint AS snapshot_row_count
+                        FROM public.cache_stock_snapshot c
+                        JOIN public.tickers t ON upper(trim(t.ticker)) = c.symbol
+                        GROUP BY COALESCE(NULLIF(t.instrument_type, ''), '(unknown)')
+                    ),
+                    uni_by_type AS (
+                        SELECT
+                            COALESCE(NULLIF(instrument_type, ''), '(unknown)') AS code,
+                            count(*)::bigint AS universe_ticker_count
+                        FROM public.tickers
+                        WHERE active = true
+                          AND lower(coalesce(locale, '')) = 'us'
+                          AND lower(coalesce(market, '')) = 'stocks'
+                        GROUP BY COALESCE(NULLIF(instrument_type, ''), '(unknown)')
+                    )
+                    SELECT
+                        s.code,
+                        tt.description,
+                        s.snapshot_row_count,
+                        COALESCE(u.universe_ticker_count, 0)::bigint AS universe_ticker_count
+                    FROM snap_by_type s
+                    LEFT JOIN uni_by_type u ON u.code = s.code
+                    LEFT JOIN public.ticker_types tt
+                        ON tt.code = s.code
+                       AND tt.asset_class = 'stocks'
+                       AND tt.locale = 'us'
+                    ORDER BY s.snapshot_row_count DESC, s.code
+                    """
+                )
+                rows = cur.fetchall() or []
+                out["stock_unified_snapshot_by_type"] = [
+                    {
+                        "code": r.get("code"),
+                        "description": r.get("description"),
+                        "snapshot_row_count": int(r.get("snapshot_row_count") or 0),
+                        "universe_ticker_count": int(r.get("universe_ticker_count") or 0),
+                    }
+                    for r in rows
+                ]
+            except Exception as e:
+                logger.debug("stock_unified_snapshot_by_type query failed: %s", e)
+                out["stock_unified_snapshot_by_type"] = None
+
+            try:
+                out["fundamentals_symbol_count_by_type"] = (
+                    _fetch_fundamentals_symbol_counts_by_instrument_type(cur)
+                )
+            except Exception as e:
+                logger.debug("fundamentals_symbol_count_by_type failed: %s", e)
+                out["fundamentals_symbol_count_by_type"] = None
+
+            try:
+                cur.execute(
+                    f"""
+                    WITH {_STOCK_DAY_VENDOR_GAP_CANDIDATE_SQL}
+                    SELECT count(*)::bigint AS n
+                    FROM cand
+                    WHERE is_vendor_gap OR is_fallback_gap
+                    """
+                )
+                out["stock_day_vendor_fill_gap_count"] = int((cur.fetchone() or {}).get("n") or 0)
+            except Exception as e:
+                logger.debug("stock_day_vendor_fill_gap_count query failed: %s", e)
+                out["stock_day_vendor_fill_gap_count"] = None
+
+            # Fundamentals raw tables (SEPA Data Ready Steps 4–9) — gap counts when tables exist.
+            try:
+                from bifrost_api.research.sepa import financials_data as _fd
+
+                cur.execute(
+                    "SELECT (to_regclass('public.stock_income_statements') IS NOT NULL) AS texists"
+                )
+                if bool((cur.fetchone() or {}).get("texists")):
+                    out["income_statements_gap_count"] = _fd.count_income_statements_gaps(cur)
+                else:
+                    out["income_statements_gap_count"] = None
+                cur.execute(
+                    "SELECT (to_regclass('public.stock_balance_sheets') IS NOT NULL) AS texists"
+                )
+                if bool((cur.fetchone() or {}).get("texists")):
+                    out["balance_sheets_gap_count"] = _fd.count_balance_sheet_gaps(cur)
+                else:
+                    out["balance_sheets_gap_count"] = None
+                cur.execute(
+                    "SELECT (to_regclass('public.stock_cash_flows') IS NOT NULL) AS texists"
+                )
+                if bool((cur.fetchone() or {}).get("texists")):
+                    out["cash_flows_gap_count"] = _fd.count_cash_flow_gaps(cur)
+                else:
+                    out["cash_flows_gap_count"] = None
+                cur.execute("SELECT (to_regclass('public.stock_ratios') IS NOT NULL) AS texists")
+                if bool((cur.fetchone() or {}).get("texists")):
+                    out["ratios_gap_count"] = _fd.count_ratios_gaps(cur)
+                else:
+                    out["ratios_gap_count"] = None
+                cur.execute(
+                    "SELECT (to_regclass('public.stock_short_interest') IS NOT NULL) AS texists"
+                )
+                if bool((cur.fetchone() or {}).get("texists")):
+                    out["short_interest_gap_count"] = _fd.count_short_interest_gaps(cur)
+                else:
+                    out["short_interest_gap_count"] = None
+                cur.execute(
+                    "SELECT (to_regclass('public.stock_short_volume') IS NOT NULL) AS texists"
+                )
+                if bool((cur.fetchone() or {}).get("texists")):
+                    out["short_volume_gap_count"] = _fd.count_short_volume_gaps(cur)
+                else:
+                    out["short_volume_gap_count"] = None
+            except Exception as e:
+                logger.debug("fundamentals gap counts failed: %s", e)
+                out["income_statements_gap_count"] = None
+                out["balance_sheets_gap_count"] = None
+                out["cash_flows_gap_count"] = None
+                out["ratios_gap_count"] = None
+                out["short_interest_gap_count"] = None
+                out["short_volume_gap_count"] = None
+
+            # Source-void acknowledgment flags + actionable gap counts (preference_data_gap_ack)
+            _GAP_ACK_TYPES = (
+                "income_statements", "balance_sheets", "cash_flows",
+                "ratios", "short_interest", "short_volume",
+            )
+            try:
+                cur.execute(
+                    "SELECT (to_regclass('public.preference_data_gap_ack') IS NOT NULL) AS texists"
+                )
+                if bool((cur.fetchone() or {}).get("texists")):
+                    cur.execute(
+                        "SELECT data_type, is_void, acked_gap_count, void_reason "
+                        "FROM public.preference_data_gap_ack"
+                    )
+                    ack_map = {r["data_type"]: r for r in (cur.fetchall() or [])}
+                    for dt in _GAP_ACK_TYPES:
+                        row = ack_map.get(dt) or {}
+                        is_void = bool(row.get("is_void"))
+                        acked_n = int(row.get("acked_gap_count") or 0)
+                        total_n = out.get(f"{dt}_gap_count")
+                        if is_void and total_n is not None:
+                            actionable = max(0, total_n - acked_n)
+                        else:
+                            actionable = total_n
+                        out[f"{dt}_source_void"] = is_void
+                        out[f"{dt}_acked_gap_count"] = acked_n if is_void else None
+                        out[f"{dt}_actionable_gap_count"] = actionable
+                        out[f"{dt}_void_reason"] = row.get("void_reason")
+                else:
+                    for dt in _GAP_ACK_TYPES:
+                        out[f"{dt}_source_void"] = False
+                        out[f"{dt}_acked_gap_count"] = None
+                        out[f"{dt}_actionable_gap_count"] = out.get(f"{dt}_gap_count")
+                        out[f"{dt}_void_reason"] = None
+            except Exception as e:
+                logger.debug("gap_ack fetch failed: %s", e)
+                for dt in _GAP_ACK_TYPES:
+                    out[f"{dt}_source_void"] = False
+                    out[f"{dt}_acked_gap_count"] = None
+                    out[f"{dt}_actionable_gap_count"] = out.get(f"{dt}_gap_count")
+                    out[f"{dt}_void_reason"] = None
+
+            cur.execute(
+                """
+                SELECT count(*)::bigint AS n
+                FROM public.stock_readiness_daily
+                WHERE as_of_date = CURRENT_DATE
+                  AND universe_rule_version = 'v1'
+                  AND price_source = 'massive'
+                """
+            )
+            snap_total = int((cur.fetchone() or {}).get("n") or 0)
+            out["snapshot_populated"] = snap_total > 0
+
+            cur.execute(
+                """
+                SELECT count(*)::bigint AS n
+                FROM public.stock_readiness_daily
+                WHERE as_of_date = CURRENT_DATE
+                  AND universe_rule_version = 'v1'
+                  AND price_source = 'massive'
+                  AND included_in_universe
+                """
+            )
+            snap_included = int((cur.fetchone() or {}).get("n") or 0)
+
+            cur.execute(
+                """
+                SELECT count(*)::bigint AS n
+                FROM public.stock_readiness_daily
+                WHERE as_of_date = CURRENT_DATE
+                  AND universe_rule_version = 'v1'
+                  AND price_source = 'massive'
+                  AND included_in_universe
+                  AND price_ready
+                """
+            )
+            snap_ready = int((cur.fetchone() or {}).get("n") or 0)
+
+            out["snapshot_today"] = {
+                "rows_total": snap_total,
+                "included_in_universe": snap_included,
+                "price_ready": snap_ready,
+            }
+
+            cur.execute(
+                """
+                SELECT coalesce(notes, '(ready)') AS notes_key, count(*)::bigint AS cnt
+                FROM public.stock_readiness_daily
+                WHERE as_of_date = CURRENT_DATE
+                  AND universe_rule_version = 'v1'
+                  AND price_source = 'massive'
+                  AND included_in_universe
+                  AND NOT price_ready
+                GROUP BY 1
+                ORDER BY cnt DESC
+                LIMIT 20
+                """
+            )
+            rows: List[Dict[str, Any]] = []
+            for r in cur.fetchall() or []:
+                rows.append({"notes": r.get("notes_key"), "count": int(r.get("cnt") or 0)})
+            out["notes_breakdown"] = rows
+
+            # Holidays summary — covers the same Step 1 as ticker universe sync.
+            try:
+                cur.execute(
+                    """
+                    SELECT
+                        count(*)::bigint AS total,
+                        count(*) FILTER (WHERE status = 'early-close')::bigint AS early_close_count,
+                        count(*) FILTER (WHERE source = 'massive')::bigint AS massive_count,
+                        count(*) FILTER (WHERE source = 'manual_seed')::bigint AS seed_count,
+                        count(*) FILTER (WHERE source = 'manual')::bigint AS manual_count,
+                        min(holiday_date)::text AS earliest_date,
+                        max(holiday_date)::text AS latest_date,
+                        max(updated_at) FILTER (WHERE source = 'massive')::text AS last_massive_sync
+                    FROM public.reference_us_holidays
+                    """
+                )
+                hr = cur.fetchone() or {}
+                cur.execute(
+                    """
+                    SELECT exchange, count(*)::bigint AS cnt
+                    FROM public.reference_us_holidays
+                    GROUP BY exchange
+                    ORDER BY exchange
+                    """
+                )
+                by_exchange = [
+                    {"exchange": r.get("exchange"), "count": int(r.get("cnt") or 0)}
+                    for r in (cur.fetchall() or [])
+                ]
+                out["holidays_summary"] = {
+                    "total": int(hr.get("total") or 0),
+                    "early_close_count": int(hr.get("early_close_count") or 0),
+                    "massive_count": int(hr.get("massive_count") or 0),
+                    "seed_count": int(hr.get("seed_count") or 0),
+                    "manual_count": int(hr.get("manual_count") or 0),
+                    "earliest_date": hr.get("earliest_date"),
+                    "latest_date": hr.get("latest_date"),
+                    "last_massive_sync": hr.get("last_massive_sync"),
+                    "by_exchange": by_exchange,
+                }
+            except Exception as e:
+                logger.debug("holidays_summary query failed: %s", e)
+                out["holidays_summary"] = {
+                    "total": 0,
+                    "early_close_count": 0,
+                    "massive_count": 0,
+                    "seed_count": 0,
+                    "manual_count": 0,
+                    "earliest_date": None,
+                    "latest_date": None,
+                    "last_massive_sync": None,
+                    "by_exchange": [],
+                }
+
+            # Must run while cursor is open (was incorrectly placed after `with` closed cur).
+            try:
+                out["data_catalog"] = _build_runtime_data_catalog(cur)
+            except Exception as e:
+                logger.debug("build runtime data_catalog failed, fallback to static: %s", e)
+                out["data_catalog"] = READINESS_DATA_CATALOG
+    finally:
+        conn.close()
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Stage 4 Evaluation helpers
+# ---------------------------------------------------------------------------
+
+_FUND_COND_IDS = [
+    # sepa_core (8)
+    "eps_q2q_ge_25pct",
+    "rev_q2q_ge_25pct",
+    "eps_acc_2q",
+    "rev_acc_2q",
+    "eps_3y_ge_15pct",
+    "rev_3y_ge_15pct",
+    "eps_acc_fy",
+    "rev_acc_fy",
+    # quality (5)
+    "gross_margin_ge_30pct",
+    "operating_margin_ge_10pct",
+    "net_margin_ge_5pct",
+    "ocf_to_ni_ge_0_7",
+    "interest_coverage_ge_5x",
+    # balance (4)
+    "current_ratio_ge_1_5",
+    "quick_ratio_ge_1_0",
+    "debt_to_equity_le_1",
+    "net_debt_to_ebitda_le_3",
+    # cashflow (4)
+    "fcf_positive",
+    "fcf_margin_ge_5pct",
+    "fcf_yield_ge_3pct",
+    "capex_intensity_le_15pct",
+    # valuation (4)
+    "pe_le_60",
+    "ps_le_15",
+    "pb_le_8",
+    "ev_to_ebitda_le_30",
+    # profitability (2)
+    "roe_ge_15pct",
+    "roa_ge_5pct",
+    # efficiency (3)
+    "asset_turnover_ge_0_5",
+    "dso_le_75_days",
+    "dio_le_120_days",
+    # sentiment (3)
+    "days_to_cover_le_5",
+    "short_volume_ratio_recent_le_30pct",
+    "short_interest_pct_of_float_le_15pct",
+]
+
+_FUND_COND_LABELS: Dict[str, str] = {
+    "eps_q2q_ge_25pct": "EPS Q2Q ≥25%",
+    "rev_q2q_ge_25pct": "Revenue Q2Q ≥25%",
+    "eps_acc_2q":        "EPS Acceleration 2Q",
+    "rev_acc_2q":        "Revenue Acceleration 2Q",
+    "eps_3y_ge_15pct":   "EPS 3Y CAGR ≥15%",
+    "rev_3y_ge_15pct":   "Revenue 3Y CAGR ≥15%",
+    "eps_acc_fy":        "EPS Annual Acceleration",
+    "rev_acc_fy":        "Revenue Annual Acceleration",
+    "gross_margin_ge_30pct":     "Gross Margin ≥30%",
+    "operating_margin_ge_10pct": "Oper. Margin ≥10%",
+    "net_margin_ge_5pct":        "Net Margin ≥5%",
+    "ocf_to_ni_ge_0_7":          "OCF/NI ≥0.7",
+    "interest_coverage_ge_5x":   "Interest Coverage ≥5×",
+    "current_ratio_ge_1_5":      "Current Ratio ≥1.5",
+    "quick_ratio_ge_1_0":        "Quick Ratio ≥1.0",
+    "debt_to_equity_le_1":       "D/E ≤1.0",
+    "net_debt_to_ebitda_le_3":   "NetDebt/EBITDA ≤3",
+    "fcf_positive":              "FCF Positive",
+    "fcf_margin_ge_5pct":        "FCF Margin ≥5%",
+    "fcf_yield_ge_3pct":         "FCF Yield ≥3%",
+    "capex_intensity_le_15pct":  "CapEx ≤15%",
+    "pe_le_60":                  "P/E ≤60",
+    "ps_le_15":                  "P/S ≤15",
+    "pb_le_8":                   "P/B ≤8",
+    "ev_to_ebitda_le_30":        "EV/EBITDA ≤30",
+    "roe_ge_15pct":              "ROE ≥15%",
+    "roa_ge_5pct":               "ROA ≥5%",
+    "asset_turnover_ge_0_5":     "Asset Turnover ≥0.5",
+    "dso_le_75_days":            "DSO ≤75 days",
+    "dio_le_120_days":           "DIO ≤120 days",
+    "days_to_cover_le_5":                   "Days to Cover ≤5",
+    "short_volume_ratio_recent_le_30pct":   "Short Vol Ratio ≤30%",
+    "short_interest_pct_of_float_le_15pct": "SI % Float ≤15%",
+}
+
+_FUND_COND_GROUP: Dict[str, str] = {
+    "eps_q2q_ge_25pct": "sepa_core", "rev_q2q_ge_25pct": "sepa_core",
+    "eps_acc_2q": "sepa_core", "rev_acc_2q": "sepa_core",
+    "eps_3y_ge_15pct": "sepa_core", "rev_3y_ge_15pct": "sepa_core",
+    "eps_acc_fy": "sepa_core", "rev_acc_fy": "sepa_core",
+    "gross_margin_ge_30pct": "quality", "operating_margin_ge_10pct": "quality",
+    "net_margin_ge_5pct": "quality", "ocf_to_ni_ge_0_7": "quality",
+    "interest_coverage_ge_5x": "quality",
+    "current_ratio_ge_1_5": "balance", "quick_ratio_ge_1_0": "balance",
+    "debt_to_equity_le_1": "balance", "net_debt_to_ebitda_le_3": "balance",
+    "fcf_positive": "cashflow", "fcf_margin_ge_5pct": "cashflow",
+    "fcf_yield_ge_3pct": "cashflow", "capex_intensity_le_15pct": "cashflow",
+    "pe_le_60": "valuation", "ps_le_15": "valuation",
+    "pb_le_8": "valuation", "ev_to_ebitda_le_30": "valuation",
+    "roe_ge_15pct": "profitability", "roa_ge_5pct": "profitability",
+    "asset_turnover_ge_0_5": "efficiency", "dso_le_75_days": "efficiency",
+    "dio_le_120_days": "efficiency",
+    "days_to_cover_le_5": "sentiment",
+    "short_volume_ratio_recent_le_30pct": "sentiment",
+    "short_interest_pct_of_float_le_15pct": "sentiment",
+}
+
+# Phase-1 (10) + CRS (1) = 11 SEPA technical conditions. CRS is computed
+# universe-wide and merged as the 11th condition by run_technical_local_backfill.
+_TECH_COND_IDS = [
+    "avg_volume_50_gt_threshold",
+    "crs_ge_70",
+    "close_ge_low52_x_1_3",
+    "close_ge_high52_x_0_75",
+    "sma50_gt_sma150",
+    "sma50_gt_sma200",
+    "sma150_gt_sma200",
+    "sma200_rising_1m",
+    "price_gt_sma50",
+    "price_gt_sma150",
+    "price_gt_sma200",
+]
+
+_TECH_COND_LABELS: Dict[str, str] = {
+    "avg_volume_50_gt_threshold": "Avg Volume 50D > 100K",
+    "crs_ge_70":                  "CRS ≥ 70",
+    "close_ge_low52_x_1_3":       "Close ≥ Low52W × 1.3",
+    "close_ge_high52_x_0_75":     "Close ≥ High52W × 0.75",
+    "sma50_gt_sma150":            "SMA50 > SMA150",
+    "sma50_gt_sma200":            "SMA50 > SMA200",
+    "sma150_gt_sma200":           "SMA150 > SMA200",
+    "sma200_rising_1m":           "SMA200 Rising (1M)",
+    "price_gt_sma50":             "Price > SMA50",
+    "price_gt_sma150":            "Price > SMA150",
+    "price_gt_sma200":            "Price > SMA200",
+}
+
+# Tier 2: Momentum indicator IDs
+_MOMENTUM_IND_IDS = [
+    "rsi_14_in_band",
+    "macd_hist_positive",
+    "roc_3m_positive",
+    "roc_6m_positive",
+    "roc_12m_positive",
+    "multi_period_rs_4w_positive",
+    "multi_period_rs_13w_positive",
+    "multi_period_rs_26w_positive",
+    "slope_sma200_positive",
+    "up_down_volume_50d_gt_1",
+]
+
+_MOMENTUM_IND_LABELS: Dict[str, str] = {
+    "rsi_14_in_band":               "RSI(14) in [40, 80]",
+    "macd_hist_positive":           "MACD Histogram > 0 & Rising",
+    "roc_3m_positive":              "ROC 3M > 0",
+    "roc_6m_positive":              "ROC 6M > 0",
+    "roc_12m_positive":             "ROC 12M > 0",
+    "multi_period_rs_4w_positive":  "RS vs SPY (4W) > 0",
+    "multi_period_rs_13w_positive": "RS vs SPY (13W) > 0",
+    "multi_period_rs_26w_positive": "RS vs SPY (26W) > 0",
+    "slope_sma200_positive":        "SMA200 Slope > 0",
+    "up_down_volume_50d_gt_1":      "Up/Down Vol (50D) > 1",
+}
+
+# Tier 3: Structure diagnostic IDs
+_STRUCTURE_DIAG_IDS = [
+    "realized_vol_contraction",
+    "bb_squeeze",
+    "obv_slope_30d_positive",
+    "adx_14_ge_25",
+    "aroon_oscillator_ge_50",
+]
+
+_STRUCTURE_DIAG_LABELS: Dict[str, str] = {
+    "realized_vol_contraction":  "Realized Vol Contraction",
+    "bb_squeeze":                "BB Squeeze Active",
+    "obv_slope_30d_positive":    "OBV Slope (30D) Positive",
+    "adx_14_ge_25":              "ADX(14) ≥ 25 (Trending)",
+    "aroon_oscillator_ge_50":    "Aroon Osc ≥ 50",
+}
+
+# Tier 4: Sentiment indicator IDs
+_SENTIMENT_IND_IDS = [
+    "days_to_cover_ge_5",
+    "short_volume_ratio_le_30pct_recent",
+    "short_volume_ratio_trend_4w_falling",
+]
+
+_SENTIMENT_IND_LABELS: Dict[str, str] = {
+    "days_to_cover_ge_5":                  "Days to Cover ≥ 5",
+    "short_volume_ratio_le_30pct_recent":  "Short Vol Ratio < 30%",
+    "short_volume_ratio_trend_4w_falling": "Short Vol Trend Falling",
+}
+
+
+def run_fundamentals_local_backfill(
+    status_config: dict,
+    symbols: List[str],
+    *,
+    cache_ttl_sec: int = 21600,
+) -> Dict[str, Any]:
+    """Evaluate 8 SEPA fundamental conditions + 25 extended conditions for all given symbols.
+
+    Uses TWO DB connections total (read pass + write pass) regardless of symbol count:
+      1. Batch SELECT quarterly + annual income rows, balance sheets, cash flows,
+         ratios, short interest, and short volume for ALL symbols.
+      2. Group by symbol in Python, call evaluate_fundamentals (SEPA core 8) and
+         7 extension group evaluators per symbol, then merge results.
+      3. executemany batch-upsert all results in one commit.
+
+    The ``fundamental_pass / fundamental_pass_count / fundamental_insufficient``
+    columns are driven *only* by the original 8 SEPA core conditions.  Extension
+    results are written into ``fundamental_eval`` JSONB under ``groups`` and as
+    additional entries in the flat ``conditions[]`` list (backward-compatible).
+
+    No Phase1 / CRS filtering. No external API calls.
+    """
+    import json as _json
+    from collections import defaultdict
+
+    from bifrost_api.research.sepa.fundamentals_engine import (
+        FUNDAMENTALS_RULE_VERSION,
+        FundamentalsConfig,
+        evaluate_fundamentals,
+        to_float as _to_float,
+    )
+    from bifrost_api.research.sepa.fundamentals_ext_engine import (
+        FundamentalsExtConfig,
+        evaluate_balance_group,
+        evaluate_cashflow_group,
+        evaluate_efficiency_group,
+        evaluate_profitability_group,
+        evaluate_quality_group,
+        evaluate_sentiment_group,
+        evaluate_valuation_group,
+        merge_extension_into_eval,
+    )
+    from bifrost_api.research.sepa.financials_data import (
+        fetch_balance_sheet_rows_for_ext_batch,
+        fetch_cash_flow_rows_for_ext_batch,
+        fetch_income_ext_rows_batch,
+        fetch_ratios_latest_for_ext_batch,
+        fetch_short_interest_latest_batch,
+        fetch_short_volume_recent_batch,
+    )
+
+    if not _db_ok(status_config):
+        return {"ok": False, "error": "PostgreSQL not configured"}
+
+    syms = sorted({str(s or "").strip().upper() for s in symbols if str(s or "").strip()})
+    if not syms:
+        return {"ok": True, "total_symbols": 0, "evaluated": 0, "no_local_data": 0, "errors": 0, "error_samples": []}
+
+    # --- helper mappers (mirrors financials_data.fetch_income_rows_for_sepa_from_pg) ----------
+    _FQ_MAP = {1: "Q1", 2: "Q2", 3: "Q3", 4: "Q4"}
+
+    def _iso(v: Any) -> Optional[str]:
+        return v.isoformat() if hasattr(v, "isoformat") else (str(v)[:10] if v else None)
+
+    def _map_q(r: Any) -> Dict[str, Any]:
+        fq = int(r.get("fiscal_quarter") or 0)
+        return {
+            "fiscal_year": int(r.get("fiscal_year") or 0),
+            "fiscal_period": _FQ_MAP.get(fq, f"Q{fq}" if fq else "FY"),
+            "filing_date": _iso(r.get("filing_date")),
+            "timeframe": "quarterly",
+            "start_date": _iso(r.get("period_end")),
+            "end_date": _iso(r.get("period_end")),
+            "basic_earnings_per_share": r.get("basic_earnings_per_share"),
+            "diluted_earnings_per_share": r.get("diluted_earnings_per_share"),
+            "revenues": r.get("revenue"),
+        }
+
+    def _map_a(r: Any) -> Dict[str, Any]:
+        return {
+            "fiscal_year": int(r.get("fiscal_year") or 0),
+            "fiscal_period": "FY",
+            "filing_date": _iso(r.get("filing_date")),
+            "timeframe": "annual",
+            "start_date": _iso(r.get("period_end")),
+            "end_date": _iso(r.get("period_end")),
+            "basic_earnings_per_share": r.get("basic_earnings_per_share"),
+            "diluted_earnings_per_share": r.get("diluted_earnings_per_share"),
+            "revenues": r.get("revenue"),
+        }
+
+    # --- pass 1: batch-read all tables (1 connection, multiple queries) ------------------------
+    params = _get_conn_params(status_config)
+    params["connect_timeout"] = 15
+    try:
+        conn_r = psycopg2.connect(**params)
+    except Exception as e:
+        return {"ok": False, "error": f"DB connect failed: {e}"}
+
+    q_by_sym: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    a_by_sym: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+
+    # Extension data containers
+    inc_ext_by_sym: Dict[str, List[Dict[str, Any]]] = {}
+    bs_by_sym: Dict[str, List[Dict[str, Any]]] = {}
+    cf_by_sym: Dict[str, List[Dict[str, Any]]] = {}
+    ratios_by_sym: Dict[str, Dict[str, Any]] = {}
+    si_by_sym: Dict[str, List[Dict[str, Any]]] = {}
+    sv_by_sym: Dict[str, List[Dict[str, Any]]] = {}
+
+    try:
+        with conn_r.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT to_regclass('public.stock_income_statements') IS NOT NULL AS t"
+            )
+            if not bool((cur.fetchone() or {}).get("t")):
+                return {"ok": False, "error": "stock_income_statements table not found"}
+
+            # SEPA core income reads
+            cur.execute(
+                """
+                SELECT symbol, fiscal_year, fiscal_quarter, period_end, filing_date,
+                       basic_earnings_per_share, revenue, diluted_earnings_per_share
+                FROM public.stock_income_statements
+                WHERE symbol = ANY(%s) AND source = 'massive' AND timeframe = 'quarterly'
+                ORDER BY symbol, fiscal_year ASC, fiscal_quarter ASC
+                """,
+                (syms,),
+            )
+            for r in cur.fetchall() or []:
+                q_by_sym[r["symbol"]].append(_map_q(r))
+            cur.execute(
+                """
+                SELECT symbol, fiscal_year, fiscal_quarter, period_end, filing_date,
+                       basic_earnings_per_share, revenue, diluted_earnings_per_share
+                FROM public.stock_income_statements
+                WHERE symbol = ANY(%s) AND source = 'massive' AND timeframe = 'annual'
+                ORDER BY symbol, fiscal_year ASC
+                """,
+                (syms,),
+            )
+            for r in cur.fetchall() or []:
+                a_by_sym[r["symbol"]].append(_map_a(r))
+
+            # Extension batch reads (best-effort; individual failures don't block SEPA core)
+            try:
+                inc_ext_by_sym = fetch_income_ext_rows_batch(cur, syms)
+            except Exception as exc:
+                logger.warning("Extension: income ext read failed: %s", exc)
+            try:
+                bs_by_sym = fetch_balance_sheet_rows_for_ext_batch(cur, syms)
+            except Exception as exc:
+                logger.warning("Extension: balance sheets read failed: %s", exc)
+            try:
+                cf_by_sym = fetch_cash_flow_rows_for_ext_batch(cur, syms)
+            except Exception as exc:
+                logger.warning("Extension: cash flows read failed: %s", exc)
+            try:
+                ratios_by_sym = fetch_ratios_latest_for_ext_batch(cur, syms)
+            except Exception as exc:
+                logger.warning("Extension: ratios read failed: %s", exc)
+            try:
+                si_by_sym = fetch_short_interest_latest_batch(cur, syms)
+            except Exception as exc:
+                logger.warning("Extension: short interest read failed: %s", exc)
+            try:
+                sv_by_sym = fetch_short_volume_recent_batch(cur, syms)
+            except Exception as exc:
+                logger.warning("Extension: short volume read failed: %s", exc)
+
+    except Exception as e:
+        return {"ok": False, "error": f"Batch income read failed: {e}"}
+    finally:
+        conn_r.close()
+
+    # --- pass 2: evaluate + build stock_readiness_daily upsert rows ---------------------------
+    MIN_Q, MIN_A = 5, 4
+    fund_cfg = FundamentalsConfig()
+    ext_cfg = FundamentalsExtConfig()
+    ttl_str = str(max(60, int(cache_ttl_sec)))
+
+    # (symbol, ttl_str, fundamental_pass, pass_count, insufficient, eval_json)
+    srd_rows: List[Tuple] = []
+    no_data = 0
+    errors_list: List[str] = []
+
+    for sym in syms:
+        try:
+            qrows = q_by_sym.get(sym, [])
+            arows = a_by_sym.get(sym, [])
+            if len(qrows) >= MIN_Q and len(arows) >= MIN_A:
+                result = evaluate_fundamentals(qrows, arows, cfg=fund_cfg)
+            else:
+                result = {
+                    "fundamental_pass": False,
+                    "insufficient_data": True,
+                    "not_comparable": False,
+                    "conditions": [],
+                    "pass_count": 0,
+                    "fail_count": 0,
+                    "metrics": {},
+                    "issues": ["no_local_income_data"],
+                }
+                no_data += 1
+
+            # Extension evaluators (each group fails independently)
+            inc_ext = inc_ext_by_sym.get(sym, [])
+            bs_rows = bs_by_sym.get(sym, [])
+            cf_rows = cf_by_sym.get(sym, [])
+            ratios_row = ratios_by_sym.get(sym)
+            si_rows = si_by_sym.get(sym, [])
+            sv_rows = sv_by_sym.get(sym, [])
+
+            # Latest diluted shares outstanding for sentiment % of float
+            diluted_shares = None
+            if inc_ext:
+                for row in reversed(inc_ext):
+                    ds = _to_float(row.get("diluted_shares_outstanding"))
+                    if ds is not None and ds > 0:
+                        diluted_shares = ds
+                        break
+
+            ext_groups = []
+            try:
+                ext_groups.append(evaluate_quality_group(inc_ext, cf_rows, cfg=ext_cfg))
+            except Exception as exc:
+                logger.warning("Extension quality group failed for %s: %s", sym, exc)
+            try:
+                ext_groups.append(evaluate_balance_group(bs_rows, ratios_row, inc_ext, cfg=ext_cfg))
+            except Exception as exc:
+                logger.warning("Extension balance group failed for %s: %s", sym, exc)
+            try:
+                ext_groups.append(evaluate_cashflow_group(inc_ext, cf_rows, ratios_row, cfg=ext_cfg))
+            except Exception as exc:
+                logger.warning("Extension cashflow group failed for %s: %s", sym, exc)
+            try:
+                ext_groups.append(evaluate_valuation_group(ratios_row, cfg=ext_cfg))
+            except Exception as exc:
+                logger.warning("Extension valuation group failed for %s: %s", sym, exc)
+            try:
+                ext_groups.append(evaluate_profitability_group(ratios_row, cfg=ext_cfg))
+            except Exception as exc:
+                logger.warning("Extension profitability group failed for %s: %s", sym, exc)
+            try:
+                ext_groups.append(evaluate_efficiency_group(inc_ext, bs_rows, cfg=ext_cfg))
+            except Exception as exc:
+                logger.warning("Extension efficiency group failed for %s: %s", sym, exc)
+            try:
+                ext_groups.append(evaluate_sentiment_group(si_rows, sv_rows, diluted_shares, cfg=ext_cfg))
+            except Exception as exc:
+                logger.warning("Extension sentiment group failed for %s: %s", sym, exc)
+
+            result = merge_extension_into_eval(result, ext_groups)
+            result["symbol"] = sym
+
+            # fundamental_pass / pass_count / insufficient stay SEPA-core only
+            srd_rows.append((
+                sym,
+                ttl_str,
+                bool(result.get("fundamental_pass", False)),
+                int(result.get("pass_count", 0)),
+                bool(result.get("insufficient_data", False)),
+                _json.dumps(result),
+            ))
+        except Exception as exc:
+            errors_list.append(f"{sym}: {exc}")
+            logger.warning("run_fundamentals_local_backfill eval failed for %s: %s", sym, exc)
+
+    # --- pass 3: batch-upsert directly to stock_readiness_daily --------------------------------
+    if srd_rows:
+        try:
+            conn_w = psycopg2.connect(**params)
+            try:
+                with conn_w.cursor() as cur:
+                    cur.executemany(
+                        """
+                        INSERT INTO public.stock_readiness_daily
+                            (as_of_date, symbol, universe_rule_version, price_source,
+                             fund_cache_present, fund_cache_expire_at,
+                             fundamental_pass, fundamental_pass_count, fundamental_insufficient, fundamental_eval)
+                        VALUES (CURRENT_DATE, %s, 'v1', 'massive',
+                                true, now() + (%s || ' seconds')::interval,
+                                %s, %s, %s, %s::jsonb)
+                        ON CONFLICT (as_of_date, symbol, universe_rule_version, price_source) DO UPDATE SET
+                            fund_cache_present      = EXCLUDED.fund_cache_present,
+                            fund_cache_expire_at    = EXCLUDED.fund_cache_expire_at,
+                            fundamental_pass        = EXCLUDED.fundamental_pass,
+                            fundamental_pass_count  = EXCLUDED.fundamental_pass_count,
+                            fundamental_insufficient = EXCLUDED.fundamental_insufficient,
+                            fundamental_eval        = EXCLUDED.fundamental_eval
+                        """,
+                        srd_rows,
+                    )
+                conn_w.commit()
+            finally:
+                conn_w.close()
+        except Exception as e:
+            return {"ok": False, "error": f"Batch stock_readiness_daily upsert failed: {e}"}
+
+    return {
+        "ok": True,
+        "total_symbols": len(syms),
+        "evaluated": len(srd_rows),
+        "no_local_data": no_data,
+        "errors": len(errors_list),
+        "error_samples": errors_list[:10],
+    }
+
+
+def run_technical_local_backfill(
+    status_config: dict,
+    symbols: List[str],
+    *,
+    min_crs: float = 70.0,
+    lookback_days: int = 420,
+    source: str = "massive",
+) -> Dict[str, Any]:
+    """Evaluate SEPA technical conditions (4 tiers) for *all* given symbols using local data.
+
+    Pipeline:
+      1. Batch-read OHLCV + close-only + SPY + short_interest + short_volume.
+      2. Run phase1_engine per symbol → 10 conditions (Core).
+      3. Run crs_engine universe-wide → 1 CRS condition (Core 11th).
+      4. Run technical_engine.evaluate_symbol_all_tiers → Momentum / Structure / Sentiment.
+      5. Merge and batch UPSERT into stock_readiness_daily.
+
+    Core 11 backward compatibility: technical_pass / technical_pass_count /
+    technical_insufficient / top-level conditions[] and metrics[] are identical
+    to the pre-tiered version. New data lives under technical_eval.tiers.*.
+    """
+    import json as _json
+
+    from bifrost_api.research.sepa.crs_engine import compute_crs_scores
+    from bifrost_api.research.sepa.phase1_engine import (
+        Phase1Config,
+        evaluate_symbol_phase1,
+    )
+    from bifrost_api.research.sepa.technical_engine import (
+        TechnicalConfig,
+        evaluate_symbol_all_tiers,
+    )
+    from bifrost_worker.data.massive.vendor.reader import (
+        get_short_interest_recent,
+        get_short_volume_recent,
+        get_spy_close_series,
+        get_stock_day_close_series_for_crs,
+        get_stock_day_series_for_sepa,
+    )
+
+    if not _db_ok(status_config):
+        return {"ok": False, "error": "PostgreSQL not configured"}
+
+    syms = sorted({str(s or "").strip().upper() for s in symbols if str(s or "").strip()})
+    if not syms:
+        return {
+            "ok": True,
+            "total_symbols": 0,
+            "evaluated": 0,
+            "no_local_data": 0,
+            "errors": 0,
+            "error_samples": [],
+        }
+
+    # pass 1: batch-read OHLCV (phase1) + close-only (CRS) + SPY + short data ---------------
+    rows_by_symbol: Dict[str, List[Dict[str, Any]]] = {}
+    crs_rows_by_symbol: Dict[str, List[Dict[str, Any]]] = {}
+    try:
+        rows_by_symbol = get_stock_day_series_for_sepa(
+            status_config, syms, lookback_days=lookback_days, source=source
+        ) or {}
+    except Exception as e:
+        return {"ok": False, "error": f"Phase1 stock_day batch read failed: {e}"}
+    try:
+        crs_rows_by_symbol = get_stock_day_close_series_for_crs(
+            status_config, syms, lookback_days=lookback_days, source=source
+        ) or {}
+    except Exception as e:
+        return {"ok": False, "error": f"CRS stock_day batch read failed: {e}"}
+
+    spy_closes: List[float] = []
+    try:
+        spy_closes = get_spy_close_series(status_config, lookback_days=lookback_days, source=source)
+    except Exception as exc:
+        logger.warning("SPY close series read failed (non-fatal): %s", exc)
+
+    si_by_symbol: Dict[str, List[Dict[str, Any]]] = {}
+    sv_by_symbol: Dict[str, List[Dict[str, Any]]] = {}
+    try:
+        si_by_symbol = get_short_interest_recent(status_config, syms, settlements=6, source=source)
+    except Exception as exc:
+        logger.warning("short_interest read failed (non-fatal): %s", exc)
+    try:
+        sv_by_symbol = get_short_volume_recent(status_config, syms, trade_days=60, source=source)
+    except Exception as exc:
+        logger.warning("short_volume read failed (non-fatal): %s", exc)
+
+    # pass 2: run phase1 evaluation per symbol (10 conditions) ------------------------------
+    phase1_cfg = Phase1Config()
+    phase1_results: Dict[str, Dict[str, Any]] = {}
+    for sym in syms:
+        try:
+            phase1_results[sym] = evaluate_symbol_phase1(
+                sym, rows_by_symbol.get(sym, []), cfg=phase1_cfg
+            )
+        except Exception as exc:
+            logger.warning("phase1 eval failed for %s: %s", sym, exc)
+            phase1_results[sym] = {
+                "symbol": sym,
+                "technical_pass": False,
+                "insufficient_data": True,
+                "conditions": [],
+                "metrics": {},
+                "error": str(exc),
+            }
+
+    # pass 3: run CRS universe-wide (one call covers ALL symbols) ---------------------------
+    try:
+        crs_output = compute_crs_scores(crs_rows_by_symbol, min_crs=min_crs)
+        crs_by_sym: Dict[str, Dict[str, Any]] = {
+            str(r.get("symbol") or "").upper(): r for r in (crs_output.get("results") or [])
+        }
+    except Exception as exc:
+        logger.warning("compute_crs_scores failed: %s", exc)
+        crs_by_sym = {}
+
+    # pass 4: merge core 11 + run all tiers → build upsert rows -----------------------------
+    tech_cfg = TechnicalConfig()
+    srd_rows: List[Tuple] = []
+    no_data = 0
+    errors_list: List[str] = []
+
+    for sym in syms:
+        try:
+            p1 = phase1_results.get(sym, {}) or {}
+            p1_conditions: List[Dict[str, Any]] = list(p1.get("conditions") or [])
+            p1_insufficient = bool(p1.get("insufficient_data", False))
+            p1_metrics: Dict[str, Any] = dict(p1.get("metrics") or {})
+
+            crs = crs_by_sym.get(sym, {})
+            crs_actual = crs.get("crs_score")
+            crs_pass = bool(crs.get("pass", False))
+            crs_insufficient = bool(crs.get("insufficient_data", False))
+
+            crs_condition = {
+                "id": "crs_ge_70",
+                "pass": crs_pass,
+                "actual": crs_actual,
+                "threshold": float(min_crs),
+                "reason": "CRS percentile rank (252-day return vs universe)",
+            }
+
+            all_conditions = p1_conditions + [crs_condition]
+            pass_count = sum(1 for c in all_conditions if c.get("pass"))
+            insufficient = p1_insufficient or crs_insufficient or len(p1_conditions) < 10
+
+            metrics = {
+                **p1_metrics,
+                "ret252": crs.get("ret252"),
+                "crs_score": crs_actual,
+            }
+
+            # Build core_result for technical_engine
+            core_result = {
+                "technical_pass": (pass_count == 11) and not insufficient,
+                "insufficient_data": insufficient,
+                "pass_count": pass_count,
+                "fail_count": 11 - pass_count,
+                "conditions": all_conditions,
+                "metrics": metrics,
+            }
+
+            # Run all 4 tiers through the orchestrator
+            technical_eval = evaluate_symbol_all_tiers(
+                sym,
+                core_result,
+                rows_by_symbol.get(sym, []),
+                spy_closes,
+                si_by_symbol.get(sym, []),
+                sv_by_symbol.get(sym, []),
+                cfg=tech_cfg,
+            )
+
+            if insufficient and len(p1_conditions) < 10:
+                no_data += 1
+
+            srd_rows.append((
+                sym,
+                bool(technical_eval["technical_pass"]),
+                int(technical_eval["pass_count"]),
+                bool(technical_eval["insufficient_data"]),
+                _json.dumps(technical_eval),
+            ))
+        except Exception as exc:
+            errors_list.append(f"{sym}: {exc}")
+            logger.warning("run_technical_local_backfill eval failed for %s: %s", sym, exc)
+
+    # pass 5: batch-upsert directly to stock_readiness_daily --------------------------------
+    if srd_rows:
+        params = _get_conn_params(status_config)
+        params["connect_timeout"] = 15
+        try:
+            conn_w = psycopg2.connect(**params)
+            try:
+                with conn_w.cursor() as cur:
+                    cur.executemany(
+                        """
+                        INSERT INTO public.stock_readiness_daily
+                            (as_of_date, symbol, universe_rule_version, price_source,
+                             technical_pass, technical_pass_count, technical_insufficient, technical_eval)
+                        VALUES (CURRENT_DATE, %s, 'v1', 'massive', %s, %s, %s, %s::jsonb)
+                        ON CONFLICT (as_of_date, symbol, universe_rule_version, price_source) DO UPDATE SET
+                            technical_pass         = EXCLUDED.technical_pass,
+                            technical_pass_count   = EXCLUDED.technical_pass_count,
+                            technical_insufficient = EXCLUDED.technical_insufficient,
+                            technical_eval         = EXCLUDED.technical_eval
+                        """,
+                        srd_rows,
+                    )
+                conn_w.commit()
+            finally:
+                conn_w.close()
+        except Exception as e:
+            return {"ok": False, "error": f"Batch stock_readiness_daily upsert failed: {e}"}
+
+    return {
+        "ok": True,
+        "total_symbols": len(syms),
+        "evaluated": len(srd_rows),
+        "no_local_data": no_data,
+        "errors": len(errors_list),
+        "error_samples": errors_list[:10],
+        "min_crs": float(min_crs),
+        "lookback_days": int(lookback_days),
+    }
+
+
+def compute_sepa_criteria_stats(status_config: dict) -> Dict[str, Any]:
+    """Aggregate SEPA criteria pass rates from existing cache tables (on-demand, no writes).
+
+    Sources:
+    - stock_readiness_daily.fundamental_eval (jsonb containment for per-condition counts)
+    - stock_readiness_daily (technical bar coverage + price_ready for today)
+    """
+    from datetime import datetime, timezone
+
+    if not _db_ok(status_config):
+        return {"ok": False, "error": "PostgreSQL not configured"}
+    params = _get_conn_params(status_config)
+    params["connect_timeout"] = 15
+    try:
+        conn = psycopg2.connect(**params)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Universe count
+            try:
+                cur.execute("SELECT count(*) AS n FROM v_us_equity_universe")
+                universe_count = int((cur.fetchone() or {}).get("n") or 0)
+            except Exception:
+                universe_count = 0
+
+            # --- Fundamental stats: jsonb containment over cache ---
+            fund_result: Dict[str, Any] = {
+                "cached_count": 0,
+                "fund_pass_count": 0,
+                "no_data_count": 0,
+                "conditions": [],
+            }
+            try:
+                # Build per-condition containment expressions (reads from stock_readiness_daily)
+                cond_exprs = []
+                for cid in _FUND_COND_IDS:
+                    safe = cid.replace("'", "")
+                    cond_exprs.append(
+                        f"(fundamental_eval->'conditions' @> "
+                        f"'[{{\"id\":\"{safe}\",\"pass\":true}}]'::jsonb) AS cond_{safe}"
+                    )
+                per_sym_select = ",\n                    ".join(cond_exprs)
+
+                filter_exprs = []
+                for cid in _FUND_COND_IDS:
+                    safe = cid.replace("'", "")
+                    filter_exprs.append(
+                        f"count(*) FILTER (WHERE cond_{safe}) AS {safe}_pass,"
+                        f"\n                count(*) FILTER (WHERE NOT cond_{safe} AND NOT no_data) AS {safe}_fail"
+                    )
+                agg_exprs = ",\n                ".join(filter_exprs)
+
+                sql = f"""
+                    WITH snapshot AS (
+                        SELECT
+                            fundamental_eval,
+                            (fundamental_eval->>'fundamental_pass')::boolean  AS fund_pass,
+                            (fundamental_eval->>'insufficient_data')::boolean AS no_data
+                        FROM public.stock_readiness_daily
+                        WHERE as_of_date = CURRENT_DATE
+                          AND included_in_universe = true
+                          AND fundamental_eval IS NOT NULL
+                    ),
+                    per_sym AS (
+                        SELECT
+                            fund_pass,
+                            no_data,
+                            {per_sym_select}
+                        FROM snapshot
+                    )
+                    SELECT
+                        count(*) AS cached_count,
+                        count(*) FILTER (WHERE fund_pass)  AS fund_pass_count,
+                        count(*) FILTER (WHERE no_data)    AS no_data_count,
+                        {agg_exprs}
+                    FROM per_sym
+                """
+                cur.execute(sql)
+                row = cur.fetchone() or {}
+                fund_result["cached_count"] = int(row.get("cached_count") or 0)
+                fund_result["fund_pass_count"] = int(row.get("fund_pass_count") or 0)
+                fund_result["no_data_count"] = int(row.get("no_data_count") or 0)
+                no_data_n = fund_result["no_data_count"]
+                conditions = []
+                for cid in _FUND_COND_IDS:
+                    safe = cid.replace("'", "")
+                    p = int(row.get(f"{safe}_pass") or 0)
+                    f_ = int(row.get(f"{safe}_fail") or 0)
+                    nd = fund_result["cached_count"] - p - f_
+                    if nd < 0:
+                        nd = no_data_n
+                    conditions.append({
+                        "id": cid,
+                        "group": _FUND_COND_GROUP.get(cid, "sepa_core"),
+                        "label": _FUND_COND_LABELS.get(cid, cid),
+                        "pass": p,
+                        "fail": f_,
+                        "no_data": nd,
+                        "total": fund_result["cached_count"],
+                    })
+                fund_result["conditions"] = conditions
+
+                # Build groups map for frontend
+                from collections import defaultdict as _ddict
+                _groups_map: Dict[str, Any] = {}
+                _conds_by_group: Dict[str, list] = _ddict(list)
+                for c in conditions:
+                    _conds_by_group[c["group"]].append(c)
+                for gk, gconds in _conds_by_group.items():
+                    _groups_map[gk] = {
+                        "cached_count": fund_result["cached_count"],
+                        "pass_count": sum(c["pass"] for c in gconds),
+                        "conditions": gconds,
+                    }
+                fund_result["groups"] = _groups_map
+            except Exception as e:
+                logger.warning("criteria_stats fundamental query failed: %s", e)
+
+            # --- Fundamental pass-count distribution (0–8 conditions) ---
+            try:
+                cur.execute("""
+                    SELECT
+                        coalesce((fundamental_eval->>'pass_count')::int, 0) AS conditions_passed,
+                        count(*)::int AS symbol_count
+                    FROM public.stock_readiness_daily
+                    WHERE as_of_date = CURRENT_DATE
+                      AND included_in_universe = true
+                      AND fundamental_eval IS NOT NULL
+                      AND coalesce((fundamental_eval->>'insufficient_data')::boolean, false) IS NOT TRUE
+                    GROUP BY 1
+                    ORDER BY 1 DESC
+                """)
+                dist_rows = cur.fetchall() or []
+                dist_map = {int(r.get("conditions_passed") or 0): int(r.get("symbol_count") or 0) for r in dist_rows}
+                fund_result["pass_count_distribution"] = [
+                    {"conditions_passed": i, "symbol_count": dist_map.get(i, 0)}
+                    for i in range(8, -1, -1)
+                ]
+            except Exception as e:
+                logger.debug("criteria_stats pass_count_distribution query failed: %s", e)
+                fund_result["pass_count_distribution"] = []
+
+            # --- Technical stats: stock_readiness_daily ---
+            tech_result: Dict[str, Any] = {}
+            failure_reasons: List[Dict[str, Any]] = []
+            try:
+                cur.execute("""
+                    SELECT
+                        count(*)                                            AS total_in_snapshot,
+                        count(*) FILTER (WHERE price_ready)                AS price_ready_count,
+                        count(*) FILTER (WHERE fund_cache_present)         AS fund_cached_count,
+                        count(*) FILTER (WHERE price_ready
+                                           AND fund_cache_present)         AS both_ready,
+                        count(*) FILTER (WHERE bar_count_lookback >= 252)  AS bars_ge_252,
+                        count(*) FILTER (WHERE bar_count_lookback >= 240)  AS bars_ge_240,
+                        count(*) FILTER (WHERE bar_count_lookback >= 200)  AS bars_ge_200,
+                        count(*) FILTER (WHERE bar_count_lookback BETWEEN 1 AND 199) AS bars_lt_200,
+                        count(*) FILTER (WHERE bar_count_lookback = 0)     AS no_bars,
+                        count(*) FILTER (WHERE technical_eval IS NOT NULL) AS tech_cached_count,
+                        count(*) FILTER (WHERE technical_pass)             AS tech_pass_count,
+                        count(*) FILTER (WHERE technical_insufficient)     AS tech_insufficient_count
+                    FROM public.stock_readiness_daily
+                    WHERE as_of_date = CURRENT_DATE
+                      AND included_in_universe = true
+                """)
+                tech_result = dict(cur.fetchone() or {})
+                for k in list(tech_result):
+                    tech_result[k] = int(tech_result[k] or 0)
+            except Exception as e:
+                logger.warning("criteria_stats technical query failed: %s", e)
+
+            try:
+                cur.execute("""
+                    SELECT coalesce(notes, 'unknown') AS notes, count(*) AS cnt
+                    FROM public.stock_readiness_daily
+                    WHERE as_of_date = CURRENT_DATE
+                      AND included_in_universe = true
+                      AND price_ready = false
+                    GROUP BY notes ORDER BY cnt DESC
+                """)
+                failure_reasons = [{"notes": r.get("notes"), "cnt": int(r.get("cnt") or 0)} for r in cur.fetchall()]
+            except Exception as e:
+                logger.debug("criteria_stats failure_reasons query failed: %s", e)
+
+            # --- Technical per-condition pass/fail (jsonb_array_elements) ---
+            tech_conditions: List[Dict[str, Any]] = []
+            try:
+                cur.execute(
+                    """
+                    SELECT
+                        cond->>'id'                                          AS id,
+                        count(*) FILTER (WHERE (cond->>'pass')::boolean)     AS pass,
+                        count(*) FILTER (WHERE NOT (cond->>'pass')::boolean) AS fail
+                    FROM public.stock_readiness_daily,
+                         jsonb_array_elements(technical_eval->'conditions') AS cond
+                    WHERE as_of_date = CURRENT_DATE
+                      AND included_in_universe = true
+                      AND technical_eval IS NOT NULL
+                      AND coalesce((technical_eval->>'insufficient_data')::boolean, false) IS NOT TRUE
+                    GROUP BY cond->>'id'
+                    """
+                )
+                row_map = {
+                    str(r.get("id") or ""): {
+                        "pass": int(r.get("pass") or 0),
+                        "fail": int(r.get("fail") or 0),
+                    }
+                    for r in (cur.fetchall() or [])
+                }
+                for cid in _TECH_COND_IDS:
+                    bucket = row_map.get(cid, {"pass": 0, "fail": 0})
+                    tech_conditions.append({
+                        "id": cid,
+                        "label": _TECH_COND_LABELS.get(cid, cid),
+                        "pass": int(bucket["pass"]),
+                        "fail": int(bucket["fail"]),
+                    })
+            except Exception as e:
+                logger.warning("criteria_stats technical per-condition query failed: %s", e)
+                tech_conditions = [
+                    {"id": cid, "label": _TECH_COND_LABELS.get(cid, cid), "pass": 0, "fail": 0}
+                    for cid in _TECH_COND_IDS
+                ]
+
+            # --- Tier 2: Momentum per-indicator pass/fail ---
+            momentum_conditions: List[Dict[str, Any]] = []
+            try:
+                cur.execute(
+                    """
+                    SELECT
+                        ind->>'id'                                          AS id,
+                        count(*) FILTER (WHERE (ind->>'pass')::boolean)     AS pass,
+                        count(*) FILTER (WHERE NOT (ind->>'pass')::boolean) AS fail
+                    FROM public.stock_readiness_daily,
+                         jsonb_array_elements(technical_eval->'tiers'->'momentum'->'indicators') AS ind
+                    WHERE as_of_date = CURRENT_DATE
+                      AND included_in_universe = true
+                      AND technical_eval IS NOT NULL
+                      AND technical_eval->'tiers'->'momentum'->'indicators' IS NOT NULL
+                      AND coalesce((technical_eval->>'insufficient_data')::boolean, false) IS NOT TRUE
+                    GROUP BY ind->>'id'
+                    """
+                )
+                m_row_map = {
+                    str(r.get("id") or ""): {
+                        "pass": int(r.get("pass") or 0),
+                        "fail": int(r.get("fail") or 0),
+                    }
+                    for r in (cur.fetchall() or [])
+                }
+                for cid in _MOMENTUM_IND_IDS:
+                    bucket = m_row_map.get(cid, {"pass": 0, "fail": 0})
+                    momentum_conditions.append({
+                        "id": cid,
+                        "label": _MOMENTUM_IND_LABELS.get(cid, cid),
+                        "pass": int(bucket["pass"]),
+                        "fail": int(bucket["fail"]),
+                        "tier": "momentum",
+                    })
+            except Exception as e:
+                logger.debug("criteria_stats momentum per-indicator query failed: %s", e)
+                momentum_conditions = [
+                    {"id": cid, "label": _MOMENTUM_IND_LABELS.get(cid, cid), "pass": 0, "fail": 0, "tier": "momentum"}
+                    for cid in _MOMENTUM_IND_IDS
+                ]
+
+            # --- Tier 2: Momentum score distribution (0..10) ---
+            momentum_score_dist: list = []
+            try:
+                cur.execute("""
+                    SELECT
+                        coalesce((technical_eval->'tiers'->'momentum'->>'score')::int, 0) AS score,
+                        count(*)::int AS symbol_count
+                    FROM public.stock_readiness_daily
+                    WHERE as_of_date = CURRENT_DATE
+                      AND included_in_universe = true
+                      AND technical_eval IS NOT NULL
+                      AND technical_eval->'tiers'->'momentum' IS NOT NULL
+                      AND coalesce((technical_eval->>'insufficient_data')::boolean, false) IS NOT TRUE
+                    GROUP BY 1
+                    ORDER BY 1 DESC
+                """)
+                dist_rows = cur.fetchall() or []
+                m_dist_map = {int(r.get("score") or 0): int(r.get("symbol_count") or 0) for r in dist_rows}
+                momentum_score_dist = [
+                    {"score": i, "symbol_count": m_dist_map.get(i, 0)}
+                    for i in range(10, -1, -1)
+                ]
+            except Exception as e:
+                logger.debug("criteria_stats momentum_score_distribution query failed: %s", e)
+
+            # --- Tier 3: Structure per-diagnostic active/inactive ---
+            structure_conditions: List[Dict[str, Any]] = []
+            try:
+                cur.execute(
+                    """
+                    SELECT
+                        diag->>'id'                                            AS id,
+                        count(*) FILTER (WHERE (diag->>'active')::boolean)     AS active,
+                        count(*) FILTER (WHERE NOT (diag->>'active')::boolean) AS inactive
+                    FROM public.stock_readiness_daily,
+                         jsonb_array_elements(technical_eval->'tiers'->'structure'->'diagnostics') AS diag
+                    WHERE as_of_date = CURRENT_DATE
+                      AND included_in_universe = true
+                      AND technical_eval IS NOT NULL
+                      AND technical_eval->'tiers'->'structure'->'diagnostics' IS NOT NULL
+                      AND coalesce((technical_eval->>'insufficient_data')::boolean, false) IS NOT TRUE
+                    GROUP BY diag->>'id'
+                    """
+                )
+                s_row_map = {
+                    str(r.get("id") or ""): {
+                        "pass": int(r.get("active") or 0),
+                        "fail": int(r.get("inactive") or 0),
+                    }
+                    for r in (cur.fetchall() or [])
+                }
+                for cid in _STRUCTURE_DIAG_IDS:
+                    bucket = s_row_map.get(cid, {"pass": 0, "fail": 0})
+                    structure_conditions.append({
+                        "id": cid,
+                        "label": _STRUCTURE_DIAG_LABELS.get(cid, cid),
+                        "pass": int(bucket["pass"]),
+                        "fail": int(bucket["fail"]),
+                        "tier": "structure",
+                    })
+            except Exception as e:
+                logger.debug("criteria_stats structure per-diagnostic query failed: %s", e)
+                structure_conditions = [
+                    {"id": cid, "label": _STRUCTURE_DIAG_LABELS.get(cid, cid), "pass": 0, "fail": 0, "tier": "structure"}
+                    for cid in _STRUCTURE_DIAG_IDS
+                ]
+
+            # --- Tier 4: Sentiment per-indicator pass/fail ---
+            sentiment_conditions: List[Dict[str, Any]] = []
+            try:
+                cur.execute(
+                    """
+                    SELECT
+                        ind->>'id'                                          AS id,
+                        count(*) FILTER (WHERE (ind->>'pass')::boolean)     AS pass,
+                        count(*) FILTER (WHERE NOT (ind->>'pass')::boolean) AS fail
+                    FROM public.stock_readiness_daily,
+                         jsonb_array_elements(technical_eval->'tiers'->'sentiment'->'indicators') AS ind
+                    WHERE as_of_date = CURRENT_DATE
+                      AND included_in_universe = true
+                      AND technical_eval IS NOT NULL
+                      AND technical_eval->'tiers'->'sentiment'->'indicators' IS NOT NULL
+                      AND coalesce((technical_eval->>'insufficient_data')::boolean, false) IS NOT TRUE
+                    GROUP BY ind->>'id'
+                    """
+                )
+                st_row_map = {
+                    str(r.get("id") or ""): {
+                        "pass": int(r.get("pass") or 0),
+                        "fail": int(r.get("fail") or 0),
+                    }
+                    for r in (cur.fetchall() or [])
+                }
+                for cid in _SENTIMENT_IND_IDS:
+                    bucket = st_row_map.get(cid, {"pass": 0, "fail": 0})
+                    sentiment_conditions.append({
+                        "id": cid,
+                        "label": _SENTIMENT_IND_LABELS.get(cid, cid),
+                        "pass": int(bucket["pass"]),
+                        "fail": int(bucket["fail"]),
+                        "tier": "sentiment",
+                    })
+            except Exception as e:
+                logger.debug("criteria_stats sentiment per-indicator query failed: %s", e)
+                sentiment_conditions = [
+                    {"id": cid, "label": _SENTIMENT_IND_LABELS.get(cid, cid), "pass": 0, "fail": 0, "tier": "sentiment"}
+                    for cid in _SENTIMENT_IND_IDS
+                ]
+
+            # --- Technical pass-count distribution (0–11 conditions) ---
+            tech_dist: list = []
+            try:
+                cur.execute("""
+                    SELECT
+                        coalesce(technical_pass_count, 0) AS conditions_passed,
+                        count(*)::int AS symbol_count
+                    FROM public.stock_readiness_daily
+                    WHERE as_of_date = CURRENT_DATE
+                      AND included_in_universe = true
+                      AND technical_eval IS NOT NULL
+                      AND coalesce((technical_eval->>'insufficient_data')::boolean, false) IS NOT TRUE
+                    GROUP BY 1
+                    ORDER BY 1 DESC
+                """)
+                dist_rows = cur.fetchall() or []
+                dist_map = {int(r.get("conditions_passed") or 0): int(r.get("symbol_count") or 0) for r in dist_rows}
+                tech_dist = [
+                    {"conditions_passed": i, "symbol_count": dist_map.get(i, 0)}
+                    for i in range(11, -1, -1)
+                ]
+            except Exception as e:
+                logger.debug("criteria_stats tech_pass_count_distribution query failed: %s", e)
+                tech_dist = []
+
+        return {
+            "ok": True,
+            "universe_count": universe_count,
+            "fundamental": fund_result,
+            "technical": {
+                **tech_result,
+                "failure_reasons": failure_reasons,
+                "conditions": tech_conditions,
+                "pass_count_distribution": tech_dist,
+                "momentum_conditions": momentum_conditions,
+                "momentum_score_distribution": momentum_score_dist,
+                "structure_conditions": structure_conditions,
+                "sentiment_conditions": sentiment_conditions,
+            },
+            "computed_at": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    finally:
+        conn.close()
+
+
+def compute_data_inventory_stats(status_config: dict) -> Dict[str, Any]:
+    """Return fill-rate counts for unused financial table columns scoped to the SEPA universe.
+
+    Each table is a single aggregation query; results are keyed by table → column → filled_symbol_count.
+    """
+    if not _db_ok(status_config):
+        return {"ok": False, "error": "PostgreSQL not configured"}
+    params = _get_conn_params(status_config)
+    params["connect_timeout"] = 15
+    try:
+        conn = psycopg2.connect(**params)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    tables_spec: Dict[str, List[str]] = {
+        "stock_ratios": [
+            "return_on_equity", "price_to_earnings", "debt_to_equity",
+            "price_to_book", "price_to_sales", "return_on_assets",
+            "market_cap", "free_cash_flow", "price_to_free_cash_flow",
+            "ev_to_ebitda", "ev_to_sales", "enterprise_value",
+        ],
+        "stock_balance_sheets": [
+            "total_equity", "long_term_debt_and_capital_lease_obligations",
+            "cash_and_equivalents", "total_current_assets", "total_current_liabilities",
+            "total_assets", "total_liabilities", "retained_earnings_deficit",
+            "goodwill", "intangible_assets_net",
+        ],
+        "stock_cash_flows": [
+            "net_cash_from_operating_activities",
+            "purchase_of_property_plant_and_equipment",
+            "net_cash_from_investing_activities",
+            "net_cash_from_financing_activities",
+            "cash_from_operating_activities_continuing_operations",
+        ],
+        "stock_income_statements": [
+            "gross_profit", "operating_income", "ebitda",
+            "cost_of_revenue", "research_development", "selling_general_administrative",
+            "diluted_earnings_per_share",
+        ],
+        "stock_short_interest": [
+            "short_interest", "days_to_cover", "avg_daily_volume",
+        ],
+        "stock_short_volume": [
+            "short_volume_ratio", "total_volume", "short_volume",
+        ],
+    }
+
+    result: Dict[str, Dict[str, int]] = {}
+    universe_count = 0
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
+                cur.execute("SELECT count(*) AS n FROM v_us_equity_universe")
+                universe_count = int((cur.fetchone() or {}).get("n") or 0)
+            except Exception:
+                pass
+
+            for table, columns in tables_spec.items():
+                if not columns:
+                    continue
+                agg_parts = ", ".join(
+                    f"count(DISTINCT t.symbol) FILTER (WHERE t.{col} IS NOT NULL) AS {col}"
+                    for col in columns
+                )
+                try:
+                    cur.execute(f"""
+                        SELECT {agg_parts}
+                        FROM public.{table} t
+                        WHERE t.symbol IN (SELECT symbol FROM v_us_equity_universe)
+                    """)
+                    row = dict(cur.fetchone() or {})
+                    result[table] = {col: int(row.get(col) or 0) for col in columns}
+                except Exception as e:
+                    logger.debug("data_inventory fill rate query failed for %s: %s", table, e)
+                    result[table] = {col: 0 for col in columns}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    finally:
+        conn.close()
+
+    return {"ok": True, "universe_count": universe_count, "tables": result}
+
+
+def get_sepa_grouped_backfill_dates(
+    status_config: dict,
+    *,
+    days_back: int = 420,
+) -> Dict[str, Any]:
+    """Return weekday dates in the past `days_back` days where stock_day has fewer than 1000 symbols.
+
+    Dates with < 1000 symbols indicate either no data at all or watchlist-only partial data.
+    Grouped Daily API covers the full market in one call, so any date it ran should have 5000+ rows.
+
+    Returns: {ok, missing_dates: [str], missing_count, checked_dates}
+    """
+    if not _db_ok(status_config):
+        return {"ok": False, "error": "PostgreSQL not configured"}
+    params = _get_conn_params(status_config)
+    params["connect_timeout"] = 15
+    try:
+        conn = psycopg2.connect(**params)
+    except Exception as e:
+        logger.warning("get_sepa_grouped_backfill_dates connect failed: %s", e)
+        return {"ok": False, "error": str(e)}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET statement_timeout = 45000")
+            cur.execute(
+                """
+                WITH date_series AS (
+                    SELECT generate_series(
+                        (CURRENT_DATE - %(days_back)s::int)::date,
+                        (CURRENT_DATE - 1)::date,
+                        '1 day'::interval
+                    )::date AS d
+                ),
+                weekdays AS (
+                    SELECT d FROM date_series
+                    WHERE EXTRACT(dow FROM d) BETWEEN 1 AND 5
+                      AND d NOT IN (
+                          SELECT holiday_date FROM public.reference_us_holidays
+                          WHERE exchange = 'NYSE'
+                            AND (status IS NULL OR status = 'closed')
+                      )
+                ),
+                coverage AS (
+                    SELECT
+                        w.d,
+                        count(DISTINCT sd.symbol)::int AS symbol_count
+                    FROM weekdays w
+                    LEFT JOIN public.stock_day sd
+                        ON sd.bar_time::date = w.d
+                        AND sd.source = 'massive'
+                    GROUP BY w.d
+                )
+                SELECT
+                    d::text AS dt,
+                    symbol_count,
+                    count(*) OVER () AS total_checked
+                FROM coverage
+                WHERE symbol_count < 1000
+                ORDER BY d
+                """,
+                {"days_back": int(days_back)},
+            )
+            rows = cur.fetchall() or []
+        # Window column total_checked equals len(rows) for this query; avoid rows[0][2]
+        # (tuple/RealDictRow shape mismatches caused IndexError / KeyError in the wild).
+        total_low_cov_days = len(rows)
+        missing_dates: List[str] = []
+        for r in rows:
+            if isinstance(r, dict):
+                dt_v = r.get("dt")
+            else:
+                try:
+                    dt_v = r[0]
+                except (IndexError, TypeError, KeyError):
+                    dt_v = None
+            if dt_v is not None and str(dt_v).strip():
+                missing_dates.append(str(dt_v).strip())
+        return {
+            "ok": True,
+            "missing_dates": missing_dates,
+            "missing_count": len(missing_dates),
+            "checked_dates": total_low_cov_days,
+        }
+    except Exception as e:
+        logger.warning("get_sepa_grouped_backfill_dates query failed: %s", e)
+        return {"ok": False, "error": str(e)}
+    finally:
+        conn.close()
+
+
+def _stock_day_gap_reason_row(r: Dict[str, Any]) -> str:
+    """Human-readable reason for one gap row (vendor calendar vs readiness fallback)."""
+    if r.get("is_vendor_gap"):
+        vd = r.get("vendor_day") or "?"
+        mx = r.get("last_bar_max")
+        mx_s = str(mx) if mx is not None else "none"
+        return f"vendor NY date {vd} ahead of last massive daily bar ({mx_s})"
+    br = int(r.get("bar_rows") or 0)
+    last_bar = r.get("last_bar_date")
+    null_close = int(r.get("null_close_rows") or 0)
+    null_vol = int(r.get("null_volume_rows") or 0)
+    if br == 0 or last_bar is None:
+        return "snapshot row but no last_minute_updated — fallback: no bars in 420d window (readiness)"
+    if br < 240:
+        return f"snapshot row but no last_minute_updated — fallback: insufficient bars ({br}/240 required)"
+    if null_close > 0 or null_vol > 0:
+        return (
+            "snapshot row but no last_minute_updated — fallback: null data "
+            f"(close={null_close} volume={null_vol})"
+        )
+    return "snapshot row but no last_minute_updated — fallback: stale last bar (> 7 calendar days ago)"
+
+
+def get_sepa_price_gap_details(
+    status_config: dict,
+    *,
+    limit: int = 2000,
+) -> Dict[str, Any]:
+    """Return per-symbol gaps for Step 3 stock_day checks.
+
+    Any snapshot-based gap requires a ``cache_stock_snapshot`` row with **non-null**
+    ``session_close``; otherwise that symbol is not checked against ``stock_day`` or readiness
+    for Step 3 gaps. **Vendor fill gap**: ``last_minute_updated`` set, NY calendar date strictly
+    after ``max(stock_day.bar_time)``, and latest daily ``close`` not within tolerance of
+    ``session_close``. **Fallback gap**: same non-null ``session_close``, ``last_minute_updated``
+    NULL, and ``NOT price_ready`` on the readiness view (or no row there). ``WARRANT`` tickers
+    are excluded. **No snapshot row** → never a gap.
+
+    Returns: {ok, total_gap_count, returned, items: [..., last_stock_day_close, session_close, reason]}
+    """
+    if not _db_ok(status_config):
+        return {"ok": False, "error": "PostgreSQL not configured"}
+    params = _get_conn_params(status_config)
+    params["connect_timeout"] = 15
+    try:
+        conn = psycopg2.connect(**params)
+    except Exception as e:
+        logger.warning("get_sepa_price_gap_details connect failed: %s", e)
+        return {"ok": False, "error": str(e)}
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SET statement_timeout = 45000")
+            try:
+                cur.execute("SET LOCAL jit = off")
+            except Exception:
+                pass
+            cur.execute(
+                f"""
+                WITH {_STOCK_DAY_VENDOR_GAP_CANDIDATE_SQL},
+                gap_rows AS (
+                    SELECT * FROM cand WHERE is_vendor_gap OR is_fallback_gap
+                )
+                SELECT
+                    symbol,
+                    bar_rows,
+                    first_bar_date,
+                    last_bar_date,
+                    null_close_rows,
+                    null_volume_rows,
+                    vendor_day::text AS vendor_day,
+                    last_bar_max::text AS last_bar_max_date,
+                    last_bar_day_close::float8 AS last_stock_day_close,
+                    session_close::float8 AS session_close,
+                    is_vendor_gap,
+                    is_fallback_gap,
+                    count(*) OVER () AS total_count
+                FROM gap_rows
+                ORDER BY is_vendor_gap DESC, bar_rows ASC NULLS LAST, symbol
+                LIMIT %(limit)s
+                """,
+                {"limit": int(limit)},
+            )
+            rows = cur.fetchall() or []
+        total_gap_count = int(rows[0]["total_count"]) if rows else 0
+        items: List[Dict[str, Any]] = []
+        for r in rows:
+            bar_rows = int(r.get("bar_rows") or 0)
+            null_close = int(r.get("null_close_rows") or 0)
+            null_vol = int(r.get("null_volume_rows") or 0)
+            last_bar = r.get("last_bar_date")
+            items.append({
+                "symbol": r.get("symbol"),
+                "bar_rows": bar_rows,
+                "first_bar_date": r.get("first_bar_date"),
+                "last_bar_date": last_bar,
+                "null_close_rows": null_close,
+                "null_volume_rows": null_vol,
+                "vendor_day": r.get("vendor_day"),
+                "last_bar_max_date": r.get("last_bar_max_date"),
+                "last_stock_day_close": r.get("last_stock_day_close"),
+                "session_close": r.get("session_close"),
+                "reason": _stock_day_gap_reason_row(r),
+            })
+        return {
+            "ok": True,
+            "total_gap_count": total_gap_count,
+            "returned": len(items),
+            "items": items,
+        }
+    except Exception as e:
+        logger.warning("get_sepa_price_gap_details query failed: %s", e)
+        return {"ok": False, "error": str(e)}
+    finally:
+        conn.close()
+
+
+def get_sepa_price_gap_symbols(
+    status_config: dict,
+    *,
+    batch_size: int = 50,
+) -> Dict[str, Any]:
+    """Return symbols matching the Step 3 vendor-calendar / readiness fallback gap rule (see get_sepa_price_gap_details).
+
+    Returns: {ok, gap_count, batches: [[symbol, ...], ...]}
+    """
+    if not _db_ok(status_config):
+        return {"ok": False, "error": "PostgreSQL not configured"}
+    params = _get_conn_params(status_config)
+    params["connect_timeout"] = 15
+    try:
+        conn = psycopg2.connect(**params)
+    except Exception as e:
+        logger.warning("get_sepa_price_gap_symbols connect failed: %s", e)
+        return {"ok": False, "error": str(e)}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET statement_timeout = 30000")
+            try:
+                cur.execute("SET LOCAL jit = off")
+            except Exception:
+                pass
+            cur.execute(
+                f"""
+                WITH {_STOCK_DAY_VENDOR_GAP_CANDIDATE_SQL}
+                SELECT symbol
+                FROM cand
+                WHERE is_vendor_gap OR is_fallback_gap
+                ORDER BY symbol
+                """
+            )
+            rows = cur.fetchall() or []
+        symbols: List[str] = []
+        for r in rows:
+            if not r:
+                continue
+            if isinstance(r, dict):
+                s = r.get("symbol")
+            else:
+                try:
+                    s = r[0]
+                except (IndexError, TypeError, KeyError):
+                    s = None
+            if s is None or s == "":
+                continue
+            symbols.append(str(s).strip().upper())
+        batches: List[List[str]] = [
+            symbols[i : i + batch_size] for i in range(0, len(symbols), batch_size)
+        ]
+        return {"ok": True, "gap_count": len(symbols), "batches": batches}
+    except Exception as e:
+        logger.warning("get_sepa_price_gap_symbols query failed: %s", e)
+        return {"ok": False, "error": str(e)}
+    finally:
+        conn.close()
