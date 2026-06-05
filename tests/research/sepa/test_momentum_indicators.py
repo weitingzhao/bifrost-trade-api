@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from src.research.sepa.momentum_indicators import (
+from bifrost_api.research.sepa.momentum_indicators import (
     MomentumConfig,
     _ema,
     _macd_histogram,

@@ -98,7 +98,7 @@ class TestDocsHealth:
 class TestDocsOpenApi:
     def test_prefixed_openapi_json(self):
         client = _make_client()
-        with patch("backend.docs.app.fetch_openapi") as m:
+        with patch("bifrost_api.docs_api.app.fetch_openapi") as m:
             m.side_effect = [
                 _minimal_openapi("Main"),
                 _minimal_openapi("Massive"),
@@ -111,7 +111,7 @@ class TestDocsOpenApi:
 
     def test_swagger_ui_prefixed(self):
         client = _make_client()
-        with patch("backend.docs.app.fetch_openapi") as m:
+        with patch("bifrost_api.docs_api.app.fetch_openapi") as m:
             m.side_effect = [_minimal_openapi(), _minimal_openapi(), _minimal_openapi()]
             r = client.get(f"{DOCS_PATH_PREFIX}/docs")
         assert r.status_code == 200
@@ -119,7 +119,7 @@ class TestDocsOpenApi:
 
     def test_redoc_prefixed(self):
         client = _make_client()
-        with patch("backend.docs.app.fetch_openapi") as m:
+        with patch("bifrost_api.docs_api.app.fetch_openapi") as m:
             m.side_effect = [_minimal_openapi(), _minimal_openapi(), _minimal_openapi()]
             r = client.get(f"{DOCS_PATH_PREFIX}/redoc")
         assert r.status_code == 200

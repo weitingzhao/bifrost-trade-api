@@ -6,7 +6,7 @@ tables (empty rows → insufficient), and normal pass/fail behavior.
 
 import pytest
 
-from src.research.sepa.fundamentals_ext_engine import (
+from bifrost_api.research.sepa.fundamentals_ext_engine import (
     FundamentalsExtConfig,
     evaluate_balance_group,
     evaluate_cashflow_group,

@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from src.research.sepa.structure_indicators import (
+from bifrost_api.research.sepa.structure_indicators import (
     StructureConfig,
     compute_adx,
     compute_aroon_oscillator,

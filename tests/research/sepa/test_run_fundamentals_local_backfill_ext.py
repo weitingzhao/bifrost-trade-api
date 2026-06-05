@@ -15,8 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.research.sepa.fundamentals_engine import evaluate_fundamentals, FundamentalsConfig
-from src.research.sepa.fundamentals_ext_engine import (
+from bifrost_api.research.sepa.fundamentals_engine import evaluate_fundamentals, FundamentalsConfig
+from bifrost_api.research.sepa.fundamentals_ext_engine import (
     FundamentalsExtConfig,
     evaluate_balance_group,
     evaluate_cashflow_group,

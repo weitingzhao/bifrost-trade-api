@@ -125,9 +125,9 @@ class TestMassiveHealth:
         assert "PostgreSQL" in str(body.get("error", ""))
 
     @patch("psycopg2.connect")
-    @patch("src.vendor.massive.reader.get_watchlist_optionable_stk_symbols", return_value=["NVDA"])
-    @patch("src.persistence.postgres.connection._get_conn_params", return_value={})
-    @patch("backend.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
+    @patch("bifrost_worker.data.massive.vendor.reader.get_watchlist_optionable_stk_symbols", return_value=["NVDA"])
+    @patch("bifrost_core.persistence.postgres.connection._get_conn_params", return_value={})
+    @patch("bifrost_api.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
     def test_watchlist_db_coverage_option_contracts_json_shape(self, _mock_db, _gp, _syms, mock_connect):
         """When PostgreSQL returns aggregates, option_contracts includes coverage + age fields."""
         newest = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -202,9 +202,9 @@ class TestMassiveHealth:
         assert row0["tickers"]["tickers_id"] == 1
         assert row0["ticker_overview"]["has_data"] is True
 
-    @patch("src.vendor.massive.contracts_reference_gap.compute_option_contracts_reference_gap")
+    @patch("bifrost_worker.data.massive.vendor.contracts_reference_gap.compute_option_contracts_reference_gap")
     @patch("psycopg2.connect")
-    @patch("backend.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
+    @patch("bifrost_api.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
     def test_option_contracts_reference_gap_get_ok(self, _mock_db, mock_connect, mock_compute):
         mock_compute.return_value = {
             "ok": True,
@@ -237,9 +237,9 @@ class TestMassiveHealth:
         assert body.get("gap") == 2
         mock_compute.assert_called_once()
 
-    @patch("src.vendor.massive.contracts_reference_gap.compute_option_contracts_reference_gap")
+    @patch("bifrost_worker.data.massive.vendor.contracts_reference_gap.compute_option_contracts_reference_gap")
     @patch("psycopg2.connect")
-    @patch("backend.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
+    @patch("bifrost_api.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
     def test_option_contracts_reference_gap_get_passes_max_expiries(self, _mock_db, mock_connect, mock_compute):
         mock_compute.return_value = {
             "ok": True,
@@ -276,9 +276,9 @@ class TestMassiveHealth:
         assert kwargs.get("max_expiries") == 90
         assert kwargs.get("max_pages_per_expiry") == 25
 
-    @patch("src.vendor.massive.contracts_reference_gap.compute_option_contracts_reference_gap")
+    @patch("bifrost_worker.data.massive.vendor.contracts_reference_gap.compute_option_contracts_reference_gap")
     @patch("psycopg2.connect")
-    @patch("backend.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
+    @patch("bifrost_api.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
     def test_option_contracts_reference_gap_batch_ok(self, _mock_db, mock_connect, mock_compute):
         mock_compute.side_effect = [
             {"ok": True, "symbol": "NVDA", "has_rows": True, "pg_total": 1, "massive_total": 1, "gap": 0},
@@ -305,9 +305,9 @@ class TestMassiveHealth:
         assert res.get("AAPL", {}).get("gap") == 1
         assert mock_compute.call_count == 2
 
-    @patch("src.vendor.massive.contracts_reference_gap.compute_option_contracts_reference_gap")
+    @patch("bifrost_worker.data.massive.vendor.contracts_reference_gap.compute_option_contracts_reference_gap")
     @patch("psycopg2.connect")
-    @patch("backend.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
+    @patch("bifrost_api.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
     def test_option_contracts_reference_gap_batch_passes_max_expiries(self, _mock_db, mock_connect, mock_compute):
         mock_compute.side_effect = [
             {"ok": True, "symbol": "NVDA", "has_rows": True, "pg_total": 1, "massive_total": 1, "gap": 0},
@@ -339,8 +339,8 @@ class TestMassiveHealth:
         assert r.json().get("ok") is False
         assert "PostgreSQL" in str(r.json().get("error", ""))
 
-    @patch("src.vendor.massive.config.get_massive_settings")
-    @patch("backend.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
+    @patch("bifrost_worker.data.massive.vendor.config.get_massive_settings")
+    @patch("bifrost_api.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
     def test_option_contracts_reference_gap_requires_api_key(self, _mock_db, mock_ms):
         mock_ms.return_value = {
             "api_key": "",
@@ -357,9 +357,9 @@ class TestMassiveHealth:
         assert body.get("ok") is False
         assert "API key" in str(body.get("error", ""))
 
-    @patch("src.vendor.massive.snapshots_contracts_gap.compute_option_snapshots_contracts_gap")
+    @patch("bifrost_worker.data.massive.vendor.snapshots_contracts_gap.compute_option_snapshots_contracts_gap")
     @patch("psycopg2.connect")
-    @patch("backend.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
+    @patch("bifrost_api.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
     def test_option_snapshots_contracts_gap_get_ok(self, _mock_db, mock_connect, mock_compute):
         mock_compute.return_value = {
             "ok": True,
@@ -392,9 +392,9 @@ class TestMassiveHealth:
         assert body.get("gap") == 2
         mock_compute.assert_called_once()
 
-    @patch("src.vendor.massive.snapshots_contracts_gap.compute_option_snapshots_contracts_gap")
+    @patch("bifrost_worker.data.massive.vendor.snapshots_contracts_gap.compute_option_snapshots_contracts_gap")
     @patch("psycopg2.connect")
-    @patch("backend.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
+    @patch("bifrost_api.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
     def test_option_snapshots_contracts_gap_batch_ok(self, _mock_db, mock_connect, mock_compute):
         mock_compute.side_effect = [
             {"ok": True, "symbol": "NVDA", "has_rows": True, "pg_total": 1, "massive_total": 1, "gap": 0},
@@ -428,8 +428,8 @@ class TestMassiveHealth:
         assert r.json().get("ok") is False
         assert "PostgreSQL" in str(r.json().get("error", ""))
 
-    @patch("src.vendor.massive.config.get_massive_settings")
-    @patch("backend.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
+    @patch("bifrost_worker.data.massive.vendor.config.get_massive_settings")
+    @patch("bifrost_api.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
     def test_option_snapshots_contracts_gap_requires_api_key(self, _mock_db, mock_ms):
         mock_ms.return_value = {
             "api_key": "",
@@ -446,9 +446,9 @@ class TestMassiveHealth:
         assert body.get("ok") is False
         assert "API key" in str(body.get("error", ""))
 
-    @patch("src.vendor.massive.contracts_reference_column_parity.compute_option_contracts_reference_column_parity")
+    @patch("bifrost_worker.data.massive.vendor.contracts_reference_column_parity.compute_option_contracts_reference_column_parity")
     @patch("psycopg2.connect")
-    @patch("backend.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
+    @patch("bifrost_api.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
     def test_option_contracts_reference_column_parity_get_ok(self, _mock_db, mock_connect, mock_compute):
         mock_compute.return_value = {
             "ok": True,
@@ -481,9 +481,9 @@ class TestMassiveHealth:
         assert body.get("value_mismatch_rows") == 0
         mock_compute.assert_called_once()
 
-    @patch("src.vendor.massive.contracts_reference_column_parity.compute_option_contracts_reference_column_parity")
+    @patch("bifrost_worker.data.massive.vendor.contracts_reference_column_parity.compute_option_contracts_reference_column_parity")
     @patch("psycopg2.connect")
-    @patch("backend.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
+    @patch("bifrost_api.massive.routers.routes._db_config", return_value={"host": "h", "database": "d"})
     def test_option_contracts_reference_column_parity_batch_ok(self, _mock_db, mock_connect, mock_compute):
         mock_compute.side_effect = [
             {"ok": True, "symbol": "NVDA", "value_mismatch_rows": 0},

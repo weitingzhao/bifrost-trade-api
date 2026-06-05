@@ -4,7 +4,7 @@ from datetime import date
 
 import pytest
 
-from src.research.sepa.short_indicators import (
+from bifrost_api.research.sepa.short_indicators import (
     SentimentConfig,
     evaluate_sentiment,
 )

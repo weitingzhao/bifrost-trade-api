@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.research.sepa.technical_engine import (
+from bifrost_api.research.sepa.technical_engine import (
     TechnicalConfig,
     evaluate_symbol_all_tiers,
 )
