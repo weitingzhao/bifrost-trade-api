@@ -61,6 +61,13 @@ class WorkerStateService:
         self._worker_list_inspect_quick_timeout_sec = float(
             ops_cfg.get("worker_list_inspect_quick_timeout_sec", 2.0)
         )
+        celery_ops = ops_cfg.get("celery") if isinstance(ops_cfg.get("celery"), dict) else {}
+        self._prod_worker_hostnames = self._normalize_worker_hostnames(
+            celery_ops.get("prod_worker_hostnames")
+        )
+        self._dev_worker_hostnames = self._normalize_worker_hostnames(
+            celery_ops.get("dev_worker_hostnames")
+        )
         self._inspect_cache_lock = threading.Lock()
         self._inspect_cache_workers: List[WorkerSummary] = []
         self._inspect_cache_ts = 0.0
@@ -69,6 +76,63 @@ class WorkerStateService:
     def _canonical_celery_queues(self) -> Tuple[str, ...]:
         cfg = self._config if isinstance(self._config, dict) else None
         return load_canonical_broker_queue_names(cfg)
+
+    @staticmethod
+    def _normalize_worker_hostnames(raw: object) -> frozenset[str]:
+        if not isinstance(raw, list):
+            return frozenset()
+        out: set[str] = set()
+        for item in raw:
+            if isinstance(item, str) and item.strip():
+                out.add(item.strip().lower())
+        return frozenset(out)
+
+    def _worker_hostname(self, worker_id: str) -> Optional[str]:
+        if "@" not in worker_id:
+            return None
+        host = worker_id.rsplit("@", 1)[-1].strip().lower()
+        return host or None
+
+    def _infer_worker_config_profile(self, worker_id: str) -> Optional[str]:
+        """Fallback when Redis presence omits config_profile (legacy prod workers on Linux host)."""
+        host = self._worker_hostname(worker_id)
+        if not host:
+            return None
+        if host in self._dev_worker_hostnames:
+            return "dev"
+        if host in self._prod_worker_hostnames:
+            return "prod"
+        # Docker dev Celery containers use a 12-char hex hostname.
+        if re.fullmatch(r"[0-9a-f]{12}", host):
+            return "dev"
+        return None
+
+    def _apply_inferred_worker_profiles(self, workers: List[WorkerSummary]) -> List[WorkerSummary]:
+        if not self._prod_worker_hostnames and not self._dev_worker_hostnames:
+            return workers
+        out: List[WorkerSummary] = []
+        for w in workers:
+            if w.worker_config_profile:
+                out.append(w)
+                continue
+            inferred = self._infer_worker_config_profile(w.worker_id)
+            if inferred:
+                out.append(w.model_copy(update={"worker_config_profile": inferred}))
+            else:
+                out.append(w)
+        return out
+
+    def _finalize_worker_list(
+        self,
+        workers: List[WorkerSummary],
+        presence: Optional[List[WorkerSummary]] = None,
+    ) -> List[WorkerSummary]:
+        merged = (
+            self._merge_worker_profiles_from_presence(workers, presence)
+            if presence
+            else workers
+        )
+        return self._apply_inferred_worker_profiles(merged)
 
     # ── internal helpers ──────────────────────────────────────────────────────
 
@@ -348,30 +412,30 @@ class WorkerStateService:
         inspect — fast path for UI refresh after scale/remove without broker RPC cost.
         """
         if force_refresh:
-            return self._list_workers_from_redis_presence()
+            return self._finalize_worker_list(self._list_workers_from_redis_presence())
         mode = self._worker_list_mode or "redis_presence"
         if mode == "inspect":
             inspected = self._list_workers_inspect_bounded()
             presence = self._list_workers_from_redis_presence()
-            return self._merge_worker_profiles_from_presence(inspected, presence)
+            return self._finalize_worker_list(inspected, presence)
         if mode == "redis_only":
-            return self._list_workers_from_redis_presence()
+            return self._finalize_worker_list(self._list_workers_from_redis_presence())
         # redis_presence (default): SCAN presence keys (fast) + merge with Celery inspect.
         # Presence alone can be incomplete (not every worker may write bifrost:ops:worker_presence:*);
         # serve quickly from inspect cache and refresh inspect in background.
         presence = self._list_workers_from_redis_presence()
         if not self._worker_list_fallback_inspect:
-            return presence
+            return self._finalize_worker_list(presence)
         presence_ids = {x.worker_id for x in presence}
         inspected = self._get_inspect_cache_for_presence(presence_ids)
         if not presence:
-            return inspected
+            return self._finalize_worker_list(inspected)
         by_id: Dict[str, WorkerSummary] = {w.worker_id: w for w in inspected}
         for p in presence:
             if p.worker_id not in by_id:
                 by_id[p.worker_id] = p
         merged = sorted(by_id.values(), key=lambda x: x.worker_id)
-        return self._merge_worker_profiles_from_presence(merged, presence)
+        return self._finalize_worker_list(merged, presence)
 
     def get_worker(self, worker_id: str) -> Optional[WorkerDetail]:
         ping, stats, active, reserved, active_queues = self._inspect()

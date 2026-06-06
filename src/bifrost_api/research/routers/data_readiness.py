@@ -1602,7 +1602,7 @@ def get_symbol_option_pcr(
     lookback_days: int = 365,
 ) -> Dict[str, Any]:
     """Put/call ratio trend and option chain rollup by expiry for Stock Inspector."""
-    from bifrost_api.research.stock_option_pcr import fetch_symbol_option_pcr
+    from bifrost_api.research.sepa_engine.stock_option_pcr import fetch_symbol_option_pcr
 
     sym = (symbol or "").strip().upper()
     if not sym:
