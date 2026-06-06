@@ -173,13 +173,26 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
                     redis_control_env = None
                     redis_control_host = None
                     redis_control_updated_at = None
-        out.append({
+        item: Dict[str, Any] = {
             **row,
             "process_active": active,
             "redis_control_env": redis_control_env,
             "redis_control_host": redis_control_host,
             "redis_control_updated_at": redis_control_updated_at,
-        })
+        }
+        from bifrost_api.ops.services.executor_docker import DockerComposeExecutor
+        from bifrost_api.ops.services.executor_local import SubprocessLocalExecutor
+
+        if isinstance(exc, DockerComposeExecutor):
+            item["runtime_kind"] = "docker"
+            cs = exc.compose_service_for_unit(unit)
+            if cs:
+                item["compose_service"] = cs
+        elif isinstance(exc, SubprocessLocalExecutor):
+            item["runtime_kind"] = "subprocess"
+        else:
+            item["runtime_kind"] = "systemd"
+        out.append(item)
     return {"ok": True, "services": out}
 
 

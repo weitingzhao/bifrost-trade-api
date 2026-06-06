@@ -154,6 +154,55 @@ def create_ops_app(
             use_redis_stop=use_redis_stop,
         )
         logger.info("Executor mode: agent (socket=%s)", agent_socket)
+    elif executor_mode == "docker":
+        from bifrost_api.ops.services.executor_docker import DockerComposeExecutor
+
+        docker_cfg = ops_cfg.get("docker") if isinstance(ops_cfg.get("docker"), dict) else {}
+        workdir = (
+            str(docker_cfg.get("workdir") or "").strip()
+            or os.environ.get("BIFROST_COMPOSE_WORKDIR", "/infra")
+        )
+        workdir_path = Path(workdir)
+        raw_files = docker_cfg.get("compose_files")
+        if isinstance(raw_files, list) and raw_files:
+            compose_files = [str(f).strip() for f in raw_files if str(f).strip()]
+        else:
+            compose_files = ["docker-compose.yml"]
+        if os.environ.get("BIFROST_BUILD_LOCAL", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            compose_files.append("docker-compose.local.yml")
+        compose_files = [
+            f
+            for f in compose_files
+            if (workdir_path / f).is_file()
+        ]
+        if not compose_files:
+            compose_files = ["docker-compose.yml"]
+        compose_project = (
+            str(docker_cfg.get("compose_project") or "").strip()
+            or os.environ.get("COMPOSE_PROJECT_NAME")
+            or None
+        )
+        docker_socket = str(docker_cfg.get("socket_path") or "/var/run/docker.sock")
+        executor = DockerComposeExecutor(
+            workdir=workdir,
+            compose_files=compose_files,
+            allowed_units=allowed_units,
+            broker_url=broker_url,
+            use_redis_stop=use_redis_stop,
+            compose_project=compose_project,
+            docker_socket=docker_socket,
+        )
+        logger.info(
+            "Executor mode: docker (workdir=%s, files=%s, project=%s, sock=%s)",
+            workdir,
+            compose_files,
+            compose_project,
+            docker_socket,
+        )
     elif local_control == "subprocess":
         from bifrost_api.ops.services.executor_local import SubprocessLocalExecutor
 
@@ -257,7 +306,16 @@ def create_ops_app(
         if resolved_config_path:
             out["config_path"] = str(Path(resolved_config_path).resolve())
         out["executor_mode"] = executor_mode
-        if executor_mode == "local":
+        if executor_mode == "docker":
+            from bifrost_api.ops.services.executor_docker import DockerComposeExecutor
+
+            out["local_control"] = "docker"
+            out["market_ingest_script_control"] = False
+            if isinstance(app.state.executor, DockerComposeExecutor):
+                ex = app.state.executor
+                out["docker_reachable"] = ex.docker_reachable
+                out["compose_workdir"] = ex.compose_workdir
+        elif executor_mode == "local":
             out["local_control"] = local_control
             out["market_ingest_script_control"] = local_control == "subprocess"
         else:

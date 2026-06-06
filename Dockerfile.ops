@@ -1,0 +1,42 @@
+# Ops API image — includes Docker CLI for compose control (docker.sock mount).
+FROM python:3.11-slim
+
+WORKDIR /app
+
+ARG BIFROST_CORE_REF=main
+ARG BIFROST_WORKER_REF=main
+ARG BIFROST_SOCKET_REF=main
+ARG GITHUB_ORG=YOUR_ORG
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl gnupg gcc libpq-dev git \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg \
+      | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && chmod a+r /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/debian bookworm stable" \
+      > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    "bifrost-core @ git+https://github.com/${GITHUB_ORG}/bifrost-trade-core.git@${BIFROST_CORE_REF}" \
+    "bifrost-worker @ git+https://github.com/${GITHUB_ORG}/bifrost-trade-worker.git@${BIFROST_WORKER_REF}" \
+    "bifrost-socket @ git+https://github.com/${GITHUB_ORG}/bifrost-trade-socket.git@${BIFROST_SOCKET_REF}"
+
+COPY pyproject.toml .
+COPY src/ src/
+RUN pip install --no-cache-dir -e "."
+
+COPY scripts/ scripts/
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    API_DOMAIN=ops \
+    API_PORT=8768
+
+EXPOSE 8768
+
+CMD ["python", "scripts/run_server.py", "ops"]
