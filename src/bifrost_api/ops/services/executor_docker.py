@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import re
-import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -40,29 +39,6 @@ _STATE_TO_IS_ACTIVE = {
     "paused": "inactive",
     "removing": "deactivating",
 }
-
-# #region agent log
-_DEBUG_LOG_PATH = Path("/Users/vision-mac-trader/Desktop/stocks/bifrost-trade-infra/.cursor/debug-6a885c.log")
-
-
-def _agent_log(location: str, message: str, data: dict, hypothesis_id: str) -> None:
-    try:
-        payload = {
-            "sessionId": "6a885c",
-            "location": location,
-            "message": message,
-            "data": data,
-            "hypothesisId": hypothesis_id,
-            "timestamp": int(time.time() * 1000),
-        }
-        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-
-
-# #endregion
-
 
 class DockerComposeExecutor:
     """Control whitelisted services via ``docker compose`` (api-ops mounts docker.sock)."""
@@ -213,14 +189,6 @@ class DockerComposeExecutor:
         # Never ``up -d`` from api-ops: on macOS/docker.sock it resolves ./config as host /infra/config.
         rc, out, err = await self._run_compose(["start", _CELERY_COMPOSE_SERVICE])
         combined = f"{err or ''} {out or ''}".strip()
-        # #region agent log
-        _agent_log(
-            "executor_docker.py:_ensure_celery_container",
-            "compose start celery-worker",
-            {"rc": rc, "prior_state": state, "compose_cwd": self._compose_cwd(), "stderr": combined[:300]},
-            "F",
-        )
-        # #endregion
         if rc != 0:
             hint = ""
             if "mounts denied" in combined.lower() or "/infra/config" in combined:
@@ -311,14 +279,6 @@ class DockerComposeExecutor:
             detach=True,
             timeout=60,
         )
-        # #region agent log
-        _agent_log(
-            "executor_docker.py:_start_celery_instance",
-            "compose exec start instance",
-            {"unit": unit, "instance_id": instance_id, "rc": rc, "stderr": err[:200]},
-            "B",
-        )
-        # #endregion
         if rc != 0:
             raise RuntimeError(
                 f"docker compose exec start worker {instance_id} failed (rc={rc}): {err or out}"
@@ -422,17 +382,6 @@ class DockerComposeExecutor:
         """List logical Celery worker units by scanning processes inside ``celery-worker``."""
         lines = await self._pgrep_celery_lines()
         instances = self._instances_from_pgrep_lines(lines)
-        # #region agent log
-        _agent_log(
-            "executor_docker.py:list_instances",
-            "listed celery instances",
-            {
-                "pgrep_lines": len(lines),
-                "instance_units": [i.get("unit") for i in instances],
-            },
-            "A",
-        )
-        # #endregion
         if instances:
             return instances
         state = await self._service_state(_CELERY_COMPOSE_SERVICE)
