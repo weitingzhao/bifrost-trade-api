@@ -16,6 +16,7 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
+from bifrost_core.core.message_center import publish_ib_service_stopped_messages
 from bifrost_core.core.redis_health_keys import (
     ENGINE_OPS_ACTIVE_REDIS_FIELD,
     redis_hash_field_truthy,
@@ -116,6 +117,12 @@ def clear_ingest_health_after_stop(redis_url: str, meta_key: str, service_id: st
     now = time.time()
     r = _conn(redis_url)
     try:
+        prior = _hgetall(r, key) if sid in (
+            "ib_ingestor",
+            "ib_market",
+            "ib_account_agent",
+            "ib_operator",
+        ) else {}
         if sid == "massive_ws":
             r.hset(
                 key,
@@ -198,5 +205,15 @@ def clear_ingest_health_after_stop(redis_url: str, meta_key: str, service_id: st
             )
         else:
             logger.debug("clear_ingest_health_after_stop: unknown service_id=%s", sid)
+        if prior:
+            try:
+                publish_ib_service_stopped_messages(
+                    r,
+                    service_id=sid,
+                    health_hash=prior,
+                    occurred_at=now,
+                )
+            except Exception as e:
+                logger.warning("clear_ingest_health_after_stop: message center publish failed: %s", e)
     finally:
         r.close()

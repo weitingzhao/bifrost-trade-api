@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
+import time
+
+from bifrost_core.monitor.integrations.ib_socket_status import build_ib_socket_status
+
 from bifrost_api.monitor.routers.status import (
     STATUS_SCHEMA_VERSION,
     _assemble_status_v3,
     _status_error_payload,
 )
+
+_NOW = 1_700_000_000.0
+_IB_CFG = {
+    "client_id_ib_ingestor": 150,
+    "client_id_account_agent": 151,
+    "ib2_client_id_account_agent": 152,
+    "client_id_operator": 100,
+    "ib2_client_id_operator": 101,
+    "ib2_host": "10.0.0.2",
+}
 
 
 def _assert_config_shape(body: dict) -> None:
@@ -130,3 +144,43 @@ def test_assemble_status_v8_config_shape() -> None:
     assert body["socket"]["ib_operator"]["host"]["connected"] is True
     assert body["socket"]["ib_operator"]["host"]["client_id"] == 100
     assert body["socket"]["massive"]["configured"] is False
+
+
+def test_build_ib_socket_status_unified_host_slot_fields() -> None:
+    ingestor_hash = {
+        "connected": "1",
+        "client_id": "150",
+        "reconnects": "1",
+        "msg_count": "42",
+        "last_msg_ts": str(_NOW - 2),
+        "ib_probe_at": str(_NOW - 1),
+        "ib_probe_ok": "1",
+        "ib_probe_interval_sec": "15",
+        "host_ib_probe_at": str(_NOW - 1),
+        "host_ib_probe_ok": "1",
+        "host_ib_probe_interval_sec": "15",
+    }
+    ingestor = build_ib_socket_status("ib_ingestor", ingestor_hash, _IB_CFG, now=_NOW)
+    assert ingestor["host"]["client_id"] == 150
+    assert ingestor["host"]["last_ib_probe_at"] == _NOW - 1
+    assert ingestor["secondary"] is None
+    assert ingestor["last_ib_probe_at"] == _NOW - 1
+
+    aa_hash = {
+        "host_connected": "1",
+        "host_client_id": "151",
+        "host_ib_probe_at": str(_NOW - 1),
+        "host_ib_probe_ok": "1",
+        "host_ib_probe_interval_sec": "15",
+        "secondary_present": "1",
+        "secondary_connected": "1",
+        "secondary_client_id": "152",
+        "secondary_ib_probe_at": str(_NOW - 1),
+        "secondary_ib_probe_ok": "1",
+        "secondary_ib_probe_interval_sec": "15",
+        "last_msg_ts": str(_NOW - 1),
+    }
+    aa = build_ib_socket_status("ib_account_agent", aa_hash, _IB_CFG, now=_NOW)
+    assert aa["host"]["last_ib_probe_at"] == _NOW - 1
+    assert aa["secondary"] is not None
+    assert aa["secondary"]["last_ib_probe_at"] == _NOW - 1

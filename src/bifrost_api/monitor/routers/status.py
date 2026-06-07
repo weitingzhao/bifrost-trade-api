@@ -453,11 +453,7 @@ def get_status(request: Request) -> Dict[str, Any]:
         _r: Any = None
         try:
             from bifrost_core.config.startup import get_effective_ib_config
-            from bifrost_core.monitor.integrations.ib_probe_derived import (
-                attach_ib_probe_derived,
-                attach_service_heartbeat_derived,
-                parse_redis_probe_triple,
-            )
+            from bifrost_core.monitor.integrations.ib_socket_status import build_ib_socket_status
             from bifrost_worker.data.massive.vendor.config import get_massive_settings
             from bifrost_worker.data.massive.vendor.reader import count_pending_massive_jobs
             from bifrost_core.monitor.redis_url import redis_url_from_config
@@ -504,192 +500,45 @@ def get_status(request: Request) -> Dict[str, Any]:
                 massive_info["last_msg_age_s"] = None
             massive = massive_info
 
-            ib_ingestor_info: Dict[str, Any] = {
-                "connected": False,
-                "last_msg_age_s": None,
-                "reconnects": None,
-                "msg_count": None,
-                "client_id": None,
-            }
+            _ib_cfg = _ib_eff_status if isinstance(_ib_eff_status, dict) else {}
+            _aa_unreachable = (
+                "IB Account Agent unreachable "
+                "(is scripts/systemd/run_ib_account_agent.py running?)"
+            )
             if _rurl:
-                _ih = hgetall_ib_ingestor_health(_r)
-                if _ih:
-                    ib_ingestor_info["connected"] = redis_hash_field_truthy(_ih, "connected")
-                    _lm = _ih.get("last_msg_ts")
-                    if _lm is not None:
-                        try:
-                            ib_ingestor_info["last_msg_age_s"] = max(
-                                0.0, time.time() - float(_lm)
-                            )
-                        except (TypeError, ValueError):
-                            ib_ingestor_info["last_msg_age_s"] = None
-                    else:
-                        ib_ingestor_info["last_msg_age_s"] = None
-                    try:
-                        ib_ingestor_info["reconnects"] = int(_ih.get("reconnects") or 0)
-                    except (TypeError, ValueError):
-                        ib_ingestor_info["reconnects"] = int(_ih.get("reconnects") or 0)
-                    try:
-                        ib_ingestor_info["msg_count"] = int(_ih.get("msg_count") or 0)
-                    except (TypeError, ValueError):
-                        ib_ingestor_info["msg_count"] = 0
-                    _cid = _ih.get("client_id")
-                    if _cid is not None and str(_cid).strip() != "":
-                        try:
-                            ib_ingestor_info["client_id"] = int(_cid)
-                        except (TypeError, ValueError):
-                            ib_ingestor_info["client_id"] = None
-                    _ipa, _ipok, _ipiv = parse_redis_probe_triple(
-                        _ih, "ib_probe_at", "ib_probe_ok", "ib_probe_interval_sec"
-                    )
-                    attach_ib_probe_derived(
-                        ib_ingestor_info,
-                        probe_at=_ipa,
-                        probe_interval=_ipiv,
-                        probe_ok=_ipok,
-                        stale_mult=_probe_stale_mult,
-                        now=_status_now,
-                    )
-                    try:
-                        _sh_iv = float(_ih.get("service_heartbeat_interval_sec") or 0)
-                        _sh_last = float(_ih.get("last_service_heartbeat_at") or 0)
-                    except (TypeError, ValueError):
-                        _sh_iv = 0.0
-                        _sh_last = 0.0
-                    if _sh_iv > 0:
-                        attach_service_heartbeat_derived(
-                            ib_ingestor_info,
-                            interval_sec=_sh_iv,
-                            last_heartbeat_at=_sh_last,
-                            now=_status_now,
-                        )
-                    _shr = (_ih.get("service_heartbeat_reconnect_in_progress") or "").strip()
-                    ib_ingestor_info["service_heartbeat_reconnect_in_progress"] = (
-                        _shr if _shr else None
-                    )
-            ib_ingestor = ib_ingestor_info
-
-            ib_account_agent_info: Dict[str, Any] = {
-                "connected": False,
-                "last_msg_age_s": None,
-                "reconnects": None,
-                "msg_count": None,
-                "client_id": None,
-                "host": None,
-                "secondary": None,
-            }
-            if _rurl:
-                _ah = hgetall_ib_account_agent_health(_r)
-                if _ah:
-                    _ib_eff = _ib_eff_status
-                    _host_cid_cfg = int(_ib_eff.get("client_id_account_agent") or 151)
-                    _host_on = redis_hash_field_truthy(
-                        _ah, "host_connected"
-                    ) or redis_hash_field_truthy(_ah, "connected")
-                    ib_account_agent_info["connected"] = _host_on
-                    _hc_raw = _ah.get("host_client_id") or _ah.get("client_id")
-                    _host_cid_live = _host_cid_cfg
-                    if _hc_raw is not None and str(_hc_raw).strip() != "":
-                        try:
-                            _host_cid_live = int(_hc_raw)
-                        except (TypeError, ValueError):
-                            pass
-                    ib_account_agent_info["client_id"] = _host_cid_live
-                    _lm = _ah.get("last_msg_ts")
-                    if _lm is not None:
-                        try:
-                            ib_account_agent_info["last_msg_age_s"] = max(
-                                0.0, time.time() - float(_lm)
-                            )
-                        except (TypeError, ValueError):
-                            ib_account_agent_info["last_msg_age_s"] = None
-                    else:
-                        ib_account_agent_info["last_msg_age_s"] = None
-                    try:
-                        ib_account_agent_info["reconnects"] = int(_ah.get("reconnects") or 0)
-                    except (TypeError, ValueError):
-                        ib_account_agent_info["reconnects"] = int(_ah.get("reconnects") or 0)
-                    try:
-                        ib_account_agent_info["msg_count"] = int(_ah.get("msg_count") or 0)
-                    except (TypeError, ValueError):
-                        ib_account_agent_info["msg_count"] = 0
-                    # Mirror IB Operator: explicit host_alive in Redis; missing key = legacy writer (assume running).
-                    if "host_alive" in _ah:
-                        _alive = redis_hash_field_truthy(_ah, "host_alive")
-                    else:
-                        _alive = True
-                    ib_account_agent_info["service_alive"] = _alive
-                    ib_account_agent_info["operator_alive"] = _alive
-                    _recon = ib_account_agent_info["reconnects"]
-                    ib_account_agent_info["host"] = {
-                        "connected": _host_on,
-                        "client_id": _host_cid_live,
-                        "last_error": None,
-                        "reconnects": _recon,
-                    }
-                    _hpa, _hpok, _hpiv = parse_redis_probe_triple(
-                        _ah,
-                        "host_ib_probe_at",
-                        "host_ib_probe_ok",
-                        "host_ib_probe_interval_sec",
-                    )
-                    attach_ib_probe_derived(
-                        ib_account_agent_info["host"],
-                        probe_at=_hpa,
-                        probe_interval=_hpiv,
-                        probe_ok=_hpok,
-                        stale_mult=_probe_stale_mult,
-                        now=_status_now,
-                    )
-                    _ib2 = str(_ib_eff.get("ib2_host") or "").strip()
-                    if _ib2:
-                        _sec_cid_cfg = int(_ib_eff.get("ib2_client_id_account_agent") or 152)
-                        _sec_raw = _ah.get("secondary_client_id")
-                        _sec_cid_live = _sec_cid_cfg
-                        if _sec_raw is not None and str(_sec_raw).strip() != "":
-                            try:
-                                _sec_cid_live = int(_sec_raw)
-                            except (TypeError, ValueError):
-                                pass
-                        _sec_on = redis_hash_field_truthy(_ah, "secondary_connected")
-                        ib_account_agent_info["secondary"] = {
-                            "connected": _sec_on,
-                            "client_id": _sec_cid_live,
-                            "last_error": None,
-                            "reconnects": ib_account_agent_info["reconnects"],
-                        }
-                        _spa, _spok, _spiv = parse_redis_probe_triple(
-                            _ah,
-                            "secondary_ib_probe_at",
-                            "secondary_ib_probe_ok",
-                            "secondary_ib_probe_interval_sec",
-                        )
-                        attach_ib_probe_derived(
-                            ib_account_agent_info["secondary"],
-                            probe_at=_spa,
-                            probe_interval=_spiv,
-                            probe_ok=_spok,
-                            stale_mult=_probe_stale_mult,
-                            now=_status_now,
-                        )
-                    try:
-                        _ash_iv = float(_ah.get("service_heartbeat_interval_sec") or 0)
-                        _ash_last = float(_ah.get("last_service_heartbeat_at") or 0)
-                    except (TypeError, ValueError):
-                        _ash_iv = 0.0
-                        _ash_last = 0.0
-                    if _ash_iv > 0:
-                        attach_service_heartbeat_derived(
-                            ib_account_agent_info,
-                            interval_sec=_ash_iv,
-                            last_heartbeat_at=_ash_last,
-                            now=_status_now,
-                        )
-                    _ashr = (_ah.get("service_heartbeat_reconnect_in_progress") or "").strip()
-                    ib_account_agent_info["service_heartbeat_reconnect_in_progress"] = (
-                        _ashr if _ashr else None
-                    )
-            ib_account_agent = ib_account_agent_info
+                _ih = hgetall_ib_ingestor_health(_r) or {}
+                ib_ingestor = build_ib_socket_status(
+                    "ib_ingestor",
+                    _ih,
+                    _ib_cfg,
+                    now=_status_now,
+                    stale_mult=_probe_stale_mult,
+                )
+                _ah = hgetall_ib_account_agent_health(_r) or {}
+                ib_account_agent = build_ib_socket_status(
+                    "ib_account_agent",
+                    _ah,
+                    _ib_cfg,
+                    now=_status_now,
+                    stale_mult=_probe_stale_mult,
+                    unreachable=_aa_unreachable,
+                )
+            else:
+                ib_ingestor = build_ib_socket_status(
+                    "ib_ingestor",
+                    None,
+                    _ib_cfg,
+                    now=_status_now,
+                    stale_mult=_probe_stale_mult,
+                )
+                ib_account_agent = build_ib_socket_status(
+                    "ib_account_agent",
+                    None,
+                    _ib_cfg,
+                    now=_status_now,
+                    stale_mult=_probe_stale_mult,
+                    unreachable=_aa_unreachable,
+                )
         except Exception:
             massive = None
             ib_ingestor = None

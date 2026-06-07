@@ -39,6 +39,12 @@ _ENSURE_START_START_TIMEOUT_SEC = 45
 _RECENT_CONTROL_WRITE_GRACE_SEC = 120.0
 
 
+def _process_counts_as_running(active: str) -> bool:
+    """True when systemd / docker compose still reports the unit up (incl. restart window)."""
+    a = (active or "").lower().strip()
+    return a in ("active", "activating")
+
+
 async def _ensure_stop_background(exc: Any, unit: str) -> None:
     """Run ``systemctl stop`` in the background; Redis was already cleaned up by the HTTP handler."""
     try:
@@ -165,7 +171,11 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
                 recent_control_write = (
                     control_age is not None and control_age <= _RECENT_CONTROL_WRITE_GRACE_SEC
                 )
-                if not is_live and not recent_control_write:
+                if (
+                    not is_live
+                    and not recent_control_write
+                    and not _process_counts_as_running(active)
+                ):
                     try:
                         await asyncio.to_thread(clear_control_env, rurl, lk)
                     except Exception as _ce:
