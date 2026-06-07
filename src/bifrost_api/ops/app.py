@@ -187,6 +187,11 @@ def create_ops_app(
             or None
         )
         docker_socket = str(docker_cfg.get("socket_path") or "/var/run/docker.sock")
+        host_workdir = (
+            str(docker_cfg.get("host_workdir") or "").strip()
+            or os.environ.get("BIFROST_COMPOSE_HOST_WORKDIR", "").strip()
+            or None
+        )
         executor = DockerComposeExecutor(
             workdir=workdir,
             compose_files=compose_files,
@@ -195,10 +200,12 @@ def create_ops_app(
             use_redis_stop=use_redis_stop,
             compose_project=compose_project,
             docker_socket=docker_socket,
+            host_workdir=host_workdir,
         )
         logger.info(
-            "Executor mode: docker (workdir=%s, files=%s, project=%s, sock=%s)",
+            "Executor mode: docker (workdir=%s, host_workdir=%s, files=%s, project=%s, sock=%s)",
             workdir,
+            host_workdir or "(none)",
             compose_files,
             compose_project,
             docker_socket,

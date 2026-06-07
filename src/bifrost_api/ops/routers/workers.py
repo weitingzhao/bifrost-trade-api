@@ -244,6 +244,14 @@ async def scale_worker(
         profile = registry.get(body.worker_type)
         _audit(request, "scale_add", unit, "success",
                detail=f"worker_type={body.worker_type}, queues={profile.queues if profile else []}")
+        # #region agent log
+        logger.info(
+            "debug-6a885c scale_add unit=%s instance_id=%s method=%s",
+            unit,
+            instance_id,
+            (result or {}).get("method"),
+        )
+        # #endregion
         return {
             "ok": True, "action": "add", "unit": unit,
             "instance_id": instance_id, "worker_type": body.worker_type,
@@ -350,6 +358,13 @@ async def list_instances(request: Request) -> Dict[str, Any]:
             status_code=500,
             content={"ok": False, "error": f"Failed to list instances: {e}"},
         )
+    # #region agent log
+    logger.info(
+        "debug-6a885c list_instances count=%s units=%s",
+        len(instances),
+        [i.get("unit") for i in instances],
+    )
+    # #endregion
     return {"ok": True, "instances": instances, "count": len(instances)}
 
 

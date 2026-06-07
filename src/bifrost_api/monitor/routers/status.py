@@ -477,17 +477,43 @@ def get_status(request: Request) -> Dict[str, Any]:
                 _r = redis_mod.from_url(_rurl, decode_responses=True)
                 _mh = hgetall_massive_ws_status(_r)
                 if _mh:
+                    _now = time.time()
                     massive_info["ws_connected"] = redis_hash_field_truthy(_mh, "connected")
                     _lm = _mh.get("last_msg_ts")
                     if _lm is not None:
                         try:
                             massive_info["last_msg_age_s"] = max(
-                                0.0, time.time() - float(_lm)
+                                0.0, _now - float(_lm)
                             )
                         except (TypeError, ValueError):
                             massive_info["last_msg_age_s"] = None
                     else:
                         massive_info["last_msg_age_s"] = None
+                    _ua = _mh.get("updated_at")
+                    if _ua is not None:
+                        try:
+                            massive_info["health_updated_age_s"] = max(
+                                0.0, _now - float(_ua)
+                            )
+                        except (TypeError, ValueError):
+                            massive_info["health_updated_age_s"] = None
+                    else:
+                        massive_info["health_updated_age_s"] = None
+                    try:
+                        _sh_iv = float(_mh.get("service_heartbeat_interval_sec") or 0)
+                    except (TypeError, ValueError):
+                        _sh_iv = 0.0
+                    if _sh_iv > 0:
+                        massive_info["service_heartbeat_interval_sec"] = _sh_iv
+                        try:
+                            _sh_last = float(_mh.get("last_service_heartbeat_at") or 0)
+                        except (TypeError, ValueError):
+                            _sh_last = 0.0
+                        if _sh_last > 0:
+                            massive_info["last_service_heartbeat_at"] = _sh_last
+                            massive_info["next_service_heartbeat_in_s"] = max(
+                                0.0, _sh_last + _sh_iv - _now
+                            )
                     try:
                         massive_info["ws_reconnects"] = int(_mh.get("reconnects") or 0)
                     except (TypeError, ValueError):
