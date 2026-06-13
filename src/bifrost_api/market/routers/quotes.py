@@ -64,8 +64,12 @@ def get_quotes(
     if ck_param:
         for ck in ck_param.split(","):
             c = ck.strip()
-            if c and c not in contract_keys_opt:
-                contract_keys_opt.append(c)
+            if not c or c in contract_keys_opt:
+                continue
+            # STK live quotes come from Redis only; contract_quote_live rows are stale snapshots.
+            if "|STK|" in c.upper():
+                continue
+            contract_keys_opt.append(c)
     quotes: list = []
     if symbol_list and rq and getattr(rq, "available", False):
         try:
