@@ -27,8 +27,24 @@ def normalize_control_profile(raw: Optional[str]) -> Optional[str]:
     if raw is None:
         return None
     s = str(raw).strip().lower()
-    if s in ("dev", "prod"):
+    if s in ("dev", "prod", "stg"):
         return s
+    return None
+
+
+def stack_profile_from_config_file(config_file: Optional[str]) -> Optional[str]:
+    """Infer dev/prod/stg from a resolved BIFROST_CONFIG path stored in Redis health."""
+    if not config_file or not str(config_file).strip():
+        return None
+    from pathlib import Path
+
+    name = Path(str(config_file).strip()).name.lower()
+    if name == "config.stg.yaml":
+        return "stg"
+    if name == "config.dev.yaml":
+        return "dev"
+    if name == "config.prod.yaml":
+        return "prod"
     return None
 
 

@@ -26,6 +26,8 @@ from bifrost_api.ops.market_ingest_control_env import (
 from bifrost_api.ops.market_ingest_health_clear import (
     clear_ingest_health_after_stop,
     ingest_redis_health_looks_live,
+    ingest_redis_health_writer_recent,
+    read_health_stack_profile,
 )
 from bifrost_api.ops.models.schemas import MarketIngestAction, MarketIngestControlRequest
 from bifrost_api.ops.routers.workers import _audit, _require_role
@@ -37,6 +39,13 @@ router = APIRouter(tags=["ops-market-ingest"])
 _ENSURE_START_STOP_TIMEOUT_SEC = 30
 _ENSURE_START_START_TIMEOUT_SEC = 45
 _RECENT_CONTROL_WRITE_GRACE_SEC = 120.0
+
+_STG_K8S_SOCKET_INGEST_IDS = frozenset({
+    "massive_ws",
+    "ib_ingestor",
+    "ib_operator",
+    "ib_account_agent",
+})
 
 
 def _process_counts_as_running(active: str) -> bool:
@@ -183,12 +192,33 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
                     redis_control_env = None
                     redis_control_host = None
                     redis_control_updated_at = None
+        runtime_externally_managed = False
+        if rurl and meta_key and not _process_counts_as_running(active):
+            looks_live = await asyncio.to_thread(
+                ingest_redis_health_looks_live, rurl, meta_key, row_sid
+            )
+            writer_recent = await asyncio.to_thread(
+                ingest_redis_health_writer_recent, rurl, meta_key
+            )
+            stack = await asyncio.to_thread(read_health_stack_profile, rurl, meta_key)
+            if not stack:
+                ops_cfg = cfg.get("ops") if isinstance(cfg.get("ops"), dict) else {}
+                stack = normalize_control_profile(ops_cfg.get("control_profile"))
+            externally_ok = looks_live or (stack == "stg" and writer_recent)
+            if externally_ok and stack:
+                runtime_externally_managed = True
+                redis_control_env = stack
+                if not redis_control_host:
+                    redis_control_host = "k8s"
+                if redis_control_updated_at is None:
+                    redis_control_updated_at = time.time()
         item: Dict[str, Any] = {
             **row,
             "process_active": active,
             "redis_control_env": redis_control_env,
             "redis_control_host": redis_control_host,
             "redis_control_updated_at": redis_control_updated_at,
+            "runtime_externally_managed": runtime_externally_managed,
         }
         from bifrost_api.ops.services.executor_docker import DockerComposeExecutor
         from bifrost_api.ops.services.executor_local import SubprocessLocalExecutor
@@ -238,13 +268,27 @@ async def market_ingest_control(
             status_code=400,
             content={"ok": False, "error": f"Unknown service_id: {body.service_id!r}"},
         )
+    sid = svc["id"]
+    ops_profile = _effective_ops_control_profile(request)
+    if ops_profile == "stg" and sid in _STG_K8S_SOCKET_INGEST_IDS:
+        msg = (
+            "STG socket ingest runs in K8s Deployments, not Ops subprocess on this host. "
+            "Restart with kubectl rollout restart deployment/<name> -n bifrost-stg "
+            "(massive-ws, ib-ingestor, ib-operator, ib-account-agent)."
+        )
+        _audit(
+            request,
+            f"market_ingest_{body.action.value}",
+            sid,
+            "rejected",
+            detail=msg,
+        )
+        return JSONResponse(status_code=403, content={"ok": False, "error": msg})
     unit = svc["systemd_unit"]
     exc = _executor(request)
-    sid = svc["id"]
     action = body.action
     meta_key = (svc.get("redis_meta_key") or "").strip()
     rurl = meta_redis_url_from_ops_config(cfg)
-    ops_profile = _effective_ops_control_profile(request)
     # Dev/Prod HOST lives in each service health hash. Linux Prod has proven writes to
     # bifrost:health:* work, while bifrost:ops:lease:* may be unavailable/filtered.
     lease_key = meta_key

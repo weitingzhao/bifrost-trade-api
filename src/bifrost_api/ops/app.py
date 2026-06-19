@@ -73,6 +73,17 @@ def _project_root_for_subprocess_executor(
     return p.parent
 
 
+def _socket_project_root_for_subprocess_executor(
+    config: dict, resolved_config_path: Optional[str],
+) -> Path:
+    """Infer repo root for socket ingest scripts (``run_massive_ws.py``, IB edge)."""
+    ops_cfg = config.get("ops") or {}
+    raw = (ops_cfg.get("socket_project_root") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return _project_root_for_subprocess_executor(config, resolved_config_path)
+
+
 def create_ops_app(
     config: dict,
     resolved_config_path: Optional[str] = None,
@@ -104,11 +115,17 @@ def create_ops_app(
     )
     app.add_middleware(AccessControlAllowPrivateNetworkMiddleware)
 
-    app.state.bifrost_config_profile = (
+    _profile = (
         config_profile_from_resolved_path(resolved_config_path)
         if resolved_config_path
         else None
     )
+    if _profile is None:
+        from bifrost_api.ops.market_ingest_control_env import normalize_control_profile
+
+        ops_cfg = config.get("ops") if isinstance(config.get("ops"), dict) else {}
+        _profile = normalize_control_profile(ops_cfg.get("control_profile"))
+    app.state.bifrost_config_profile = _profile
 
     allowed_units = _allowed_units_from_config(config)
 
@@ -214,16 +231,19 @@ def create_ops_app(
         from bifrost_api.ops.services.executor_local import SubprocessLocalExecutor
 
         project_root = _project_root_for_subprocess_executor(config, resolved_config_path)
+        socket_root = _socket_project_root_for_subprocess_executor(config, resolved_config_path)
         executor = SubprocessLocalExecutor(
             allowed_units=allowed_units,
             broker_url=broker_url,
             use_redis_stop=use_redis_stop,
             project_root=project_root,
+            socket_project_root=socket_root,
             resolved_config_path=resolved_config_path,
         )
         logger.info(
-            "Executor mode: local subprocess (run_celery.py, project=%s)",
+            "Executor mode: local subprocess (worker=%s, socket=%s)",
             project_root,
+            socket_root,
         )
     else:
         from bifrost_api.ops.services.executor_local import RestrictedExecutor

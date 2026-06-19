@@ -37,7 +37,13 @@ _SCRIPTS_IN_SYSTEMD_SUBDIR = frozenset({
 
 def _ingest_script_abs_path(project_root: Path, script_name: str) -> Path:
     if script_name in _SCRIPTS_IN_SYSTEMD_SUBDIR:
-        return project_root / "scripts" / "systemd" / script_name
+        systemd_path = project_root / "scripts" / "systemd" / script_name
+        if systemd_path.is_file():
+            return systemd_path
+        flat_path = project_root / "scripts" / script_name
+        if flat_path.is_file():
+            return flat_path
+        return systemd_path
     return project_root / "scripts" / script_name
 
 
@@ -369,8 +375,10 @@ class SubprocessLocalExecutor:
         project_root: Path | str,
         python_executable: str | None = None,
         resolved_config_path: str | Path | None = None,
+        socket_project_root: Path | str | None = None,
     ) -> None:
         self._project_root = Path(project_root).resolve()
+        self._ingest_root = Path(socket_project_root or project_root).resolve()
         self._python = python_executable or sys.executable
         self._resolved_config_path: Optional[Path] = (
             Path(resolved_config_path).resolve()
@@ -539,11 +547,11 @@ class SubprocessLocalExecutor:
         if script_name not in cmd:
             return False
         norm_cmd = cmd.replace("\\", "/")
-        norm_root = str(self._project_root.resolve()).replace("\\", "/")
+        norm_root = str(self._ingest_root.resolve()).replace("\\", "/")
         if norm_root in norm_cmd:
             return True
         abs_script = str(
-            _ingest_script_abs_path(self._project_root, script_name).resolve()
+            _ingest_script_abs_path(self._ingest_root, script_name).resolve()
         ).replace("\\", "/")
         if abs_script in norm_cmd:
             return True
@@ -604,7 +612,7 @@ class SubprocessLocalExecutor:
         stem = self._ingest_ops_pid_stem(unit)
         if not stem:
             return None
-        return self._project_root / "logs" / f".ops-ingest-{stem}.pid"
+        return self._ingest_root / "logs" / f".ops-ingest-{stem}.pid"
 
     @staticmethod
     def _pid_is_alive(pid: int) -> bool:
@@ -657,19 +665,19 @@ class SubprocessLocalExecutor:
                 f"ingest_already_running: pids={existing} unit={unit!r} "
                 "(stop first or use restart)"
             )
-        script = _ingest_script_abs_path(self._project_root, script_name)
+        script = _ingest_script_abs_path(self._ingest_root, script_name)
         if not script.is_file():
             raise RuntimeError(f"{script_name} not found at {script}")
         cmd: List[str] = [self._python, str(script)]
         self._append_ingest_config_argv(cmd, script_name)
-        log_dir = self._project_root / "logs"
+        log_dir = self._ingest_root / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / log_name
         log_fp = open(log_file, "ab", buffering=0)
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
-                cwd=str(self._project_root),
+                cwd=str(self._ingest_root),
                 stdout=log_fp,
                 stderr=asyncio.subprocess.STDOUT,
                 start_new_session=True,
@@ -839,7 +847,7 @@ class SubprocessLocalExecutor:
 
     async def list_instances(self) -> List[Dict[str, str]]:
         proc = await asyncio.create_subprocess_exec(
-            "pgrep", "-fl", "run_celery.py",
+            "pgrep", "-af", "run_celery.py",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -850,7 +858,7 @@ class SubprocessLocalExecutor:
         if not text:
             return []
         # One logical worker unit may match multiple PIDs: prefork pool children inherit the same argv
-        # (``run_celery.py --instance profile-N``), so ``pgrep -fl`` returns a line per process.
+        # (``run_celery.py --instance profile-N``), so ``pgrep -af`` returns a line per process.
         inst_re = re.compile(r"--instance\s+(\S+)")
         seen_instance_ids: set[str] = set()
         instances: List[Dict[str, str]] = []

@@ -58,6 +58,46 @@ def _hgetall(r: Any, key: str) -> Dict[str, str]:
         return {}
 
 
+def read_health_stack_profile(redis_url: str, meta_key: str) -> Optional[str]:
+    """Return dev/prod/stg from ``config_file`` on the service health hash, if present."""
+    from bifrost_api.ops.market_ingest_control_env import stack_profile_from_config_file
+
+    key = (meta_key or "").strip()
+    if not key:
+        return None
+    try:
+        r = _conn(redis_url)
+        try:
+            m = _hgetall(r, key)
+        finally:
+            r.close()
+    except Exception as e:
+        logger.debug("read_health_stack_profile: %s", e)
+        return None
+    return stack_profile_from_config_file(m.get("config_file"))
+
+
+def ingest_redis_health_writer_recent(redis_url: str, meta_key: str) -> bool:
+    """True when the health hash exists and ``updated_at`` is fresh (process heartbeat)."""
+    key = (meta_key or "").strip()
+    if not key:
+        return False
+    try:
+        r = _conn(redis_url)
+        try:
+            m = _hgetall(r, key)
+        finally:
+            r.close()
+    except Exception as e:
+        logger.debug("ingest_redis_health_writer_recent: %s", e)
+        return False
+    if not m:
+        return False
+    now = time.time()
+    updated = _parse_ts(m.get("updated_at"))
+    return updated > 0 and (now - updated) <= _HEALTH_RECENT_MAX_S
+
+
 def ingest_redis_health_looks_live(redis_url: str, meta_key: str, service_id: str) -> bool:
     """True if the health hash exists and looks like a recently updated *connected* writer.
 
