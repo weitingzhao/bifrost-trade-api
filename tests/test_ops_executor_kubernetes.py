@@ -1,0 +1,100 @@
+"""Unit tests for Kubernetes Ops executor (trade-k8s-native W2)."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
+
+
+def _fake_deployment(replicas: int, ready: int):
+    return SimpleNamespace(
+        spec=SimpleNamespace(replicas=replicas),
+        status=SimpleNamespace(ready_replicas=ready),
+    )
+
+
+@pytest.fixture
+def executor(monkeypatch):
+    monkeypatch.setattr(
+        KubernetesExecutor,
+        "_init_clients",
+        lambda self: setattr(self, "_k8s_reachable", True) or True,
+    )
+    ex = KubernetesExecutor(
+        namespace="bifrost-stg",
+        allowed_units=[
+            "bifrost-ib-ingestor",
+            "bifrost-massive-ws",
+            "bifrost-celery-worker",
+        ],
+        broker_url="redis://127.0.0.1:6379/0",
+    )
+    ex._apps = MagicMock()
+    ex._core = MagicMock()
+    return ex
+
+
+@pytest.mark.asyncio
+async def test_systemctl_start_scales_deployment(executor):
+    executor._read_deployment = AsyncMock(return_value=_fake_deployment(0, 0))
+    executor._patch_deployment = AsyncMock()
+    result = await executor._systemctl("start", "bifrost-ib-ingestor.service")
+    assert result["method"] == "kubernetes"
+    assert result["deployment"] == "ib-ingestor"
+    executor._patch_deployment.assert_awaited_once()
+    body = executor._patch_deployment.await_args.args[1]
+    assert body["spec"]["replicas"] == 1
+
+
+@pytest.mark.asyncio
+async def test_systemctl_is_active_running(executor):
+    executor._read_deployment = AsyncMock(return_value=_fake_deployment(1, 1))
+    state = await executor.systemctl_is_active("bifrost-ib-ingestor.service")
+    assert state == "active"
+
+
+@pytest.mark.asyncio
+async def test_systemctl_is_active_scaled_zero(executor):
+    executor._read_deployment = AsyncMock(return_value=_fake_deployment(0, 0))
+    state = await executor.systemctl_is_active("bifrost-massive-ws.service")
+    assert state == "inactive"
+
+
+@pytest.mark.asyncio
+async def test_celery_scale_up(executor):
+    executor._read_deployment = AsyncMock(return_value=_fake_deployment(1, 1))
+    executor._list_celery_pods = AsyncMock(return_value=[])
+    executor._patch_deployment = AsyncMock()
+    unit = "bifrost-celery-worker@stocks_massive-1.service"
+    result = await executor._systemctl("start", unit)
+    assert result["replicas"] == 2
+    executor._patch_deployment.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_list_instances_from_pods(executor):
+    pod = SimpleNamespace(
+        metadata=SimpleNamespace(name="celery-worker-abc"),
+        status=SimpleNamespace(phase="Running"),
+    )
+    executor._list_celery_pods = AsyncMock(return_value=[pod])
+    rows = await executor.list_instances()
+    assert len(rows) == 1
+    assert rows[0]["unit"] == "bifrost-celery-worker@celery-worker-abc.service"
+    assert rows[0]["active"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_resolve_namespace_from_file(tmp_path, monkeypatch):
+    ns_file = tmp_path / "namespace"
+    ns_file.write_text("bifrost-dev\n", encoding="utf-8")
+    with patch(
+        "bifrost_api.ops.services.executor_kubernetes.Path",
+    ) as path_cls:
+        path_cls.return_value.is_file.return_value = True
+        path_cls.return_value.read_text.return_value = "bifrost-dev\n"
+        assert KubernetesExecutor.resolve_namespace({}) == "bifrost-dev"

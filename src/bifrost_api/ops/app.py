@@ -227,6 +227,22 @@ def create_ops_app(
             compose_project,
             docker_socket,
         )
+    elif executor_mode == "kubernetes":
+        from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
+
+        k8s_cfg = ops_cfg.get("kubernetes") if isinstance(ops_cfg.get("kubernetes"), dict) else {}
+        namespace = KubernetesExecutor.resolve_namespace(ops_cfg)
+        executor = KubernetesExecutor(
+            namespace=namespace,
+            allowed_units=allowed_units,
+            broker_url=broker_url,
+            use_redis_stop=use_redis_stop,
+        )
+        logger.info(
+            "Executor mode: kubernetes (namespace=%s, reachable=%s)",
+            namespace,
+            executor.k8s_reachable,
+        )
     elif local_control == "subprocess":
         from bifrost_api.ops.services.executor_local import SubprocessLocalExecutor
 
@@ -342,6 +358,15 @@ def create_ops_app(
                 ex = app.state.executor
                 out["docker_reachable"] = ex.docker_reachable
                 out["compose_workdir"] = ex.compose_workdir
+        elif executor_mode == "kubernetes":
+            from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
+
+            out["local_control"] = "kubernetes"
+            out["market_ingest_script_control"] = False
+            if isinstance(app.state.executor, KubernetesExecutor):
+                ex = app.state.executor
+                out["k8s_reachable"] = ex.k8s_reachable
+                out["k8s_namespace"] = ex.namespace
         elif executor_mode == "local":
             out["local_control"] = local_control
             out["market_ingest_script_control"] = local_control == "subprocess"

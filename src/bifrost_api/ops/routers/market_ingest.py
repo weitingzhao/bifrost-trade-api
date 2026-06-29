@@ -221,9 +221,15 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
             "runtime_externally_managed": runtime_externally_managed,
         }
         from bifrost_api.ops.services.executor_docker import DockerComposeExecutor
+        from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
         from bifrost_api.ops.services.executor_local import SubprocessLocalExecutor
 
-        if isinstance(exc, DockerComposeExecutor):
+        if isinstance(exc, KubernetesExecutor):
+            item["runtime_kind"] = "kubernetes"
+            dep = exc.deployment_for_unit(unit)
+            if dep:
+                item["k8s_deployment"] = dep
+        elif isinstance(exc, DockerComposeExecutor):
             item["runtime_kind"] = "docker"
             cs = exc.compose_service_for_unit(unit)
             if cs:
