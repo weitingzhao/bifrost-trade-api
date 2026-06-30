@@ -280,7 +280,7 @@ async def market_ingest_control(
         msg = (
             "STG socket ingest runs in K8s Deployments, not Ops subprocess on this host. "
             "Restart with kubectl rollout restart deployment/<name> -n bifrost-stg "
-            "(massive-ws, ib-ingestor, ib-operator, ib-account-agent)."
+            "(massive-ws, ib-market-gateway, ib-operator, ib-account-agent)."
         )
         _audit(
             request,

@@ -133,6 +133,98 @@ class KubernetesExecutor:
             body,
         )
 
+    async def _read_statefulset(self, name: str):
+        if not self._apps:
+            raise RuntimeError("Kubernetes API client is not initialized")
+        return await self._run_sync(
+            self._apps.read_namespaced_stateful_set,
+            name,
+            self._namespace,
+        )
+
+    async def _patch_statefulset(self, name: str, body: dict):
+        if not self._apps:
+            raise RuntimeError("Kubernetes API client is not initialized")
+        return await self._run_sync(
+            self._apps.patch_namespaced_stateful_set,
+            name,
+            self._namespace,
+            body,
+        )
+
+    async def _read_workload(self, name: str) -> tuple[str, Any]:
+        """Resolve a workload to (kind, object).
+
+        W5 trade-k8s-native: IB socket services migrated Deployment → StatefulSet.
+        Prefer a Deployment (back-compat: celery + massive-ws); fall back to a
+        StatefulSet on 404 so api-ops controls both kinds with one code path.
+        """
+        from kubernetes.client.rest import ApiException
+
+        try:
+            obj = await self._read_deployment(name)
+            return "deployment", obj
+        except ApiException as exc:
+            if getattr(exc, "status", None) != 404:
+                raise
+            obj = await self._read_statefulset(name)
+            return "statefulset", obj
+
+    async def _workload_ready_replicas(self, name: str) -> tuple[int, int, str]:
+        try:
+            kind, obj = await self._read_workload(name)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("read workload %s: %s", name, exc)
+            return 0, 0, "deployment"
+        spec_rep = int(obj.spec.replicas or 0)
+        ready = int(obj.status.ready_replicas or 0)
+        return spec_rep, ready, kind
+
+    async def _scale_workload(self, kind: str, name: str, replicas: int) -> Dict[str, Any]:
+        replicas = max(0, replicas)
+        body = {"spec": {"replicas": replicas}}
+        if kind == "statefulset":
+            await self._patch_statefulset(name, body)
+        else:
+            await self._patch_deployment(name, body)
+        out: Dict[str, Any] = {
+            "method": "kubernetes",
+            "action": "scale",
+            "namespace": self._namespace,
+            "kind": kind,
+            "replicas": replicas,
+            "message": f"scaled {kind}/{name} to {replicas} in {self._namespace}",
+        }
+        out["deployment" if kind == "deployment" else "statefulset"] = name
+        return out
+
+    async def _rollout_restart_workload(self, kind: str, name: str) -> Dict[str, Any]:
+        stamp = datetime.now(timezone.utc).isoformat()
+        body = {
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": {
+                            "kubectl.kubernetes.io/restartedAt": stamp,
+                        }
+                    }
+                }
+            }
+        }
+        if kind == "statefulset":
+            await self._patch_statefulset(name, body)
+        else:
+            await self._patch_deployment(name, body)
+        out: Dict[str, Any] = {
+            "method": "kubernetes",
+            "action": "restart",
+            "namespace": self._namespace,
+            "kind": kind,
+            "message": f"rollout restart {kind}/{name} in {self._namespace}",
+        }
+        out["deployment" if kind == "deployment" else "statefulset"] = name
+        return out
+
     async def _list_celery_pods(self):
         if not self._core:
             return []
@@ -263,29 +355,32 @@ class KubernetesExecutor:
 
         raise PermissionError(f"Action {action!r} not supported for kubernetes celery control")
 
-    async def _systemctl_deployment(
+    async def _systemctl_workload(
         self,
         action: str,
-        deployment: str,
+        workload: str,
         unit: str,
     ) -> Dict[str, Any]:
-        spec_rep, _ready = await self._deployment_ready_replicas(deployment)
+        # W5: workload may be a Deployment (celery/massive-ws) or a StatefulSet (IB edge).
+        spec_rep, _ready, kind = await self._workload_ready_replicas(workload)
         if action == "start":
             if spec_rep > 0:
-                return {
+                out = {
                     "method": "kubernetes",
                     "action": "start",
                     "unit": unit,
-                    "deployment": deployment,
-                    "message": f"{deployment} already has replicas={spec_rep}",
+                    "kind": kind,
+                    "message": f"{kind}/{workload} already has replicas={spec_rep}",
                 }
-            return await self._scale_deployment(deployment, 1)
+                out["deployment" if kind == "deployment" else "statefulset"] = workload
+                return out
+            return await self._scale_workload(kind, workload, 1)
         if action == "stop":
-            return await self._scale_deployment(deployment, 0)
+            return await self._scale_workload(kind, workload, 0)
         if action == "restart":
             if spec_rep == 0:
-                return await self._scale_deployment(deployment, 1)
-            return await self._rollout_restart(deployment)
+                return await self._scale_workload(kind, workload, 1)
+            return await self._rollout_restart_workload(kind, workload)
         raise PermissionError(f"Action {action!r} not supported")
 
     async def _systemctl(self, action: str, unit: str, timeout: int | None = None) -> Dict[str, Any]:
@@ -301,7 +396,7 @@ class KubernetesExecutor:
             )
         if deployment == "redis":
             raise PermissionError("redis is external in K8s overlays; not controlled by api-ops")
-        return await self._systemctl_deployment(action, deployment, unit)
+        return await self._systemctl_workload(action, deployment, unit)
 
     async def list_instances(self) -> List[Dict[str, str]]:
         pods = await self._list_celery_pods()
@@ -362,7 +457,7 @@ class KubernetesExecutor:
         deployment = compose_service_for_systemd_unit(unit)
         if not deployment or deployment == "redis":
             return "unknown"
-        spec_rep, ready = await self._deployment_ready_replicas(deployment)
+        spec_rep, ready, _kind = await self._workload_ready_replicas(deployment)
         if spec_rep == 0:
             return "inactive"
         if ready >= spec_rep:

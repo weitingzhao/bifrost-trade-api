@@ -109,6 +109,29 @@ def test_omit_secondary():
     assert eff["client_id_ib_ingestor"] == 150
 
 
+def test_market_gateway_merges_listener_and_worker_slots():
+    """W6: explicit market_gateway collapses listener + worker_market + ingestor."""
+    cfg = {
+        "ib": {
+            "host": {
+                "ip": "10.0.0.1",
+                "port_type": "tws_paper",
+                "client_id": {
+                    "daemon": 10,
+                    "market_gateway": 250,
+                    "operator": 220,
+                    "account_agent": 260,
+                },
+            },
+        }
+    }
+    eff = get_effective_ib_config(cfg)
+    assert eff["client_id_market_gateway"] == 250
+    assert eff["client_id_listener"] == 250
+    assert eff["client_id_worker_market"] == 250
+    assert eff["client_id_ib_ingestor"] == 250
+
+
 def test_missing_ib_raises():
     with pytest.raises(ValueError, match="config\\['ib'\\] is required"):
         get_effective_ib_config({})

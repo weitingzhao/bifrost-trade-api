@@ -13,7 +13,8 @@ from bifrost_api.ops.services.executor_docker import DockerComposeExecutor
 
 def test_compose_service_mapping():
     assert compose_service_for_systemd_unit("bifrost-engine.service") == "daemon"
-    assert compose_service_for_systemd_unit("bifrost-ib-ingestor.service") == "ib-ingestor"
+    assert compose_service_for_systemd_unit("bifrost-ib-ingestor.service") == "ib-market-gateway"
+    assert compose_service_for_systemd_unit("bifrost-ib-market-gateway.service") == "ib-market-gateway"
     assert compose_service_for_systemd_unit("bifrost-celery-worker@ib-1.service") == "celery-worker"
     assert compose_service_for_systemd_unit("unknown-unit.service") is None
 
@@ -64,8 +65,8 @@ async def test_systemctl_start_invokes_compose(tmp_path):
         mock_run.return_value = (0, "", "")
         result = await ex._systemctl("start", "bifrost-ib-ingestor.service")
     assert result["method"] == "docker-compose"
-    assert result["compose_service"] == "ib-ingestor"
-    mock_run.assert_awaited_once_with(["start", "ib-ingestor"], timeout=120)
+    assert result["compose_service"] == "ib-market-gateway"
+    mock_run.assert_awaited_once_with(["start", "ib-market-gateway"], timeout=120)
 
 
 @pytest.mark.asyncio

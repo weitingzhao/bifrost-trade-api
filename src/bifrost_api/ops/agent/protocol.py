@@ -25,6 +25,7 @@ ALLOWED_UNIT_PATTERNS = [
     re.compile(r"^redis(\.service)?$"),
     re.compile(r"^bifrost-massive-ws\.service$"),
     re.compile(r"^bifrost-ib-operator\.service$"),
+    re.compile(r"^bifrost-ib-market-gateway\.service$"),
     re.compile(r"^bifrost-ib-ingestor\.service$"),
     re.compile(r"^bifrost-ib-account-agent\.service$"),
     re.compile(r"^bifrost-engine\.service$"),

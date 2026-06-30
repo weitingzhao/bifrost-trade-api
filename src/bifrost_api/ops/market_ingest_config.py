@@ -74,8 +74,8 @@ DEFAULT_MARKET_INGEST_SERVICES: List[Dict[str, str]] = [
     },
     {
         "id": "ib_ingestor",
-        "label": "IB ingestor",
-        "systemd_unit": "bifrost-ib-ingestor.service",
+        "label": "IB Market Gateway",
+        "systemd_unit": "bifrost-ib-market-gateway.service",
         "redis_meta_key": BIFROST_HEALTH_IB_INGESTOR,
     },
     {

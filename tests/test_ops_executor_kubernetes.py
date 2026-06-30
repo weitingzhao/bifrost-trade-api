@@ -44,10 +44,45 @@ async def test_systemctl_start_scales_deployment(executor):
     executor._patch_deployment = AsyncMock()
     result = await executor._systemctl("start", "bifrost-ib-ingestor.service")
     assert result["method"] == "kubernetes"
-    assert result["deployment"] == "ib-ingestor"
+    assert result["deployment"] == "ib-market-gateway"
     executor._patch_deployment.assert_awaited_once()
     body = executor._patch_deployment.await_args.args[1]
     assert body["spec"]["replicas"] == 1
+
+
+def _fake_statefulset(replicas: int, ready: int):
+    return SimpleNamespace(
+        spec=SimpleNamespace(replicas=replicas),
+        status=SimpleNamespace(ready_replicas=ready),
+    )
+
+
+@pytest.mark.asyncio
+async def test_ib_unit_falls_back_to_statefulset_restart(executor):
+    """W5: IB socket is a StatefulSet — Deployment read 404s, control uses STS."""
+    from kubernetes.client.rest import ApiException
+
+    executor._read_deployment = AsyncMock(side_effect=ApiException(status=404))
+    executor._read_statefulset = AsyncMock(return_value=_fake_statefulset(1, 1))
+    executor._patch_statefulset = AsyncMock()
+    executor._patch_deployment = AsyncMock()
+
+    result = await executor._systemctl("restart", "bifrost-ib-ingestor.service")
+
+    assert result["kind"] == "statefulset"
+    assert result["statefulset"] == "ib-market-gateway"
+    executor._patch_statefulset.assert_awaited_once()
+    executor._patch_deployment.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ib_statefulset_is_active(executor):
+    from kubernetes.client.rest import ApiException
+
+    executor._read_deployment = AsyncMock(side_effect=ApiException(status=404))
+    executor._read_statefulset = AsyncMock(return_value=_fake_statefulset(1, 1))
+    state = await executor.systemctl_is_active("bifrost-ib-ingestor.service")
+    assert state == "active"
 
 
 @pytest.mark.asyncio

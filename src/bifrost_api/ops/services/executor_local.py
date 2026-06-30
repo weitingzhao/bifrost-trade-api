@@ -56,8 +56,11 @@ def _ingest_script_log_for_unit(unit: str) -> Optional[Tuple[str, str]]:
         return ("run_ib_operator.py", "ib-operator.log")
     if "ib-account-agent" in stem or stem == "bifrost-ib-account-agent":
         return ("run_ib_account_agent.py", "ib-account-agent.log")
-    if "ib-ingestor" in stem or stem == "bifrost-ib-ingestor":
-        return ("run_ib_ingestor.py", "ib-ingestor.log")
+    if "ib-market-gateway" in stem or "ib-ingestor" in stem or stem in (
+        "bifrost-ib-market-gateway",
+        "bifrost-ib-ingestor",
+    ):
+        return ("run_ib_market_gateway.py", "ib-market-gateway.log")
     if stem == "bifrost-engine" or "bifrost-engine" in stem:
         return ("run_engine.py", "engine.log")
     # Account Sync Daemon (not Celery): scripts/systemd/run_account_sync_daemon.py
@@ -594,8 +597,8 @@ class SubprocessLocalExecutor:
 
     def _ingest_ops_pid_stem(self, unit: str) -> Optional[str]:
         u = unit.replace(".service", "").strip()
-        if "ib-ingestor" in u:
-            return "ib-ingestor"
+        if "ib-market-gateway" in u or "ib-ingestor" in u:
+            return "ib-market-gateway"
         if "ib-operator" in u:
             return "ib-operator"
         if "ib-account-agent" in u:
