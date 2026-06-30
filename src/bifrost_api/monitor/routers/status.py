@@ -479,6 +479,9 @@ def get_status(request: Request) -> Dict[str, Any]:
                 if _mh:
                     _now = time.time()
                     massive_info["ws_connected"] = redis_hash_field_truthy(_mh, "connected")
+                    _wm = (_mh.get("ws_mode") or "").strip()
+                    if _wm:
+                        massive_info["ws_mode"] = _wm
                     _lm = _mh.get("last_msg_ts")
                     if _lm is not None:
                         try:
