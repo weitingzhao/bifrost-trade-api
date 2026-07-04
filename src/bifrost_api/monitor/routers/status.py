@@ -456,7 +456,8 @@ def get_status(request: Request) -> Dict[str, Any]:
             from bifrost_core.monitor.integrations.ib_socket_status import build_ib_socket_status
             from bifrost_worker.data.massive.vendor.config import get_massive_settings
             from bifrost_worker.data.massive.vendor.reader import count_pending_massive_jobs
-            from bifrost_core.monitor.redis_url import redis_url_from_config
+            from bifrost_core.monitor.redis_url import ib_redis_url_from_config, redis_url_from_config
+            import redis as redis_mod
 
             _ib_eff_status = get_effective_ib_config(reader._config)
             _probe_stale_mult = float(_ib_eff_status.get("ib_probe_stale_multiplier") or 2.5)
@@ -471,9 +472,8 @@ def get_status(request: Request) -> Dict[str, Any]:
                 "last_snapshot_age_s": None,
             }
             _rurl = redis_url_from_config(reader._config)
+            _ib_rurl = ib_redis_url_from_config(reader._config)
             if _rurl:
-                import redis as redis_mod
-
                 _r = redis_mod.from_url(_rurl, decode_responses=True)
                 _mh = hgetall_massive_ws_status(_r)
                 if _mh:
@@ -532,10 +532,18 @@ def get_status(request: Request) -> Dict[str, Any]:
             _ib_cfg = _ib_eff_status if isinstance(_ib_eff_status, dict) else {}
             _aa_unreachable = (
                 "IB Account Agent unreachable "
-                "(is scripts/systemd/run_ib_account_agent.py running?)"
+                "(Platform IB Gateway @ redis-ib — check data/ib-gateway)"
             )
-            if _rurl:
-                _ih = hgetall_ib_ingestor_health(_r) or {}
+            _ib_r = _r
+            if _ib_rurl and _ib_rurl != _rurl:
+                try:
+                    _ib_r = redis_mod.from_url(_ib_rurl, decode_responses=True)
+                except Exception:
+                    _ib_r = _r
+            elif rq is not None and getattr(rq, "ib_redis_client", None) is not None:
+                _ib_r = rq.ib_redis_client
+            if _ib_rurl or _rurl:
+                _ih = hgetall_ib_ingestor_health(_ib_r) or {}
                 ib_ingestor = build_ib_socket_status(
                     "ib_ingestor",
                     _ih,
@@ -543,7 +551,7 @@ def get_status(request: Request) -> Dict[str, Any]:
                     now=_status_now,
                     stale_mult=_probe_stale_mult,
                 )
-                _ah = hgetall_ib_account_agent_health(_r) or {}
+                _ah = hgetall_ib_account_agent_health(_ib_r) or {}
                 ib_account_agent = build_ib_socket_status(
                     "ib_account_agent",
                     _ah,
