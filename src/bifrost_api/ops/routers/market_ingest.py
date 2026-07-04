@@ -25,6 +25,7 @@ from bifrost_api.ops.market_ingest_control_env import (
 )
 from bifrost_api.ops.market_ingest_health_clear import (
     clear_ingest_health_after_stop,
+    ingest_health_is_platform_gateway,
     ingest_redis_health_looks_live,
     ingest_redis_health_writer_recent,
     read_health_stack_profile,
@@ -46,6 +47,23 @@ _STG_K8S_SOCKET_INGEST_IDS = frozenset({
     "ib_operator",
     "ib_account_agent",
 })
+
+_PLATFORM_IB_INGEST_IDS = frozenset({"ib_ingestor", "ib_operator", "ib_account_agent"})
+
+
+def _stg_k8s_control_reject_message(service_id: str) -> str:
+    sid = (service_id or "").strip()
+    if sid in _PLATFORM_IB_INGEST_IDS:
+        return (
+            "STG IB Broker rows are served by Platform IB Gateway (data/ib-gateway Deployment @ redis-ib). "
+            "Ops start/stop/restart is not available here — use Ops Console → IB Gateway or "
+            "kubectl rollout restart deployment/ib-gateway -n data."
+        )
+    return (
+        "STG socket ingest runs in K8s Deployments, not Ops subprocess on this host. "
+        "Restart with kubectl rollout restart deployment/<name> -n bifrost-stg "
+        "(e.g. massive-ws)."
+    )
 
 
 def _process_counts_as_running(active: str) -> bool:
@@ -212,6 +230,15 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
                     redis_control_host = "k8s"
                 if redis_control_updated_at is None:
                     redis_control_updated_at = time.time()
+        platform_gateway_managed = False
+        if rurl and meta_key and row_sid in _PLATFORM_IB_INGEST_IDS:
+            platform_gateway_managed = await asyncio.to_thread(
+                ingest_health_is_platform_gateway, rurl, meta_key
+            )
+            if platform_gateway_managed:
+                runtime_externally_managed = True
+                if not redis_control_host:
+                    redis_control_host = "platform-ib-gateway"
         item: Dict[str, Any] = {
             **row,
             "process_active": active,
@@ -219,7 +246,10 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
             "redis_control_host": redis_control_host,
             "redis_control_updated_at": redis_control_updated_at,
             "runtime_externally_managed": runtime_externally_managed,
+            "platform_gateway_managed": platform_gateway_managed,
         }
+        if platform_gateway_managed:
+            item["transport"] = "platform_gateway"
         from bifrost_api.ops.services.executor_docker import DockerComposeExecutor
         from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
         from bifrost_api.ops.services.executor_local import SubprocessLocalExecutor
@@ -277,11 +307,7 @@ async def market_ingest_control(
     sid = svc["id"]
     ops_profile = _effective_ops_control_profile(request)
     if ops_profile == "stg" and sid in _STG_K8S_SOCKET_INGEST_IDS:
-        msg = (
-            "STG socket ingest runs in K8s Deployments, not Ops subprocess on this host. "
-            "Restart with kubectl rollout restart deployment/<name> -n bifrost-stg "
-            "(massive-ws, ib-market-gateway, ib-operator, ib-account-agent)."
-        )
+        msg = _stg_k8s_control_reject_message(sid)
         _audit(
             request,
             f"market_ingest_{body.action.value}",

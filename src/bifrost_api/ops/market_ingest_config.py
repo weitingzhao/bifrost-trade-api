@@ -68,19 +68,19 @@ DEFAULT_MARKET_INGEST_SERVICES: List[Dict[str, str]] = [
     },
     {
         "id": "ib_operator",
-        "label": "IB Operator (cmd RPC)",
+        "label": "Platform IB Gateway · Operator RPC",
         "systemd_unit": "bifrost-ib-operator.service",
         "redis_meta_key": BIFROST_HEALTH_IB_OPERATOR,
     },
     {
         "id": "ib_ingestor",
-        "label": "IB Market Gateway",
+        "label": "Platform IB Gateway · Market ingest",
         "systemd_unit": "bifrost-ib-market-gateway.service",
         "redis_meta_key": BIFROST_HEALTH_IB_INGESTOR,
     },
     {
         "id": "ib_account_agent",
-        "label": "IB Account Agent",
+        "label": "Platform IB Gateway · Account agent",
         "systemd_unit": "bifrost-ib-account-agent.service",
         "redis_meta_key": BIFROST_HEALTH_IB_ACCOUNT_AGENT,
     },

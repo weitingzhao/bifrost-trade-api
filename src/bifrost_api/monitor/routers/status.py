@@ -137,6 +137,7 @@ def _status_error_payload() -> Dict[str, Any]:
             "ib_ingestor": None,
             "ib_account_agent": None,
             "ib_operator": None,
+            "platform_ib_gateway": None,
         },
         "celery": {
             "broker_connected": False,
@@ -189,6 +190,7 @@ def _assemble_status_v3(
     massive: Any,
     ib_ingestor: Any,
     ib_account_agent: Any,
+    platform_ib_gateway: Any = None,
 ) -> Dict[str, Any]:
     sl = (health_status_lamp or "red").strip().lower()
     if sl == "red":
@@ -246,6 +248,7 @@ def _assemble_status_v3(
             "ib_ingestor": ib_ingestor,
             "ib_account_agent": ib_account_agent,
             "ib_operator": monitor_ib_status,
+            "platform_ib_gateway": platform_ib_gateway,
         },
         "celery": {
             "broker_connected": celery_broker_connected,
@@ -449,11 +452,20 @@ def get_status(request: Request) -> Dict[str, Any]:
         massive = None
         ib_ingestor = None
         ib_account_agent = None
+        platform_ib_gateway = None
         _rurl: Optional[str] = None
         _r: Any = None
+        _ib_rurl: Optional[str] = None
+        _ib_r: Any = None
         try:
             from bifrost_core.config.startup import get_effective_ib_config
             from bifrost_core.monitor.integrations.ib_socket_status import build_ib_socket_status
+            from bifrost_core.monitor.integrations.platform_ib_gateway import (
+                annotate_ib_socket_transport,
+                build_platform_ib_gateway_status,
+                detect_ib_transport,
+                is_platform_ib_gateway_health,
+            )
             from bifrost_worker.data.massive.vendor.config import get_massive_settings
             from bifrost_worker.data.massive.vendor.reader import count_pending_massive_jobs
             from bifrost_core.monitor.redis_url import ib_redis_url_from_config, redis_url_from_config
@@ -535,6 +547,8 @@ def get_status(request: Request) -> Dict[str, Any]:
                 "(Platform IB Gateway @ redis-ib — check data/ib-gateway)"
             )
             _ib_r = _r
+            _ih: Dict[str, str] = {}
+            _ah: Dict[str, str] = {}
             if _ib_rurl and _ib_rurl != _rurl:
                 try:
                     _ib_r = redis_mod.from_url(_ib_rurl, decode_responses=True)
@@ -576,10 +590,40 @@ def get_status(request: Request) -> Dict[str, Any]:
                     stale_mult=_probe_stale_mult,
                     unreachable=_aa_unreachable,
                 )
+            if (
+                ib_ingestor is not None
+                and ib_account_agent is not None
+                and monitor_ib_status is not None
+                and _ib_r is not None
+            ):
+                from bifrost_core.core.redis_health_keys import hgetall_ib_operator_health
+
+                _oh = hgetall_ib_operator_health(_ib_r) or {}
+                _ih_pg = _ih if _ib_rurl or _rurl else {}
+                _ah_pg = _ah if _ib_rurl or _rurl else {}
+                _transport = detect_ib_transport(_ih_pg, _ah_pg, _oh)
+                ib_ingestor = annotate_ib_socket_transport(ib_ingestor, _transport)
+                ib_account_agent = annotate_ib_socket_transport(ib_account_agent, _transport)
+                monitor_ib_status = annotate_ib_socket_transport(monitor_ib_status, _transport)
+                _mode = None
+                for _h in (_ih_pg, _ah_pg, _oh):
+                    if is_platform_ib_gateway_health(_h):
+                        _m = str(_h.get("mode") or "").strip().lower()
+                        if _m in ("live", "mock"):
+                            _mode = _m
+                            break
+                platform_ib_gateway = build_platform_ib_gateway_status(
+                    ib_ingestor,
+                    ib_account_agent,
+                    monitor_ib_status,
+                    transport=_transport,
+                    mode=_mode,
+                )
         except Exception:
             massive = None
             ib_ingestor = None
             ib_account_agent = None
+            platform_ib_gateway = None
 
         hc = derive_health_roll_up(
             daemon_lamp=daemon_lamp,
@@ -641,6 +685,7 @@ def get_status(request: Request) -> Dict[str, Any]:
             massive=massive,
             ib_ingestor=ib_ingestor,
             ib_account_agent=ib_account_agent,
+            platform_ib_gateway=platform_ib_gateway,
         )
         account_sync_hb = reader.get_account_sync_heartbeat()
         account_sync_block: Optional[Dict[str, Any]] = None

@@ -65,16 +65,31 @@ def read_health_stack_profile(redis_url: str, meta_key: str) -> Optional[str]:
     key = (meta_key or "").strip()
     if not key:
         return None
+    m = read_health_hash(redis_url, key)
+    return stack_profile_from_config_file(m.get("config_file"))
+
+
+def read_health_hash(redis_url: str, meta_key: str) -> Dict[str, str]:
+    """Return raw health hash fields for a Socket Services meta key."""
+    key = (meta_key or "").strip()
+    if not key:
+        return {}
     try:
         r = _conn(redis_url)
         try:
-            m = _hgetall(r, key)
+            return _hgetall(r, key)
         finally:
             r.close()
     except Exception as e:
-        logger.debug("read_health_stack_profile: %s", e)
-        return None
-    return stack_profile_from_config_file(m.get("config_file"))
+        logger.debug("read_health_hash: %s", e)
+        return {}
+
+
+def ingest_health_is_platform_gateway(redis_url: str, meta_key: str) -> bool:
+    """True when health hash is written by Platform IB Gateway plugin (plugin=ib-gateway)."""
+    from bifrost_core.monitor.integrations.platform_ib_gateway import is_platform_ib_gateway_health
+
+    return is_platform_ib_gateway_health(read_health_hash(redis_url, meta_key) or None)
 
 
 def ingest_redis_health_writer_recent(redis_url: str, meta_key: str) -> bool:
