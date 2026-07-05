@@ -207,7 +207,10 @@ def create_market_app(
                 pass
 
     instrument_app(app, "api-market")
-    return app(config: dict, resolved_config_path: Optional[str] = None) -> None:
+    return app
+
+
+def run_market_server(config: dict, resolved_config_path: Optional[str] = None) -> None:
     """Start the Market API server."""
     import os
     import uvicorn

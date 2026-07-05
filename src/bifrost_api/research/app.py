@@ -167,7 +167,10 @@ def create_research_app(
                 pass
 
     instrument_app(app, "api-research")
-    return app(config: dict, resolved_config_path: Optional[str] = None) -> None:
+    return app
+
+
+def run_research_server(config: dict, resolved_config_path: Optional[str] = None) -> None:
     """Start the Research API server."""
     import os
     import uvicorn
