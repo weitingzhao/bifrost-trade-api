@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from bifrost_core.config.startup import config_profile_from_resolved_path, normalize_server_config
 from bifrost_core.monitor.reader import StatusReader
 from bifrost_core.monitor.redis_url import redis_url_from_config
+from bifrost_core.observability.prometheus import instrument_app
 from bifrost_core.sse.queue_utils import put_nowait_drop_oldest
 from bifrost_api.massive.sse import run_massive_channel_subscribe_loop
 
@@ -133,6 +134,7 @@ def create_massive_app(
             app.state._massive_sse_subscriber_thread.join(timeout=2.0)
             app.state._massive_sse_subscriber_thread = None
 
+    instrument_app(app, "api-massive")
     return app
 
 

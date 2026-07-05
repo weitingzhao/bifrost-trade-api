@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from bifrost_core.config.startup import config_profile_from_resolved_path, normalize_server_config
 from bifrost_core.monitor.reader import StatusReader
+from bifrost_core.observability.prometheus import instrument_app
 
 logger = logging.getLogger(__name__)
 
@@ -165,10 +166,8 @@ def create_research_app(
             except Exception:
                 pass
 
-    return app
-
-
-def run_research_server(config: dict, resolved_config_path: Optional[str] = None) -> None:
+    instrument_app(app, "api-research")
+    return app(config: dict, resolved_config_path: Optional[str] = None) -> None:
     """Start the Research API server."""
     import os
     import uvicorn

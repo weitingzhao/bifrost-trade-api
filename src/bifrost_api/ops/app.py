@@ -21,6 +21,7 @@ from bifrost_core.config.startup import (
     config_profile_from_resolved_path,
     normalize_server_config,
 )
+from bifrost_core.observability.prometheus import instrument_app
 
 logger = logging.getLogger(__name__)
 
@@ -413,6 +414,7 @@ def create_ops_app(
     async def shutdown_event() -> None:
         logger.info("Ops API shutting down")
 
+    instrument_app(app, "api-ops")
     return app
 
 

@@ -18,6 +18,7 @@ from bifrost_core.config.startup import (
     config_profile_from_resolved_path,
     normalize_server_config,
 )
+from bifrost_core.observability.prometheus import instrument_app
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +234,7 @@ def create_docs_app(
     def redoc_root() -> Any:
         return _redoc(_root_openapi_browser)
 
+    instrument_app(app, "api-docs")
     return app
 
 

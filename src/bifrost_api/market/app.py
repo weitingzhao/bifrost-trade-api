@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from bifrost_core.config.startup import config_profile_from_resolved_path, normalize_server_config
 from bifrost_core.monitor.reader import StatusReader
+from bifrost_core.observability.prometheus import instrument_app
 from bifrost_core.sse.queue_utils import put_nowait_drop_oldest
 
 logger = logging.getLogger(__name__)
@@ -205,10 +206,8 @@ def create_market_app(
             except Exception:
                 pass
 
-    return app
-
-
-def run_market_server(config: dict, resolved_config_path: Optional[str] = None) -> None:
+    instrument_app(app, "api-market")
+    return app(config: dict, resolved_config_path: Optional[str] = None) -> None:
     """Start the Market API server."""
     import os
     import uvicorn

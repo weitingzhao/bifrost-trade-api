@@ -32,6 +32,7 @@ from bifrost_core.ib_operator.client import IbOperatorClient
 from bifrost_core.monitor.reader import StatusReader
 from bifrost_socket.ib.connector.flex_client import parse_trades_xml
 from bifrost_core.monitor.self_check import derive_daemon_self_check
+from bifrost_core.observability.prometheus import instrument_app
 
 logger = logging.getLogger(__name__)
 
@@ -319,6 +320,7 @@ def create_app(
             except Exception:
                 pass
 
+    instrument_app(app, "api-monitor")
     return app
 
 

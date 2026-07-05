@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from bifrost_core.config.startup import config_profile_from_resolved_path, normalize_server_config
 from bifrost_core.monitor.reader import StatusReader
+from bifrost_core.observability.prometheus import instrument_app
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,7 @@ def create_strategy_app(
         threading.Thread(target=_exit_after_send, daemon=True).start()
         return {"ok": True}
 
+    instrument_app(app, "api-strategy")
     return app
 
 
