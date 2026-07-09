@@ -421,6 +421,23 @@ def get_status(request: Request) -> Dict[str, Any]:
 
         rq = getattr(app.state, "redis_quotes", None)
         quotes_redis_reader_ok = bool(rq and getattr(rq, "available", False))
+        if not quotes_redis_reader_ok:
+            try:
+                from bifrost_core.monitor.redis_url import redis_url_from_config
+                import redis as redis_mod
+
+                _quotes_url = redis_url_from_config(reader._config)
+                if _quotes_url:
+                    _qr = redis_mod.from_url(
+                        _quotes_url,
+                        decode_responses=True,
+                        socket_connect_timeout=2,
+                        socket_timeout=2,
+                    )
+                    _qr.ping()
+                    quotes_redis_reader_ok = True
+            except Exception:
+                quotes_redis_reader_ok = False
 
         celery_broker_connected = False
         celery_workers: List[str] = []
@@ -429,14 +446,24 @@ def get_status(request: Request) -> Dict[str, Any]:
         try:
             from bifrost_worker.celery.celery_app import (
                 get_celery_broker_connected,
-                get_worker_ib_status,
+                get_celery_workers_from_presence,
                 get_celery_workers_ping,
+                get_worker_ib_status,
             )
 
             celery_broker_connected = get_celery_broker_connected()
-            celery_workers = get_celery_workers_ping(
-                timeout=_STATUS_CELERY_INSPECT_TIMEOUT_SEC
-            )
+            _ops_cfg = (getattr(reader, "_config", None) or {}).get("ops") or {}
+            _worker_list_mode = str(_ops_cfg.get("worker_list_mode") or "redis_presence").strip().lower()
+            if _worker_list_mode in ("redis_presence", "redis_only"):
+                celery_workers = get_celery_workers_from_presence()
+            else:
+                celery_workers = get_celery_workers_ping(
+                    timeout=_STATUS_CELERY_INSPECT_TIMEOUT_SEC
+                )
+            if not celery_workers and _worker_list_mode == "redis_presence":
+                celery_workers = get_celery_workers_ping(
+                    timeout=_STATUS_CELERY_INSPECT_TIMEOUT_SEC
+                )
             worker_ib = get_worker_ib_status()
             celery_worker_ib_connected = bool(
                 worker_ib and worker_ib.get("connected") and len(celery_workers) > 0
