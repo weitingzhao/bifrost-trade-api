@@ -23,13 +23,17 @@ from bifrost_api.ops.market_ingest_control_env import (
     write_control_env,
     write_trading_engine_ops_lease,
 )
+from bifrost_api.ops.market_ingest_display import (
+    derive_ingest_display_state,
+    platform_gateway_managed_for_service,
+)
 from bifrost_api.ops.market_ingest_health_clear import (
     clear_ingest_health_after_stop,
-    ingest_health_is_platform_gateway,
     ingest_redis_health_looks_live,
     ingest_redis_health_writer_recent,
     read_health_stack_profile,
 )
+from bifrost_core.core.redis_url import ib_redis_url_from_config
 from bifrost_api.ops.models.schemas import MarketIngestAction, MarketIngestControlRequest
 from bifrost_api.ops.routers.workers import _audit, _require_role
 
@@ -163,6 +167,8 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
     rows = market_ingest_services_from_config(cfg)
     exc = _executor(request)
     rurl = meta_redis_url_from_ops_config(cfg)
+    ib_rurl = ib_redis_url_from_config(cfg)
+    ops_profile = _effective_ops_control_profile(request)
     out: List[Dict[str, Any]] = []
     for row in rows:
         unit = row["systemd_unit"]
@@ -230,15 +236,41 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
                     redis_control_host = "k8s"
                 if redis_control_updated_at is None:
                     redis_control_updated_at = time.time()
-        platform_gateway_managed = False
-        if rurl and meta_key and row_sid in _PLATFORM_IB_INGEST_IDS:
-            platform_gateway_managed = await asyncio.to_thread(
-                ingest_health_is_platform_gateway, rurl, meta_key
-            )
-            if platform_gateway_managed:
-                runtime_externally_managed = True
-                if not redis_control_host:
-                    redis_control_host = "platform-ib-gateway"
+        platform_gateway_managed = await asyncio.to_thread(
+            platform_gateway_managed_for_service,
+            ib_rurl,
+            rurl,
+            meta_key,
+            row_sid,
+        )
+        if platform_gateway_managed:
+            runtime_externally_managed = True
+            if not redis_control_host:
+                redis_control_host = "platform-ib-gateway"
+        from bifrost_api.ops.services.executor_docker import DockerComposeExecutor
+        from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
+        from bifrost_api.ops.services.executor_local import SubprocessLocalExecutor
+
+        runtime_kind = "systemd"
+        if isinstance(exc, KubernetesExecutor):
+            runtime_kind = "kubernetes"
+        elif isinstance(exc, DockerComposeExecutor):
+            runtime_kind = "docker"
+        elif isinstance(exc, SubprocessLocalExecutor):
+            runtime_kind = "subprocess"
+
+        display = derive_ingest_display_state(
+            service_id=row_sid,
+            process_active=active,
+            config=cfg,
+            redis_url=rurl,
+            ib_redis_url=ib_rurl,
+            meta_key=meta_key,
+            runtime_externally_managed=runtime_externally_managed,
+            platform_gateway_managed=platform_gateway_managed,
+            ops_control_profile=ops_profile,
+            runtime_kind=runtime_kind,
+        )
         item: Dict[str, Any] = {
             **row,
             "process_active": active,
@@ -247,27 +279,19 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
             "redis_control_updated_at": redis_control_updated_at,
             "runtime_externally_managed": runtime_externally_managed,
             "platform_gateway_managed": platform_gateway_managed,
+            "runtime_kind": runtime_kind,
+            **display,
         }
         if platform_gateway_managed:
             item["transport"] = "platform_gateway"
-        from bifrost_api.ops.services.executor_docker import DockerComposeExecutor
-        from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
-        from bifrost_api.ops.services.executor_local import SubprocessLocalExecutor
-
         if isinstance(exc, KubernetesExecutor):
-            item["runtime_kind"] = "kubernetes"
             dep = exc.deployment_for_unit(unit)
             if dep:
                 item["k8s_deployment"] = dep
         elif isinstance(exc, DockerComposeExecutor):
-            item["runtime_kind"] = "docker"
             cs = exc.compose_service_for_unit(unit)
             if cs:
                 item["compose_service"] = cs
-        elif isinstance(exc, SubprocessLocalExecutor):
-            item["runtime_kind"] = "subprocess"
-        else:
-            item["runtime_kind"] = "systemd"
         out.append(item)
     return {"ok": True, "services": out}
 
