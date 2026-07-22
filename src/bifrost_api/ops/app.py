@@ -232,7 +232,6 @@ def create_ops_app(
     elif executor_mode == "kubernetes":
         from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
 
-        k8s_cfg = ops_cfg.get("kubernetes") if isinstance(ops_cfg.get("kubernetes"), dict) else {}
         namespace = KubernetesExecutor.resolve_namespace(ops_cfg)
         executor = KubernetesExecutor(
             namespace=namespace,
@@ -325,6 +324,11 @@ def create_ops_app(
     from bifrost_api.ops.worker_profiles import WorkerProfileRegistry
 
     app.state.worker_profile_registry = WorkerProfileRegistry.from_config(config)
+    if hasattr(executor, "set_worker_profile_limits"):
+        executor.set_worker_profile_limits({
+            key: profile.max_worker_instances
+            for key, profile in app.state.worker_profile_registry.profiles.items()
+        })
 
     # ── Router ────────────────────────────────────────────────────────────────
 

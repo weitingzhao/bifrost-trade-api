@@ -270,6 +270,25 @@ async def scale_worker(
         _audit(request, "scale_remove", unit, "failed", detail=str(e))
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
+    if result.get("method") == "kubernetes" and result.get("action") == "scale":
+        # A Deployment owns indistinguishable Pods; a specific template instance
+        # cannot become inactive while the scaled Deployment still has replicas.
+        _audit(
+            request,
+            "scale_remove",
+            unit,
+            "success",
+            detail=f"deployment={result.get('deployment')},replicas={result.get('replicas')}",
+        )
+        return {
+            "ok": True,
+            "action": "remove",
+            "unit": unit,
+            "instance_id": body.instance_id,
+            "after_state": "scaling",
+            "result": result,
+        }
+
     after_state = await _wait_worker_unit_quiet(exc, unit)
     force_result: Optional[Dict[str, Any]] = None
     if after_state == "active" and body.force:
@@ -640,9 +659,23 @@ async def get_ops_celery_capabilities(request: Request) -> Dict[str, Any]:
             "run_massive_job_matrix": [],
             "beat_tasks": [],
             "broker_queue_labels": {},
+            "beat_running": None,
+            "consuming_queues": [],
         }
     try:
-        return build_celery_capabilities_payload(celery_app)
+        runtime: Dict[str, Any] = {}
+        executor = _executor(request)
+        if hasattr(executor, "celery_runtime_capabilities"):
+            runtime = await executor.celery_runtime_capabilities()
+        payload = build_celery_capabilities_payload(
+            celery_app,
+            beat_running=runtime.get("beat_running"),
+        )
+        if runtime.get("monolithic_worker"):
+            payload["consuming_queues"] = payload["canonical_broker_queues"]
+        else:
+            payload["consuming_queues"] = list(runtime.get("worker_profiles") or [])
+        return payload
     except Exception as e:
         logger.exception("get_ops_celery_capabilities failed: %s", e)
         return {
@@ -654,6 +687,8 @@ async def get_ops_celery_capabilities(request: Request) -> Dict[str, Any]:
             "run_massive_job_matrix": [],
             "beat_tasks": [],
             "broker_queue_labels": {},
+            "beat_running": None,
+            "consuming_queues": [],
         }
 
 

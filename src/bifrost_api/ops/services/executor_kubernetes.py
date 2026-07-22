@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -21,8 +22,10 @@ from bifrost_api.ops.services.executor_local import (
 logger = logging.getLogger(__name__)
 
 _CELERY_DEPLOYMENT = "celery-worker"
-_CELERY_LABEL = "app.kubernetes.io/name=celery-worker"
+_CELERY_BEAT_DEPLOYMENT = "celery-beat"
+_CELERY_WORKER_PREFIX = "celery-worker-"
 _DEPLOY_TIMEOUT_SEC = 120
+_CELERY_INSTANCE_RE = re.compile(r"^(?P<profile>[A-Za-z0-9_]+)-\d+$")
 
 
 class KubernetesExecutor:
@@ -35,11 +38,16 @@ class KubernetesExecutor:
         allowed_units: list[str],
         broker_url: str,
         use_redis_stop: bool = True,
+        worker_profile_limits: Optional[Dict[str, int]] = None,
     ) -> None:
         self._namespace = namespace.strip() or "default"
         self._allowed: Set[str] = set(allowed_units)
         self._broker_url = broker_url
         self._use_redis_stop = use_redis_stop
+        self._worker_profile_limits = {
+            key: max(1, int(limit))
+            for key, limit in (worker_profile_limits or {}).items()
+        }
         self._redis_delegate = RestrictedExecutor(
             allowed_units=[],
             broker_url=broker_url,
@@ -86,6 +94,13 @@ class KubernetesExecutor:
     def namespace(self) -> str:
         return self._namespace
 
+    def set_worker_profile_limits(self, limits: Dict[str, int]) -> None:
+        """Install validated profile limits after the Ops config registry is built."""
+        self._worker_profile_limits = {
+            key: max(1, int(limit))
+            for key, limit in limits.items()
+        }
+
     worker_to_unit = staticmethod(RestrictedExecutor.worker_to_unit)
     instance_unit = staticmethod(RestrictedExecutor.instance_unit)
 
@@ -113,6 +128,28 @@ class KubernetesExecutor:
         if not unit.startswith(prefix) or not unit.endswith(".service"):
             raise ValueError(f"Not a {_WORKER_UNIT_BASE}@ template unit: {unit!r}")
         return unit[len(prefix) : -len(".service")]
+
+    @staticmethod
+    def celery_deployment_for_profile(profile: str) -> str:
+        """Return the W3 per-queue Deployment name for a worker profile."""
+        normalized = profile.strip().replace("_", "-")
+        if not normalized or not re.fullmatch(r"[A-Za-z0-9-]+", normalized):
+            raise ValueError(f"Invalid Celery worker profile {profile!r}")
+        return f"{_CELERY_WORKER_PREFIX}{normalized}"
+
+    @staticmethod
+    def _profile_from_instance_id(instance_id: str) -> str:
+        match = _CELERY_INSTANCE_RE.fullmatch(instance_id)
+        if match is None:
+            raise ValueError(
+                "Kubernetes Celery scaling requires an instance id in "
+                "'{profile}-{number}' form."
+            )
+        return str(match.group("profile"))
+
+    @staticmethod
+    def _is_not_found(exc: Exception) -> bool:
+        return getattr(exc, "status", None) == 404
 
     async def _read_deployment(self, name: str):
         if not self._apps:
@@ -225,15 +262,47 @@ class KubernetesExecutor:
         out["deployment" if kind == "deployment" else "statefulset"] = name
         return out
 
-    async def _list_celery_pods(self):
-        if not self._core:
+    async def _list_celery_deployments(self) -> List[Any]:
+        """Discover worker Deployments; Pods are controller implementation details."""
+        if not self._apps:
             return []
-        pod_list = await self._run_sync(
-            self._core.list_namespaced_pod,
+        deployment_list = await self._run_sync(
+            self._apps.list_namespaced_deployment,
             self._namespace,
-            label_selector=_CELERY_LABEL,
         )
-        return list(pod_list.items or [])
+        deployments: List[Any] = []
+        for deployment in deployment_list.items or []:
+            name = str(getattr(deployment.metadata, "name", "") or "")
+            labels = getattr(deployment.metadata, "labels", None) or {}
+            app_name = str(labels.get("app.kubernetes.io/name") or "")
+            component = str(labels.get("app.kubernetes.io/component") or "")
+            if (
+                app_name == _CELERY_DEPLOYMENT
+                or app_name.startswith(_CELERY_WORKER_PREFIX)
+                or (component == "celery" and name.startswith(_CELERY_WORKER_PREFIX))
+            ):
+                deployments.append(deployment)
+        return deployments
+
+    async def _resolve_celery_deployment(self, profile: str) -> tuple[str, int, int]:
+        """Prefer W3 profile deployments and fall back to the W1 monolith."""
+        profile_deployment = self.celery_deployment_for_profile(profile)
+        try:
+            dep = await self._read_deployment(profile_deployment)
+            return (
+                profile_deployment,
+                int(dep.spec.replicas or 0),
+                int(dep.status.ready_replicas or 0),
+            )
+        except Exception as exc:
+            if not self._is_not_found(exc):
+                raise
+        dep = await self._read_deployment(_CELERY_DEPLOYMENT)
+        return (
+            _CELERY_DEPLOYMENT,
+            int(dep.spec.replicas or 0),
+            int(dep.status.ready_replicas or 0),
+        )
 
     async def _deployment_ready_replicas(self, name: str) -> tuple[int, int]:
         try:
@@ -280,78 +349,40 @@ class KubernetesExecutor:
             "message": f"rollout restart {name} in {self._namespace}",
         }
 
-    async def _delete_pod(self, name: str) -> Dict[str, Any]:
-        if not self._core:
-            raise RuntimeError("Kubernetes API client is not initialized")
-        await self._run_sync(
-            self._core.delete_namespaced_pod,
-            name,
-            self._namespace,
-        )
-        return {
-            "method": "kubernetes",
-            "action": "delete_pod",
-            "pod": name,
-            "namespace": self._namespace,
-            "message": f"deleted pod {name}",
-        }
-
-    async def _celery_pod_for_instance(self, instance_id: str):
-        pods = await self._list_celery_pods()
-        for pod in pods:
-            pod_name = str(pod.metadata.name or "")
-            if pod_name == instance_id or pod_name.endswith(f"-{instance_id}"):
-                return pod
-        return None
-
     async def _systemctl_celery(self, action: str, unit: str) -> Dict[str, Any]:
         instance_id = self._instance_from_worker_unit(unit)
-        spec_rep, _ready = await self._deployment_ready_replicas(_CELERY_DEPLOYMENT)
+        profile = self._profile_from_instance_id(instance_id)
+        deployment, spec_rep, _ready = await self._resolve_celery_deployment(profile)
 
         if action == "start":
-            pod = await self._celery_pod_for_instance(instance_id)
-            if pod is not None and pod.status.phase == "Running":
-                return {
-                    "method": "kubernetes",
-                    "action": "start",
-                    "unit": unit,
-                    "message": f"pod already running for {instance_id}",
-                }
-            return await self._scale_deployment(_CELERY_DEPLOYMENT, spec_rep + 1)
+            max_replicas = self._worker_profile_limits.get(profile)
+            if max_replicas is not None and spec_rep >= max_replicas:
+                raise PermissionError(
+                    f"Celery profile {profile!r} is already at max_worker_instances="
+                    f"{max_replicas}."
+                )
+            result = await self._scale_deployment(deployment, spec_rep + 1)
+            result.update({"unit": unit, "profile": profile})
+            return result
 
         if action == "stop":
-            pod = await self._celery_pod_for_instance(instance_id)
-            if pod is not None:
-                await self._delete_pod(pod.metadata.name)
-                return {
-                    "method": "kubernetes",
-                    "action": "stop",
-                    "unit": unit,
-                    "pod": pod.metadata.name,
-                    "message": f"deleted pod {pod.metadata.name}",
-                }
             if spec_rep > 0:
-                return await self._scale_deployment(_CELERY_DEPLOYMENT, spec_rep - 1)
+                result = await self._scale_deployment(deployment, spec_rep - 1)
+                result.update({"unit": unit, "profile": profile})
+                return result
             return {
                 "method": "kubernetes",
                 "action": "stop",
                 "unit": unit,
-                "message": "celery-worker already scaled to 0",
+                "deployment": deployment,
+                "profile": profile,
+                "message": f"{deployment} already scaled to 0",
             }
 
         if action == "restart":
-            pod = await self._celery_pod_for_instance(instance_id)
-            if pod is not None:
-                name = pod.metadata.name
-                await self._delete_pod(name)
-                return {
-                    "method": "kubernetes",
-                    "action": "restart",
-                    "unit": unit,
-                    "pod": name,
-                    "message": f"deleted pod {name} for restart",
-                }
-            return await self._rollout_restart(_CELERY_DEPLOYMENT)
+            result = await self._rollout_restart(deployment)
+            result.update({"unit": unit, "profile": profile})
+            return result
 
         raise PermissionError(f"Action {action!r} not supported for kubernetes celery control")
 
@@ -398,38 +429,35 @@ class KubernetesExecutor:
             raise PermissionError("redis is external in K8s overlays; not controlled by api-ops")
         return await self._systemctl_workload(action, deployment, unit)
 
-    async def list_instances(self) -> List[Dict[str, str]]:
-        pods = await self._list_celery_pods()
-        out: List[Dict[str, str]] = []
-        for pod in pods:
-            name = str(pod.metadata.name or "")
+    async def list_instances(self) -> List[Dict[str, Any]]:
+        deployments = await self._list_celery_deployments()
+        out: List[Dict[str, Any]] = []
+        for deployment in deployments:
+            name = str(deployment.metadata.name or "")
             if not name:
                 continue
-            phase = str(pod.status.phase or "")
-            if phase not in ("Running", "Pending"):
-                continue
-            instance_id = name
-            unit = f"{_WORKER_UNIT_BASE}@{instance_id}.service"
-            active = "active" if phase == "Running" else "activating"
+            replicas = int(deployment.spec.replicas or 0)
+            ready = int(deployment.status.ready_replicas or 0)
+            profile = (
+                name[len(_CELERY_WORKER_PREFIX) :].replace("-", "_")
+                if name.startswith(_CELERY_WORKER_PREFIX)
+                else "all"
+            )
+            active = "active" if replicas > 0 and ready >= replicas else (
+                "activating" if replicas > 0 else "inactive"
+            )
             out.append({
-                "unit": unit,
+                "unit": f"{_WORKER_UNIT_BASE}@{profile}-deployment.service",
                 "load": "loaded",
                 "active": active,
-                "sub": "running" if phase == "Running" else "start",
-                "description": f"k8s pod {name} ({phase})",
+                "sub": "running" if active == "active" else ("start" if replicas else "dead"),
+                "description": f"k8s deployment {name} ({ready}/{replicas} ready)",
+                "deployment": name,
+                "profile": profile,
+                "replicas": replicas,
+                "ready": ready,
             })
-        if out:
-            return out
-        spec_rep, ready = await self._deployment_ready_replicas(_CELERY_DEPLOYMENT)
-        if spec_rep > 0 and ready == 0:
-            return [{
-                "unit": f"{_WORKER_UNIT_BASE}@pending.service",
-                "load": "loaded",
-                "active": "activating",
-                "sub": "start",
-                "description": f"deployment {_CELERY_DEPLOYMENT} scaling ({ready}/{spec_rep})",
-            }]
-        return []
+        return out
 
     async def redis_is_local(self) -> bool:
         return False
@@ -444,13 +472,17 @@ class KubernetesExecutor:
 
         if self._is_celery_worker_unit(unit):
             instance_id = self._instance_from_worker_unit(unit)
-            pod = await self._celery_pod_for_instance(instance_id)
-            if pod is None:
+            try:
+                _deployment, replicas, ready = await self._resolve_celery_deployment(
+                    self._profile_from_instance_id(instance_id)
+                )
+            except Exception:
+                return "unknown"
+            if replicas == 0:
                 return "inactive"
-            phase = str(pod.status.phase or "")
-            if phase == "Running":
+            if ready >= replicas:
                 return "active"
-            if phase == "Pending":
+            if ready > 0:
                 return "activating"
             return "inactive"
 
@@ -467,20 +499,36 @@ class KubernetesExecutor:
         return "inactive"
 
     async def force_stop_worker_unit(self, unit: str) -> Dict[str, Any]:
-        self._validate("stop", unit)
-        RestrictedExecutor.assert_celery_worker_instance_unit(unit)
-        instance_id = self._instance_from_worker_unit(unit)
-        pod = await self._celery_pod_for_instance(instance_id)
-        if pod is not None:
-            return await self._delete_pod(pod.metadata.name)
-        spec_rep, _ready = await self._deployment_ready_replicas(_CELERY_DEPLOYMENT)
-        if spec_rep > 0:
-            return await self._scale_deployment(_CELERY_DEPLOYMENT, spec_rep - 1)
+        # A Deployment controller immediately replaces deleted Pods.  Scaling is
+        # the only meaningful "force stop" for a Kubernetes Celery worker.
+        return await self._systemctl_celery("stop", unit)
+
+    async def celery_runtime_capabilities(self) -> Dict[str, Any]:
+        """Best-effort K8s runtime facts for the Celery capabilities endpoint."""
+        if not self._k8s_reachable:
+            return {"beat_running": None, "worker_profiles": [], "monolithic_worker": False}
+        try:
+            beat = await self._read_deployment(_CELERY_BEAT_DEPLOYMENT)
+            beat_running: Optional[bool] = bool(
+                int(beat.spec.replicas or 0) > 0
+                and int(beat.status.ready_replicas or 0) > 0
+            )
+        except Exception:
+            beat_running = None
+        try:
+            deployments = await self._list_celery_deployments()
+        except Exception:
+            deployments = []
+        names = {str(dep.metadata.name or "") for dep in deployments}
+        profiles = sorted(
+            name[len(_CELERY_WORKER_PREFIX) :].replace("-", "_")
+            for name in names
+            if name.startswith(_CELERY_WORKER_PREFIX)
+        )
         return {
-            "method": "kubernetes",
-            "action": "force_stop",
-            "unit": unit,
-            "message": "no celery-worker replicas to stop",
+            "beat_running": beat_running,
+            "worker_profiles": profiles,
+            "monolithic_worker": _CELERY_DEPLOYMENT in names,
         }
 
     def deployment_for_unit(self, unit: str) -> Optional[str]:

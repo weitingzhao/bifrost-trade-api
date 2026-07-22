@@ -28,7 +28,12 @@ def _config_for_capabilities() -> dict:
         return {}
 
 
-def build_celery_capabilities_payload(celery_app: Any) -> Dict[str, Any]:
+def build_celery_capabilities_payload(
+    celery_app: Any,
+    *,
+    beat_running: bool | None = None,
+    consuming_queues: List[str] | None = None,
+) -> Dict[str, Any]:
     """Return registered tasks + canonical queue names + ``run_massive_job`` kind/mode matrix + beat tasks."""
     cfg = _config_for_capabilities()
     for msg in ops_celery_config_validation_errors(cfg):
@@ -61,5 +66,7 @@ def build_celery_capabilities_payload(celery_app: Any) -> Dict[str, Any]:
         "run_massive_job_matrix": matrix,
         "beat_tasks": beat_tasks,
         "broker_queue_labels": broker_queue_labels,
+        "beat_running": beat_running,
+        "consuming_queues": list(consuming_queues or []),
     }
     return out
