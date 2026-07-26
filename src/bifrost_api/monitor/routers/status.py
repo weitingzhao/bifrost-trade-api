@@ -716,12 +716,16 @@ def get_status(request: Request) -> Dict[str, Any]:
         )
         account_sync_hb = reader.get_account_sync_heartbeat()
         account_sync_block: Optional[Dict[str, Any]] = None
+        # Health hash lives on redis-ib (same bus account-sync writes); not redis_queue.
+        _asd_health_r = _ib_r if _ib_r is not None else _r
         if account_sync_hb is not None:
             _as_last_ts = account_sync_hb.get("last_ts")
             _now_ts = time.time()
             _as_alive = _as_last_ts is not None and (_now_ts - float(_as_last_ts)) < 35
-            if _rurl:
-                if _r is None or not _account_sync_redis_reports_alive(_r, now_ts=_now_ts):
+            if _ib_rurl or _rurl:
+                if _asd_health_r is None or not _account_sync_redis_reports_alive(
+                    _asd_health_r, now_ts=_now_ts
+                ):
                     _as_alive = False
             account_sync_block = {
                 "heartbeat": {
@@ -740,8 +744,8 @@ def get_status(request: Request) -> Dict[str, Any]:
             }
         else:
             try:
-                if _rurl:
-                    _asd_h = hgetall_account_sync_daemon_health(_r)
+                if (_ib_rurl or _rurl) and _asd_health_r is not None:
+                    _asd_h = hgetall_account_sync_daemon_health(_asd_health_r)
                     if _asd_h:
                         _asd_alive = redis_hash_field_truthy(_asd_h, "alive")
                         account_sync_block = {
