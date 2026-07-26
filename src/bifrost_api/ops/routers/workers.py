@@ -185,10 +185,12 @@ def list_worker_profiles(request: Request) -> Dict[str, Any]:
 async def scale_worker(
     request: Request, body: ScaleRequest = Body(...),
 ) -> Any:
-    """Add or remove a systemd template-instance worker.
+    """Add or remove a Celery worker instance (K8s Deployment scale).
 
     **add**: requires ``worker_type`` (profile key); backend allocates instance_id.
     **remove**: requires ``instance_id``.
+
+    Kubernetes-only: scales ``celery-worker*`` Deployments via the K8s executor.
     """
     denied = _require_role(request, "operator")
     if denied:
@@ -422,57 +424,40 @@ async def broker_status_extended(request: Request) -> Dict[str, Any]:
 async def broker_control(
     request: Request, body: BrokerControlRequest = Body(...),
 ) -> Any:
-    """Start / stop / restart the local Redis broker. Requires admin role."""
+    """Gone — Redis broker is external in K8s (not controlled by api-ops).
+
+    Historically started/stopped a local systemd Redis for compose/dev hosts.
+    K8s overlays use shared Redis; this endpoint always returns 410.
+    """
+    del body  # unused — endpoint is retired
     denied = _require_role(request, "admin")
     if denied:
         _audit(
             request,
-            f"broker_{body.action.value}",
+            "broker_control",
             "redis",
             "denied",
             detail=f"role={_role(request)}",
         )
         return denied
 
-    exc = _executor(request)
-    if not await exc.redis_is_local():
-        _audit(
-            request,
-            f"broker_{body.action.value}",
-            "redis",
-            "rejected",
-            detail="Redis not locally managed via systemd",
-        )
-        return JSONResponse(
-            status_code=400,
-            content={
-                "ok": False,
-                "error": "Redis is not locally managed; cannot control via systemd.",
-            },
-        )
-
-    try:
-        result = await exc.systemctl_redis(body.action.value)
-    except Exception as e:
-        _audit(
-            request,
-            f"broker_{body.action.value}",
-            "redis",
-            "failed",
-            detail=str(e),
-        )
-        return JSONResponse(
-            status_code=500,
-            content={"ok": False, "error": str(e)},
-        )
-
     _audit(
         request,
-        f"broker_{body.action.value}",
+        "broker_control",
         "redis",
-        "success",
+        "rejected",
+        detail="broker control removed; Redis is external in K8s",
     )
-    return {"ok": True, "action": body.action.value, "result": result}
+    return JSONResponse(
+        status_code=410,
+        content={
+            "ok": False,
+            "error": (
+                "Broker control is gone (410). Redis is external in Kubernetes "
+                "overlays and is not controlled via api-ops."
+            ),
+        },
+    )
 
 
 # ── Console log streaming (SSE) ───────────────────────────────────────

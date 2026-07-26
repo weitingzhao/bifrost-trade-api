@@ -10,9 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from bifrost_api.ops.docker_compose_map import (
-    compose_service_for_systemd_unit,
-    is_compose_managed_unit,
+from bifrost_api.ops.workload_map import (
+    deployment_for_unit as map_deployment_for_unit,
+    is_managed_unit,
 )
 from bifrost_api.ops.services.executor_common import (
     ActionValidator,
@@ -553,7 +553,7 @@ class KubernetesExecutor:
         if self._is_celery_worker_unit(unit):
             return await self._systemctl_celery(action, unit)
 
-        deployment = compose_service_for_systemd_unit(unit)
+        deployment = map_deployment_for_unit(unit)
         if not deployment:
             raise PermissionError(
                 f"Unit {unit!r} has no deployment mapping; kubernetes executor cannot control it."
@@ -619,7 +619,7 @@ class KubernetesExecutor:
                 return "activating"
             return "inactive"
 
-        deployment = compose_service_for_systemd_unit(unit)
+        deployment = map_deployment_for_unit(unit)
         if not deployment or deployment == "redis":
             return "unknown"
         spec_rep, ready, _kind = await self._workload_ready_replicas(deployment)
@@ -665,15 +665,10 @@ class KubernetesExecutor:
         }
 
     def deployment_for_unit(self, unit: str) -> Optional[str]:
-        return compose_service_for_systemd_unit(unit)
-
-    def compose_service_for_unit(self, unit: str) -> Optional[str]:
-        """Alias for routers that already use compose_service_for_unit."""
-        return self.deployment_for_unit(unit)
+        return map_deployment_for_unit(unit)
 
     def manages_unit(self, unit: str) -> bool:
-        dep = is_compose_managed_unit(unit)
-        if not dep:
+        if not is_managed_unit(unit):
             return False
-        svc = compose_service_for_systemd_unit(unit)
+        svc = map_deployment_for_unit(unit)
         return svc not in (None, "redis")

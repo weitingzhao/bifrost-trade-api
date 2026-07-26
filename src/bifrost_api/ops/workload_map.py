@@ -1,11 +1,11 @@
-"""Map Legacy systemd unit names to Docker Compose service names (Phase 2C)."""
+"""Map Legacy systemd unit names to Kubernetes Deployment / workload names."""
 
 from __future__ import annotations
 
 from typing import Optional
 
-# systemd_unit stem (with or without .service) → compose service name
-SYSTEMD_UNIT_TO_COMPOSE_SERVICE: dict[str, str] = {
+# systemd unit stem (with or without .service) → K8s Deployment name
+UNIT_TO_DEPLOYMENT: dict[str, str] = {
     "bifrost-engine": "daemon",
     "bifrost-engine.service": "daemon",
     "bifrost-massive-ws": "massive-ws",
@@ -29,21 +29,21 @@ SYSTEMD_UNIT_TO_COMPOSE_SERVICE: dict[str, str] = {
 _WORKER_UNIT_BASE = "bifrost-celery-worker"
 
 
-def compose_service_for_systemd_unit(unit: str) -> Optional[str]:
-    """Resolve compose service for a whitelisted systemd unit name."""
+def deployment_for_unit(unit: str) -> Optional[str]:
+    """Resolve K8s Deployment name for a whitelisted systemd-style unit name."""
     u = (unit or "").strip()
     if not u:
         return None
-    direct = SYSTEMD_UNIT_TO_COMPOSE_SERVICE.get(u)
+    direct = UNIT_TO_DEPLOYMENT.get(u)
     if direct:
         return direct
-    # bifrost-celery-worker@profile-1.service → celery-worker (single container in prod compose)
+    # bifrost-celery-worker@profile-1.service → celery-worker
     prefix = f"{_WORKER_UNIT_BASE}@"
     if u.startswith(prefix) and u.endswith(".service"):
         return "celery-worker"
     stem = u.removesuffix(".service")
-    return SYSTEMD_UNIT_TO_COMPOSE_SERVICE.get(stem)
+    return UNIT_TO_DEPLOYMENT.get(stem)
 
 
-def is_compose_managed_unit(unit: str) -> bool:
-    return compose_service_for_systemd_unit(unit) is not None
+def is_managed_unit(unit: str) -> bool:
+    return deployment_for_unit(unit) is not None
