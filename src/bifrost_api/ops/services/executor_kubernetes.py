@@ -14,9 +14,11 @@ from bifrost_api.ops.docker_compose_map import (
     compose_service_for_systemd_unit,
     is_compose_managed_unit,
 )
-from bifrost_api.ops.services.executor_local import (
+from bifrost_api.ops.services.executor_common import (
+    ActionValidator,
     _WORKER_UNIT_BASE,
-    RestrictedExecutor,
+    instance_unit as _instance_unit,
+    worker_to_unit as _worker_to_unit,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,11 +63,6 @@ class KubernetesExecutor:
             key: max(1, int(limit))
             for key, limit in (worker_profile_limits or {}).items()
         }
-        self._redis_delegate = RestrictedExecutor(
-            allowed_units=[],
-            broker_url=broker_url,
-            use_redis_stop=use_redis_stop,
-        )
         self._apps = None
         self._core = None
         self._k8s_reachable = self._init_clients()
@@ -144,18 +141,11 @@ class KubernetesExecutor:
             for key, limit in limits.items()
         }
 
-    worker_to_unit = staticmethod(RestrictedExecutor.worker_to_unit)
-    instance_unit = staticmethod(RestrictedExecutor.instance_unit)
-
-    def _validator(self) -> RestrictedExecutor:
-        return RestrictedExecutor(
-            allowed_units=list(self._allowed),
-            broker_url="",
-            use_redis_stop=False,
-        )
+    worker_to_unit = staticmethod(_worker_to_unit)
+    instance_unit = staticmethod(_instance_unit)
 
     def _validate(self, action: str, unit: str) -> None:
-        self._validator()._validate(action, unit)  # noqa: SLF001
+        ActionValidator(list(self._allowed)).validate(action, unit)
 
     async def _run_sync(self, fn, *args, **kwargs):
         return await asyncio.to_thread(fn, *args, **kwargs)

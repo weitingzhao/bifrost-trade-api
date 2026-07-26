@@ -38,7 +38,6 @@ class AccessControlAllowPrivateNetworkMiddleware(BaseHTTPMiddleware):
 DEFAULT_ALLOWED_UNITS = [
     "bifrost-celery-worker",
     "bifrost-celery-beat",
-    # Market ingest (WS Connector); required for systemctl_is_active pgrep + whitelist on subprocess Mac.
     "bifrost-massive-ws",
     "bifrost-ib-operator",
     "bifrost-ib-market-gateway",
@@ -55,35 +54,6 @@ def _allowed_units_from_config(config: dict) -> List[str]:
     if isinstance(units, list) and units:
         return [str(u).strip() for u in units if str(u).strip()]
     return list(DEFAULT_ALLOWED_UNITS)
-
-
-def _project_root_for_subprocess_executor(
-    config: dict, resolved_config_path: Optional[str],
-) -> Path:
-    """Infer repo root for ``run_celery.py`` when ``ops.local_control=subprocess``."""
-    ops_cfg = config.get("ops") or {}
-    raw = (ops_cfg.get("project_root") or "").strip()
-    if raw:
-        return Path(raw).expanduser().resolve()
-    if not resolved_config_path:
-        raise ValueError(
-            "ops.local_control=subprocess requires ops.project_root or resolved_config_path"
-        )
-    p = Path(resolved_config_path).resolve()
-    if p.parent.name == "config":
-        return p.parent.parent
-    return p.parent
-
-
-def _socket_project_root_for_subprocess_executor(
-    config: dict, resolved_config_path: Optional[str],
-) -> Path:
-    """Infer repo root for socket ingest scripts (``run_massive_ws.py``, IB edge)."""
-    ops_cfg = config.get("ops") or {}
-    raw = (ops_cfg.get("socket_project_root") or "").strip()
-    if raw:
-        return Path(raw).expanduser().resolve()
-    return _project_root_for_subprocess_executor(config, resolved_config_path)
 
 
 def create_ops_app(
@@ -153,148 +123,37 @@ def create_ops_app(
 
     ops_cfg = config.get("ops") or {}
     use_redis_stop = ops_cfg.get("use_redis_stop", True)
-    executor_mode = ops_cfg.get("executor_mode", "local")
-    local_control_raw = str(ops_cfg.get("local_control") or "systemd").strip().lower()
-    local_control = (
-        local_control_raw if local_control_raw in ("systemd", "subprocess") else "systemd"
+    executor_mode = str(ops_cfg.get("executor_mode") or "kubernetes").strip().lower()
+    if executor_mode != "kubernetes":
+        raise RuntimeError(
+            f"ops.executor_mode={executor_mode!r} is no longer supported. "
+            "api-ops is Kubernetes-only; set executor_mode: kubernetes "
+            "(legacy local/docker/agent executors were removed)."
+        )
+
+    from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
+
+    namespace = KubernetesExecutor.resolve_namespace(ops_cfg)
+    daemon_scale_guard = KubernetesExecutor.resolve_daemon_scale_guard(ops_cfg)
+    executor = KubernetesExecutor(
+        namespace=namespace,
+        allowed_units=allowed_units,
+        broker_url=broker_url,
+        use_redis_stop=use_redis_stop,
+        daemon_scale_guard=daemon_scale_guard,
     )
-
-    if executor_mode == "agent":
-        from bifrost_api.ops.services.executor_agent import AgentExecutor
-
-        agent_socket = ops_cfg.get(
-            "agent_socket",
-            "/run/bifrost-agent/bifrost-agent.sock",
-        )
-        executor = AgentExecutor(
-            socket_path=agent_socket,
-            allowed_units=allowed_units,
-            broker_url=broker_url,
-            use_redis_stop=use_redis_stop,
-        )
-        logger.info("Executor mode: agent (socket=%s)", agent_socket)
-    elif executor_mode == "docker":
-        from bifrost_api.ops.services.executor_docker import DockerComposeExecutor
-
-        docker_cfg = ops_cfg.get("docker") if isinstance(ops_cfg.get("docker"), dict) else {}
-        workdir = (
-            str(docker_cfg.get("workdir") or "").strip()
-            or os.environ.get("BIFROST_COMPOSE_WORKDIR", "/infra")
-        )
-        workdir_path = Path(workdir)
-        raw_files = docker_cfg.get("compose_files")
-        if isinstance(raw_files, list) and raw_files:
-            compose_files = [str(f).strip() for f in raw_files if str(f).strip()]
-        else:
-            compose_files = ["docker-compose.yml"]
-        if os.environ.get("BIFROST_BUILD_LOCAL", "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-        ):
-            compose_files.append("docker-compose.local.yml")
-        compose_files = [
-            f
-            for f in compose_files
-            if (workdir_path / f).is_file()
-        ]
-        if not compose_files:
-            compose_files = ["docker-compose.yml"]
-        compose_project = (
-            str(docker_cfg.get("compose_project") or "").strip()
-            or os.environ.get("COMPOSE_PROJECT_NAME")
-            or None
-        )
-        docker_socket = str(docker_cfg.get("socket_path") or "/var/run/docker.sock")
-        host_workdir = (
-            str(docker_cfg.get("host_workdir") or "").strip()
-            or os.environ.get("BIFROST_COMPOSE_HOST_WORKDIR", "").strip()
-            or None
-        )
-        executor = DockerComposeExecutor(
-            workdir=workdir,
-            compose_files=compose_files,
-            allowed_units=allowed_units,
-            broker_url=broker_url,
-            use_redis_stop=use_redis_stop,
-            compose_project=compose_project,
-            docker_socket=docker_socket,
-            host_workdir=host_workdir,
-        )
-        logger.info(
-            "Executor mode: docker (workdir=%s, host_workdir=%s, files=%s, project=%s, sock=%s)",
-            workdir,
-            host_workdir or "(none)",
-            compose_files,
-            compose_project,
-            docker_socket,
-        )
-    elif executor_mode == "kubernetes":
-        from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
-
-        namespace = KubernetesExecutor.resolve_namespace(ops_cfg)
-        daemon_scale_guard = KubernetesExecutor.resolve_daemon_scale_guard(ops_cfg)
-        executor = KubernetesExecutor(
-            namespace=namespace,
-            allowed_units=allowed_units,
-            broker_url=broker_url,
-            use_redis_stop=use_redis_stop,
-            daemon_scale_guard=daemon_scale_guard,
-        )
-        logger.info(
-            "Executor mode: kubernetes (namespace=%s, reachable=%s, daemon_scale_guard=%s)",
-            namespace,
-            executor.k8s_reachable,
-            daemon_scale_guard,
-        )
-    elif local_control == "subprocess":
-        from bifrost_api.ops.services.executor_local import SubprocessLocalExecutor
-
-        project_root = _project_root_for_subprocess_executor(config, resolved_config_path)
-        socket_root = _socket_project_root_for_subprocess_executor(config, resolved_config_path)
-        executor = SubprocessLocalExecutor(
-            allowed_units=allowed_units,
-            broker_url=broker_url,
-            use_redis_stop=use_redis_stop,
-            project_root=project_root,
-            socket_project_root=socket_root,
-            resolved_config_path=resolved_config_path,
-        )
-        logger.info(
-            "Executor mode: local subprocess (worker=%s, socket=%s)",
-            project_root,
-            socket_root,
-        )
-    else:
-        from bifrost_api.ops.services.executor_local import RestrictedExecutor
-
-        executor = RestrictedExecutor(
-            allowed_units=allowed_units,
-            broker_url=broker_url,
-            use_redis_stop=use_redis_stop,
-        )
-        logger.info("Executor mode: local (systemd)")
+    logger.info(
+        "Executor mode: kubernetes (namespace=%s, reachable=%s, daemon_scale_guard=%s)",
+        namespace,
+        executor.k8s_reachable,
+        daemon_scale_guard,
+    )
 
     app.state.worker_state_service = worker_svc
     app.state.bifrost_config = config
     app.state.executor = executor
-    app.state.agent_socket_path = (
-        str(
-            ops_cfg.get(
-                "agent_socket",
-                "/run/bifrost-agent/bifrost-agent.sock",
-            ),
-        ).strip()
-        if executor_mode == "agent"
-        else None
-    )
     app.state.audit_log: list = []
-    try:
-        app.state.ops_project_root = _project_root_for_subprocess_executor(
-            config, resolved_config_path,
-        )
-    except ValueError:
-        app.state.ops_project_root = None
+    app.state.ops_project_root = None
 
     # ── Auth ──────────────────────────────────────────────────────────────────
 
@@ -357,49 +216,20 @@ def create_ops_app(
         out["port"] = int(config["server"]["ops_port"])
         if resolved_config_path:
             out["config_path"] = str(Path(resolved_config_path).resolve())
-        out["executor_mode"] = executor_mode
-        if executor_mode == "docker":
-            from bifrost_api.ops.services.executor_docker import DockerComposeExecutor
+        out["executor_mode"] = "kubernetes"
+        from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
 
-            out["local_control"] = "docker"
-            out["market_ingest_script_control"] = False
-            if isinstance(app.state.executor, DockerComposeExecutor):
-                ex = app.state.executor
-                out["docker_reachable"] = ex.docker_reachable
-                out["compose_workdir"] = ex.compose_workdir
-        elif executor_mode == "kubernetes":
-            from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
-
-            out["local_control"] = "kubernetes"
-            out["market_ingest_script_control"] = False
-            if isinstance(app.state.executor, KubernetesExecutor):
-                ex = app.state.executor
-                out["k8s_reachable"] = ex.k8s_reachable
-                out["k8s_namespace"] = ex.namespace
-                out["daemon_scale_guard"] = ex.daemon_scale_guard
-        elif executor_mode == "local":
-            out["local_control"] = local_control
-            out["market_ingest_script_control"] = local_control == "subprocess"
-        else:
-            # Agent mode: same effective plane as systemd; omitting local_control confused clients
-            # that gate ingest on subprocess vs systemd.
-            out["local_control"] = "systemd"
-            out["market_ingest_script_control"] = False
+        if isinstance(app.state.executor, KubernetesExecutor):
+            ex = app.state.executor
+            out["k8s_reachable"] = ex.k8s_reachable
+            out["k8s_namespace"] = ex.namespace
+            out["daemon_scale_guard"] = ex.daemon_scale_guard
         out["auth_required"] = app.state.ops_auth.has_tokens
         out["audit_mode"] = audit_store.stats().get("mode", "memory")
         return out
 
     async def _health_payload_async() -> Dict[str, Any]:
         out = _health_payload_sync()
-        sock = getattr(app.state, "agent_socket_path", None)
-        if sock:
-            from bifrost_api.ops.agent.health_probe import probe_agent_reachability
-
-            out["agent_socket"] = sock
-            ok, err = await probe_agent_reachability(sock)
-            out["agent_reachable"] = ok
-            if err:
-                out["agent_error"] = err
         from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
 
         if isinstance(app.state.executor, KubernetesExecutor) and app.state.executor.k8s_reachable:

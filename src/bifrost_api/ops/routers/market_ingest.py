@@ -297,18 +297,9 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
             runtime_externally_managed = True
             if not redis_control_host:
                 redis_control_host = "platform-ib-gateway"
-        from bifrost_api.ops.services.executor_docker import DockerComposeExecutor
         from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
-        from bifrost_api.ops.services.executor_local import SubprocessLocalExecutor
 
-        runtime_kind = "systemd"
-        if isinstance(exc, KubernetesExecutor):
-            runtime_kind = "kubernetes"
-        elif isinstance(exc, DockerComposeExecutor):
-            runtime_kind = "docker"
-        elif isinstance(exc, SubprocessLocalExecutor):
-            runtime_kind = "subprocess"
-
+        runtime_kind = "kubernetes"
         display = derive_ingest_display_state(
             service_id=row_sid,
             process_active=active,
@@ -346,10 +337,6 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
                 guard = exc.scale_guard_for_deployment(dep)
                 if guard is not None:
                     item["k8s_scale_guard"] = guard
-        elif isinstance(exc, DockerComposeExecutor):
-            cs = exc.compose_service_for_unit(unit)
-            if cs:
-                item["compose_service"] = cs
         out.append(item)
     return {"ok": True, "services": out}
 
