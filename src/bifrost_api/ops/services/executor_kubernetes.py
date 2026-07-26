@@ -24,8 +24,19 @@ logger = logging.getLogger(__name__)
 _CELERY_DEPLOYMENT = "celery-worker"
 _CELERY_BEAT_DEPLOYMENT = "celery-beat"
 _CELERY_WORKER_PREFIX = "celery-worker-"
+_DAEMON_DEPLOYMENT = "daemon"
+_ACCOUNT_SYNC_DEPLOYMENT = "account-sync"
 _DEPLOY_TIMEOUT_SEC = 120
 _CELERY_INSTANCE_RE = re.compile(r"^(?P<profile>[A-Za-z0-9_]+)-\d+$")
+_VALID_DAEMON_SCALE_GUARDS = frozenset({"freeze", "observe", "off"})
+_D10_FREEZE_MESSAGE = (
+    "Trading execution is BLOCKED (D10). Daemon scale-up requires Owner unlock."
+)
+_HEALTH_WORKLOAD_NAMES = (
+    _DAEMON_DEPLOYMENT,
+    _ACCOUNT_SYNC_DEPLOYMENT,
+    _CELERY_BEAT_DEPLOYMENT,
+)
 
 
 class KubernetesExecutor:
@@ -39,11 +50,13 @@ class KubernetesExecutor:
         broker_url: str,
         use_redis_stop: bool = True,
         worker_profile_limits: Optional[Dict[str, int]] = None,
+        daemon_scale_guard: str = "freeze",
     ) -> None:
         self._namespace = namespace.strip() or "default"
         self._allowed: Set[str] = set(allowed_units)
         self._broker_url = broker_url
         self._use_redis_stop = use_redis_stop
+        self._daemon_scale_guard = self.normalize_daemon_scale_guard(daemon_scale_guard)
         self._worker_profile_limits = {
             key: max(1, int(limit))
             for key, limit in (worker_profile_limits or {}).items()
@@ -58,6 +71,20 @@ class KubernetesExecutor:
         self._k8s_reachable = self._init_clients()
 
     @staticmethod
+    def normalize_daemon_scale_guard(raw: Optional[str]) -> str:
+        """Return ``freeze`` | ``observe`` | ``off`` (default ``freeze`` for D10)."""
+        val = str(raw or "").strip().lower()
+        if val in _VALID_DAEMON_SCALE_GUARDS:
+            return val
+        return "freeze"
+
+    @staticmethod
+    def resolve_daemon_scale_guard(ops_cfg: dict) -> str:
+        return KubernetesExecutor.normalize_daemon_scale_guard(
+            ops_cfg.get("daemon_scale_guard") if isinstance(ops_cfg, dict) else None
+        )
+
+    @staticmethod
     def resolve_namespace(ops_cfg: dict) -> str:
         k8s_cfg = ops_cfg.get("kubernetes") if isinstance(ops_cfg.get("kubernetes"), dict) else {}
         raw = (
@@ -70,6 +97,22 @@ class KubernetesExecutor:
         if ns_path.is_file():
             return ns_path.read_text(encoding="utf-8").strip()
         return "default"
+
+    @property
+    def daemon_scale_guard(self) -> str:
+        return self._daemon_scale_guard
+
+    def set_daemon_scale_guard(self, guard: str) -> None:
+        self._daemon_scale_guard = self.normalize_daemon_scale_guard(guard)
+
+    def _assert_daemon_scale_allowed(self, action: str, *, scaling_up: bool) -> None:
+        """D10 freeze: block daemon start / restart that would scale replicas up from 0."""
+        if self._daemon_scale_guard != "freeze":
+            return
+        if not scaling_up:
+            return
+        if action in ("start", "restart"):
+            raise PermissionError(_D10_FREEZE_MESSAGE)
 
     def _init_clients(self) -> bool:
         try:
@@ -386,6 +429,23 @@ class KubernetesExecutor:
 
         raise PermissionError(f"Action {action!r} not supported for kubernetes celery control")
 
+    async def _co_scale_account_sync(self, daemon_action: str) -> Optional[Dict[str, Any]]:
+        """Keep account-sync paired with daemon (Owner D-A: co-scale pair)."""
+        try:
+            spec_rep, _ready, kind = await self._workload_ready_replicas(_ACCOUNT_SYNC_DEPLOYMENT)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("co-scale account-sync: read failed: %s", exc)
+            return None
+        if daemon_action == "stop":
+            if spec_rep > 0:
+                return await self._scale_workload(kind, _ACCOUNT_SYNC_DEPLOYMENT, 0)
+            return None
+        if daemon_action in ("start", "restart"):
+            if spec_rep == 0:
+                return await self._scale_workload(kind, _ACCOUNT_SYNC_DEPLOYMENT, 1)
+            return None
+        return None
+
     async def _systemctl_workload(
         self,
         action: str,
@@ -394,7 +454,11 @@ class KubernetesExecutor:
     ) -> Dict[str, Any]:
         # W5: workload may be a Deployment (celery/massive-ws) or a StatefulSet (IB edge).
         spec_rep, _ready, kind = await self._workload_ready_replicas(workload)
+        is_daemon = workload == _DAEMON_DEPLOYMENT
+
         if action == "start":
+            if is_daemon:
+                self._assert_daemon_scale_allowed(action, scaling_up=(spec_rep == 0))
             if spec_rep > 0:
                 out = {
                     "method": "kubernetes",
@@ -404,15 +468,94 @@ class KubernetesExecutor:
                     "message": f"{kind}/{workload} already has replicas={spec_rep}",
                 }
                 out["deployment" if kind == "deployment" else "statefulset"] = workload
+                if is_daemon:
+                    co = await self._co_scale_account_sync("start")
+                    if co:
+                        out["co_scale_account_sync"] = co
                 return out
-            return await self._scale_workload(kind, workload, 1)
+            result = await self._scale_workload(kind, workload, 1)
+            result["unit"] = unit
+            if is_daemon:
+                co = await self._co_scale_account_sync("start")
+                if co:
+                    result["co_scale_account_sync"] = co
+            return result
+
         if action == "stop":
-            return await self._scale_workload(kind, workload, 0)
+            result = await self._scale_workload(kind, workload, 0)
+            result["unit"] = unit
+            if is_daemon:
+                co = await self._co_scale_account_sync("stop")
+                if co:
+                    result["co_scale_account_sync"] = co
+            return result
+
         if action == "restart":
+            if is_daemon:
+                # Scale-up via restart (replicas==0 → 1) is blocked under D10 freeze.
+                # Rollout restart of an already-running observe daemon is allowed.
+                self._assert_daemon_scale_allowed(action, scaling_up=(spec_rep == 0))
             if spec_rep == 0:
-                return await self._scale_workload(kind, workload, 1)
-            return await self._rollout_restart_workload(kind, workload)
+                result = await self._scale_workload(kind, workload, 1)
+                result["unit"] = unit
+                if is_daemon:
+                    co = await self._co_scale_account_sync("restart")
+                    if co:
+                        result["co_scale_account_sync"] = co
+                return result
+            result = await self._rollout_restart_workload(kind, workload)
+            result["unit"] = unit
+            if is_daemon:
+                co = await self._co_scale_account_sync("restart")
+                if co:
+                    result["co_scale_account_sync"] = co
+            return result
+
         raise PermissionError(f"Action {action!r} not supported")
+
+    async def workload_status_snapshot(self) -> Dict[str, Dict[str, Any]]:
+        """Best-effort replicas/ready for daemon, account-sync, celery-beat (Ops health)."""
+        out: Dict[str, Dict[str, Any]] = {}
+        if not self._k8s_reachable:
+            return out
+        for name in _HEALTH_WORKLOAD_NAMES:
+            try:
+                spec_rep, ready, kind = await self._workload_ready_replicas(name)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("workload_status_snapshot %s: %s", name, exc)
+                continue
+            row: Dict[str, Any] = {
+                "replicas": spec_rep,
+                "ready": ready,
+                "kind": kind,
+            }
+            if name == _DAEMON_DEPLOYMENT:
+                row["mode"] = (
+                    "freeze"
+                    if self._daemon_scale_guard == "freeze"
+                    else ("observe" if self._daemon_scale_guard == "observe" else "off")
+                )
+                row["scale_guard"] = self._daemon_scale_guard
+            out[name] = row
+        return out
+
+    def scale_guard_for_deployment(self, deployment: Optional[str]) -> Optional[str]:
+        """Return daemon_scale_guard for daemon deployment; None for other workloads."""
+        if deployment == _DAEMON_DEPLOYMENT:
+            return self._daemon_scale_guard
+        return None
+
+    async def deployment_replica_counts(
+        self, deployment: str
+    ) -> tuple[Optional[int], Optional[int]]:
+        """Return (replicas, ready) for a named workload, or (None, None) on failure."""
+        if not deployment or not self._k8s_reachable:
+            return None, None
+        try:
+            spec_rep, ready, _kind = await self._workload_ready_replicas(deployment)
+            return spec_rep, ready
+        except Exception:  # noqa: BLE001
+            return None, None
 
     async def _systemctl(self, action: str, unit: str, timeout: int | None = None) -> Dict[str, Any]:
         del timeout  # K8s patches are async; callers poll systemctl_is_active

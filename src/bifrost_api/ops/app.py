@@ -233,16 +233,19 @@ def create_ops_app(
         from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
 
         namespace = KubernetesExecutor.resolve_namespace(ops_cfg)
+        daemon_scale_guard = KubernetesExecutor.resolve_daemon_scale_guard(ops_cfg)
         executor = KubernetesExecutor(
             namespace=namespace,
             allowed_units=allowed_units,
             broker_url=broker_url,
             use_redis_stop=use_redis_stop,
+            daemon_scale_guard=daemon_scale_guard,
         )
         logger.info(
-            "Executor mode: kubernetes (namespace=%s, reachable=%s)",
+            "Executor mode: kubernetes (namespace=%s, reachable=%s, daemon_scale_guard=%s)",
             namespace,
             executor.k8s_reachable,
+            daemon_scale_guard,
         )
     elif local_control == "subprocess":
         from bifrost_api.ops.services.executor_local import SubprocessLocalExecutor
@@ -373,6 +376,7 @@ def create_ops_app(
                 ex = app.state.executor
                 out["k8s_reachable"] = ex.k8s_reachable
                 out["k8s_namespace"] = ex.namespace
+                out["daemon_scale_guard"] = ex.daemon_scale_guard
         elif executor_mode == "local":
             out["local_control"] = local_control
             out["market_ingest_script_control"] = local_control == "subprocess"
@@ -396,6 +400,14 @@ def create_ops_app(
             out["agent_reachable"] = ok
             if err:
                 out["agent_error"] = err
+        from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
+
+        if isinstance(app.state.executor, KubernetesExecutor) and app.state.executor.k8s_reachable:
+            try:
+                out["k8s_workloads"] = await app.state.executor.workload_status_snapshot()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ops health k8s_workloads failed: %s", exc)
+                out["k8s_workloads"] = {}
         return out
 
     @app.get("/health")

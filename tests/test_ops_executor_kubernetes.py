@@ -31,12 +31,168 @@ def executor(monkeypatch):
             "bifrost-ib-ingestor",
             "bifrost-massive-ws",
             "bifrost-celery-worker",
+            "bifrost-engine",
+            "bifrost-account-sync-daemon",
         ],
         broker_url="redis://127.0.0.1:6379/0",
+        daemon_scale_guard="freeze",
     )
     ex._apps = MagicMock()
     ex._core = MagicMock()
     return ex
+
+
+def _named_deployment(name: str, replicas: int, ready: int):
+    return SimpleNamespace(
+        metadata=SimpleNamespace(name=name, labels={"app.kubernetes.io/name": name}),
+        spec=SimpleNamespace(replicas=replicas),
+        status=SimpleNamespace(ready_replicas=ready),
+    )
+
+
+@pytest.mark.asyncio
+async def test_daemon_start_blocked_by_d10_freeze(executor):
+    executor._read_deployment = AsyncMock(return_value=_named_deployment("daemon", 0, 0))
+    executor._patch_deployment = AsyncMock()
+
+    with pytest.raises(PermissionError, match="BLOCKED \\(D10\\)"):
+        await executor._systemctl("start", "bifrost-engine.service")
+
+    executor._patch_deployment.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_daemon_restart_scale_up_blocked_by_d10_freeze(executor):
+    executor._read_deployment = AsyncMock(return_value=_named_deployment("daemon", 0, 0))
+    executor._patch_deployment = AsyncMock()
+
+    with pytest.raises(PermissionError, match="BLOCKED \\(D10\\)"):
+        await executor._systemctl("restart", "bifrost-engine.service")
+
+    executor._patch_deployment.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_daemon_rollout_restart_allowed_when_already_running(executor):
+    """Freeze blocks scale-up only; rollout of running observe daemon is OK."""
+    executor._read_deployment = AsyncMock(return_value=_named_deployment("daemon", 2, 2))
+    executor._patch_deployment = AsyncMock()
+    # account-sync already up — co-scale start should no-op
+    async def _ready(name: str):
+        if name == "daemon":
+            return 2, 2, "deployment"
+        if name == "account-sync":
+            return 1, 1, "deployment"
+        return 0, 0, "deployment"
+
+    executor._workload_ready_replicas = AsyncMock(side_effect=_ready)
+
+    result = await executor._systemctl("restart", "bifrost-engine.service")
+    assert result["action"] == "restart"
+    executor._patch_deployment.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_daemon_stop_co_scales_account_sync(executor):
+    patched: list[tuple[str, int]] = []
+
+    async def _ready(name: str):
+        if name == "daemon":
+            return 2, 2, "deployment"
+        if name == "account-sync":
+            return 1, 1, "deployment"
+        return 0, 0, "deployment"
+
+    async def _scale(kind: str, name: str, replicas: int):
+        patched.append((name, replicas))
+        return {
+            "method": "kubernetes",
+            "action": "scale",
+            "kind": kind,
+            "deployment": name,
+            "replicas": replicas,
+            "message": f"scaled {name} to {replicas}",
+        }
+
+    executor._workload_ready_replicas = AsyncMock(side_effect=_ready)
+    executor._scale_workload = AsyncMock(side_effect=_scale)
+
+    result = await executor._systemctl("stop", "bifrost-engine.service")
+    assert ("daemon", 0) in patched
+    assert ("account-sync", 0) in patched
+    assert result["co_scale_account_sync"]["replicas"] == 0
+
+
+@pytest.mark.asyncio
+async def test_daemon_start_co_starts_account_sync(executor):
+    executor.set_daemon_scale_guard("observe")
+    patched: list[tuple[str, int]] = []
+
+    async def _ready(name: str):
+        if name == "daemon":
+            return 0, 0, "deployment"
+        if name == "account-sync":
+            return 0, 0, "deployment"
+        return 0, 0, "deployment"
+
+    async def _scale(kind: str, name: str, replicas: int):
+        patched.append((name, replicas))
+        return {
+            "method": "kubernetes",
+            "action": "scale",
+            "kind": kind,
+            "deployment": name,
+            "replicas": replicas,
+            "message": f"scaled {name} to {replicas}",
+        }
+
+    executor._workload_ready_replicas = AsyncMock(side_effect=_ready)
+    executor._scale_workload = AsyncMock(side_effect=_scale)
+
+    result = await executor._systemctl("start", "bifrost-engine.service")
+    assert ("daemon", 1) in patched
+    assert ("account-sync", 1) in patched
+    assert result["co_scale_account_sync"]["replicas"] == 1
+
+
+@pytest.mark.asyncio
+async def test_account_sync_start_independent(executor):
+    """Account sync is not gated by D10 freeze."""
+    executor._read_deployment = AsyncMock(
+        return_value=_named_deployment("account-sync", 0, 0)
+    )
+    executor._patch_deployment = AsyncMock()
+
+    result = await executor._systemctl("start", "bifrost-account-sync-daemon.service")
+    assert result["method"] == "kubernetes"
+    assert result["replicas"] == 1
+    executor._patch_deployment.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_workload_status_snapshot_includes_daemon_mode(executor):
+    async def _ready(name: str):
+        mapping = {
+            "daemon": (0, 0, "deployment"),
+            "account-sync": (1, 1, "deployment"),
+            "celery-beat": (1, 1, "deployment"),
+        }
+        return mapping[name]
+
+    executor._workload_ready_replicas = AsyncMock(side_effect=_ready)
+    snap = await executor.workload_status_snapshot()
+    assert snap["daemon"]["replicas"] == 0
+    assert snap["daemon"]["mode"] == "freeze"
+    assert snap["daemon"]["scale_guard"] == "freeze"
+    assert snap["account-sync"]["ready"] == 1
+    assert snap["celery-beat"]["replicas"] == 1
+
+
+def test_normalize_daemon_scale_guard_defaults_to_freeze():
+    assert KubernetesExecutor.normalize_daemon_scale_guard(None) == "freeze"
+    assert KubernetesExecutor.normalize_daemon_scale_guard("") == "freeze"
+    assert KubernetesExecutor.normalize_daemon_scale_guard("observe") == "observe"
+    assert KubernetesExecutor.resolve_daemon_scale_guard({"daemon_scale_guard": "off"}) == "off"
 
 
 @pytest.mark.asyncio

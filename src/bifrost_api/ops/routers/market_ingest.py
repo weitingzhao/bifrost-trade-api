@@ -53,6 +53,11 @@ _STG_K8S_SOCKET_INGEST_IDS = frozenset({
 })
 
 _PLATFORM_IB_INGEST_IDS = frozenset({"ib_ingestor", "ib_operator", "ib_account_agent"})
+_D10_SCALE_UP_ACTIONS = frozenset({
+    MarketIngestAction.START,
+    MarketIngestAction.RESTART,
+    MarketIngestAction.RESET,
+})
 
 
 def _stg_k8s_control_reject_message(service_id: str) -> str:
@@ -68,6 +73,51 @@ def _stg_k8s_control_reject_message(service_id: str) -> str:
         "Restart with kubectl rollout restart deployment/<name> -n bifrost-stg "
         "(e.g. massive-ws)."
     )
+
+
+def _d10_daemon_scale_reject_message() -> str:
+    return (
+        "Trading execution is BLOCKED (D10). Daemon scale-up requires Owner unlock."
+    )
+
+
+def _d10_should_reject_scale_up(
+    exc: Any,
+    service_id: str,
+    action: MarketIngestAction,
+    replicas: Optional[int],
+) -> bool:
+    """True when freeze guard must reject trading_engine scale-up.
+
+    Aligns with KubernetesExecutor: only block when scaling from 0 (or unknown).
+    START/RESTART/RESET with replicas > 0 are allowed (no-op start / rollout restart).
+    """
+    from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
+
+    if not isinstance(exc, KubernetesExecutor):
+        return False
+    if service_id != "trading_engine":
+        return False
+    if action not in _D10_SCALE_UP_ACTIONS:
+        return False
+    if exc.daemon_scale_guard != "freeze":
+        return False
+    # Already running: START is no-op; RESTART/RESET are rollout — not scale-up.
+    if replicas is not None and replicas > 0:
+        return False
+    return True
+
+
+def _daemon_scale_up_blocked_by_guard(
+    exc: Any,
+    service_id: str,
+    action: MarketIngestAction,
+    replicas: Optional[int] = None,
+) -> Optional[str]:
+    """Return a 403 message when kubernetes freeze guard blocks trading_engine scale-up."""
+    if _d10_should_reject_scale_up(exc, service_id, action, replicas):
+        return _d10_daemon_scale_reject_message()
+    return None
 
 
 def _process_counts_as_running(active: str) -> bool:
@@ -288,6 +338,14 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
             dep = exc.deployment_for_unit(unit)
             if dep:
                 item["k8s_deployment"] = dep
+                replicas, ready = await exc.deployment_replica_counts(dep)
+                if replicas is not None:
+                    item["k8s_replicas"] = replicas
+                if ready is not None:
+                    item["k8s_ready"] = ready
+                guard = exc.scale_guard_for_deployment(dep)
+                if guard is not None:
+                    item["k8s_scale_guard"] = guard
         elif isinstance(exc, DockerComposeExecutor):
             cs = exc.compose_service_for_unit(unit)
             if cs:
@@ -343,6 +401,27 @@ async def market_ingest_control(
     unit = svc["systemd_unit"]
     exc = _executor(request)
     action = body.action
+
+    # Wave A / D10: reject trading_engine scale-up under kubernetes freeze before queueing work.
+    # START with replicas>0 is a no-op; RESTART/RESET with replicas>0 is rollout — both allowed.
+    from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
+
+    daemon_replicas: Optional[int] = None
+    if isinstance(exc, KubernetesExecutor) and sid == "trading_engine":
+        dep = exc.deployment_for_unit(unit)
+        if dep:
+            daemon_replicas, _ready = await exc.deployment_replica_counts(dep)
+    d10_msg = _daemon_scale_up_blocked_by_guard(exc, sid, action, daemon_replicas)
+    if d10_msg:
+        _audit(
+            request,
+            f"market_ingest_{body.action.value}",
+            sid,
+            "rejected",
+            detail=d10_msg,
+        )
+        return JSONResponse(status_code=403, content={"ok": False, "error": d10_msg})
+
     meta_key = (svc.get("redis_meta_key") or "").strip()
     rurl = meta_redis_url_from_ops_config(cfg)
     # Dev/Prod HOST lives in each service health hash. Linux Prod has proven writes to
@@ -496,6 +575,19 @@ async def market_ingest_control(
                 result = {**result, **extra} if isinstance(result, dict) else {"result": result, **extra}
         else:
             result = await exc._systemctl(action.value, unit)  # noqa: SLF001
+    except PermissionError as e:
+        _audit(
+            request,
+            f"market_ingest_{body.action.value}",
+            f"{body.service_id}:{unit}",
+            "rejected",
+            detail=str(e),
+        )
+        return JSONResponse(
+            status_code=403,
+            content={"ok": False, "error": str(e)},
+            headers={"X-Accel-Buffering": "no"},
+        )
     except Exception as e:
         _audit(
             request,
