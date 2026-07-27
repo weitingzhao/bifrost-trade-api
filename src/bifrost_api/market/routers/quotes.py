@@ -20,6 +20,10 @@ class QuotesCleanupBody(BaseModel):
     keep_symbols: List[str] = Field(default_factory=list)
 
 
+class QuotesRefreshOptionsBody(BaseModel):
+    contract_keys: List[str] = Field(default_factory=list)
+
+
 def _sanitize_for_sse_json(obj: Any) -> Any:
     """Replace NaN/Inf so ``json.dumps`` emits RFC-compliant JSON (``JSON.parse`` in browsers rejects NaN)."""
     if isinstance(obj, float):
@@ -46,7 +50,7 @@ def get_quotes(
         description="Comma-separated OPT contract_key values; merged with watchlist OPT keys when symbols omitted",
     ),
 ) -> Dict[str, Any]:
-    """STK from Redis ``ib:ingester:tick:{symbol}|STK|||`` (IB Ingestor); OPT from contract_quote_live. Combined list."""
+    """STK from Redis tick keys; OPT from ``ib:option:cache:*`` (primary) with contract_quote_live fallback."""
     app = request.app
     reader = app.state.reader
     rq = getattr(app.state, "redis_quotes", None)
@@ -91,6 +95,15 @@ def get_quotes(
         except Exception as e:
             logger.warning("GET /quotes on-demand STK register failed: %s", e)
 
+    # Register OPT contract_keys for Gateway one-shot cache refresh (D10-safe).
+    if contract_keys_opt and rq and getattr(rq, "available", False):
+        try:
+            from bifrost_core.core.realtime.on_demand_opt import ensure_on_demand_opt
+
+            ensure_on_demand_opt(_ib_redis_client(rq), contract_keys_opt)
+        except Exception as e:
+            logger.warning("GET /quotes on-demand OPT register failed: %s", e)
+
     quotes: list = []
     if symbol_list and rq and getattr(rq, "available", False):
         try:
@@ -103,13 +116,30 @@ def get_quotes(
                     quotes.append(q)
         except Exception as e:
             logger.warning("GET /quotes Redis failed: %s", e)
+
     if contract_keys_opt:
-        try:
-            opt_quotes = reader.get_contract_quotes(contract_keys_opt)
-            for q in opt_quotes or []:
-                quotes.append(q)
-        except Exception as e:
-            logger.warning("GET /quotes contract_quote_live failed: %s", e)
+        missing: List[str] = []
+        if rq and getattr(rq, "available", False) and hasattr(rq, "get_option_cache"):
+            try:
+                for ck in contract_keys_opt:
+                    q = rq.get_option_cache(ck)
+                    if q is not None:
+                        quotes.append(q)
+                    else:
+                        missing.append(ck)
+            except Exception as e:
+                logger.warning("GET /quotes OPT Redis cache failed: %s", e)
+                missing = list(contract_keys_opt)
+        else:
+            missing = list(contract_keys_opt)
+        if missing:
+            try:
+                opt_quotes = reader.get_contract_quotes(missing)
+                for q in opt_quotes or []:
+                    quotes.append(q)
+            except Exception as e:
+                logger.warning("GET /quotes contract_quote_live fallback failed: %s", e)
+
     if not symbol_list and not contract_keys_opt:
         return {"quotes": [], "message": "No symbols in watchlist"}
     if not quotes and not symbol_list and contract_keys_opt:
@@ -117,6 +147,35 @@ def get_quotes(
     if not quotes and symbol_list and not (rq and getattr(rq, "available", False)):
         return {"quotes": [], "message": "Real-time quotes disabled or Redis unavailable"}
     return {"quotes": quotes}
+
+
+@router.post("/quotes/refresh-options")
+def post_quotes_refresh_options(request: Request, body: QuotesRefreshOptionsBody) -> Any:
+    """Register OPT contract_keys for on-demand cache (soft FE Refresh path)."""
+    app = request.app
+    rq = getattr(app.state, "redis_quotes", None)
+    if rq is None or not getattr(rq, "available", False):
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Real-time quotes disabled or Redis unavailable"},
+        )
+    ib_client = _ib_redis_client(rq)
+    if ib_client is None:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "IB Redis client unavailable"},
+        )
+    try:
+        from bifrost_core.core.realtime.on_demand_opt import ensure_on_demand_opt
+
+        registered = ensure_on_demand_opt(ib_client, body.contract_keys or [])
+    except Exception as e:
+        logger.warning("POST /quotes/refresh-options failed: %s", e)
+        return JSONResponse(
+            status_code=503,
+            content={"detail": f"Redis register failed: {e}"},
+        )
+    return {"registered": len(registered), "contract_keys": registered}
 
 
 @router.post("/quotes/cleanup")
