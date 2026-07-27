@@ -70,6 +70,17 @@ def get_quotes(
             if "|STK|" in c.upper():
                 continue
             contract_keys_opt.append(c)
+
+    # Ask IB Gateway / Ingestor to stream STK ticks for Live focus symbols (D10-safe; no orders).
+    if symbol_list and rq and getattr(rq, "available", False):
+        try:
+            from bifrost_core.core.realtime.on_demand_stk import ensure_on_demand_stk
+
+            ib_client = getattr(rq, "ib_redis_client", None) or getattr(rq, "redis_client", None)
+            ensure_on_demand_stk(ib_client, symbol_list)
+        except Exception as e:
+            logger.warning("GET /quotes on-demand STK register failed: %s", e)
+
     quotes: list = []
     if symbol_list and rq and getattr(rq, "available", False):
         try:
