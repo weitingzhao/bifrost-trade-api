@@ -3,16 +3,21 @@
 import asyncio
 import json
 import math
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["quotes"])
+
+
+class QuotesCleanupBody(BaseModel):
+    keep_symbols: List[str] = Field(default_factory=list)
 
 
 def _sanitize_for_sse_json(obj: Any) -> Any:
@@ -24,6 +29,12 @@ def _sanitize_for_sse_json(obj: Any) -> Any:
     if isinstance(obj, list):
         return [_sanitize_for_sse_json(x) for x in obj]
     return obj
+
+
+def _ib_redis_client(rq: Any) -> Any:
+    if rq is None:
+        return None
+    return getattr(rq, "ib_redis_client", None) or getattr(rq, "redis_client", None)
 
 
 @router.get("/quotes")
@@ -76,8 +87,7 @@ def get_quotes(
         try:
             from bifrost_core.core.realtime.on_demand_stk import ensure_on_demand_stk
 
-            ib_client = getattr(rq, "ib_redis_client", None) or getattr(rq, "redis_client", None)
-            ensure_on_demand_stk(ib_client, symbol_list)
+            ensure_on_demand_stk(_ib_redis_client(rq), symbol_list)
         except Exception as e:
             logger.warning("GET /quotes on-demand STK register failed: %s", e)
 
@@ -107,6 +117,63 @@ def get_quotes(
     if not quotes and symbol_list and not (rq and getattr(rq, "available", False)):
         return {"quotes": [], "message": "Real-time quotes disabled or Redis unavailable"}
     return {"quotes": quotes}
+
+
+@router.post("/quotes/cleanup")
+def post_quotes_cleanup(request: Request, body: QuotesCleanupBody) -> Any:
+    """Remove on-demand STK symbols not in ``keep_symbols`` (SREM + HDEL + DEL tick keys)."""
+    app = request.app
+    rq = getattr(app.state, "redis_quotes", None)
+    if rq is None or not getattr(rq, "available", False):
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Real-time quotes disabled or Redis unavailable"},
+        )
+    ib_client = _ib_redis_client(rq)
+    if ib_client is None:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "IB Redis client unavailable"},
+        )
+
+    from bifrost_core.core.realtime.ib_ingestor_keys import IB_INGESTER_ON_DEMAND_STK
+    from bifrost_core.core.realtime.on_demand_stk import (
+        normalize_stk_symbols,
+        remove_on_demand_stk,
+    )
+
+    keep = normalize_stk_symbols(body.keep_symbols or [])
+    keep_set = set(keep)
+    try:
+        members_raw = ib_client.smembers(IB_INGESTER_ON_DEMAND_STK) or set()
+    except Exception as e:
+        logger.warning("POST /quotes/cleanup SMEMBERS failed: %s", e)
+        return JSONResponse(
+            status_code=503,
+            content={"detail": f"Redis unavailable: {e}"},
+        )
+
+    current: List[str] = []
+    for raw in members_raw:
+        if isinstance(raw, (bytes, bytearray)):
+            sym = raw.decode("utf-8", errors="replace").strip().upper()
+        else:
+            sym = str(raw or "").strip().upper()
+        if sym:
+            current.append(sym)
+
+    to_remove = sorted({s for s in current if s not in keep_set})
+    kept = sorted({s for s in current if s in keep_set})
+    if to_remove:
+        try:
+            remove_on_demand_stk(ib_client, to_remove)
+        except Exception as e:
+            logger.warning("POST /quotes/cleanup remove failed: %s", e)
+            return JSONResponse(
+                status_code=503,
+                content={"detail": f"Redis remove failed: {e}"},
+            )
+    return {"removed": to_remove, "kept": kept}
 
 
 @router.get("/quotes/stream")
