@@ -46,7 +46,7 @@ class AuditStore:
 
         host = pg.get("host", "127.0.0.1")
         port = pg.get("port", 5432)
-        db = pg.get("database", "options_db")
+        db = pg.get("database", "bifrost_dev")
         user = pg.get("user", "bifrost")
         password = pg.get("password", "")
         dsn = f"host={host} port={port} dbname={db} user={user} password={password}"

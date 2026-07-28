@@ -517,7 +517,7 @@ class WorkerStateService:
             import psycopg2
 
             port = int(pg.get("port") or 5432)
-            dbname = str(pg.get("database") or "options_db")
+            dbname = str(pg.get("database") or "bifrost_dev")
             user = str(pg.get("user") or "bifrost")
             password = str(pg.get("password") or "")
             conn = psycopg2.connect(
