@@ -77,7 +77,7 @@ def _safe_ratio(num: float, den: float) -> Optional[float]:
 
 
 def _snapshot_oi_trend_by_day(cur, sym: str, lb: int) -> Dict[str, Tuple[int, int]]:
-    """Daily put/call OI from chain snapshots when option_open_interest_daily is sparse."""
+    """Daily put/call OI from chain snapshots when market.option_open_interest is sparse."""
     try:
         cur.execute(
             """
@@ -127,7 +127,7 @@ def _merge_oi_trend_points(
     daily_by_day: Dict[str, Tuple[int, int]],
     snapshot_by_day: Dict[str, Tuple[int, int]],
 ) -> List[Dict[str, Any]]:
-    """Prefer EOD option_open_interest_daily; fill gaps from snapshot rollups."""
+    """Prefer EOD market.option_open_interest; fill gaps from snapshot rollups."""
     all_dates = sorted(set(daily_by_day) | set(snapshot_by_day))
     trend: List[Dict[str, Any]] = []
     for td_key in all_dates:
@@ -193,7 +193,7 @@ def fetch_symbol_option_pcr(
 
                 trend: List[Dict[str, Any]] = []
                 as_of_date: Optional[date] = None
-                oi_basis = "option_open_interest_daily"
+                oi_basis = "market.option_open_interest"
                 daily_oi_by_day: Dict[str, Tuple[int, int]] = {}
 
                 cur.execute(
@@ -203,12 +203,12 @@ def fetch_symbol_option_pcr(
                                THEN COALESCE(open_interest, 0) ELSE 0 END)::bigint AS put_oi,
                            SUM(CASE WHEN UPPER(TRIM(option_right)) IN ('C', 'CALL')
                                THEN COALESCE(open_interest, 0) ELSE 0 END)::bigint AS call_oi
-                    FROM option_open_interest_daily
-                    WHERE symbol = %s AND source = 'massive'
+                    FROM market.option_open_interest
+                    WHERE underlying = %s
                       AND trade_date >= (
                         SELECT COALESCE(MAX(trade_date), CURRENT_DATE) - %s::integer
-                        FROM option_open_interest_daily
-                        WHERE symbol = %s AND source = 'massive'
+                        FROM market.option_open_interest
+                        WHERE underlying = %s
                       )
                     GROUP BY trade_date
                     ORDER BY trade_date ASC
@@ -231,7 +231,7 @@ def fetch_symbol_option_pcr(
                 snapshot_oi_by_day = _snapshot_oi_trend_by_day(cur, sym, lb)
                 if snapshot_oi_by_day:
                     if daily_oi_by_day and len(snapshot_oi_by_day) > len(daily_oi_by_day):
-                        oi_basis = "option_open_interest_daily+option_snapshots"
+                        oi_basis = "market.option_open_interest+option_snapshots"
                     elif not daily_oi_by_day:
                         oi_basis = "option_snapshots"
                     for td_key, (_, _) in snapshot_oi_by_day.items():
@@ -376,7 +376,7 @@ def fetch_symbol_option_pcr(
 
                 raw_chain = cur.fetchall() or []
                 if not raw_chain and as_of_date is not None:
-                    chain_basis = "option_open_interest_daily"
+                    chain_basis = "market.option_open_interest"
                     cur.execute(
                         """
                         SELECT expiry,
@@ -384,8 +384,8 @@ def fetch_symbol_option_pcr(
                                    THEN COALESCE(open_interest, 0) ELSE 0 END)::bigint AS put_oi,
                                SUM(CASE WHEN UPPER(TRIM(option_right)) IN ('C', 'CALL')
                                    THEN COALESCE(open_interest, 0) ELSE 0 END)::bigint AS call_oi
-                        FROM option_open_interest_daily
-                        WHERE symbol = %s AND source = 'massive' AND trade_date = %s
+                        FROM market.option_open_interest
+                        WHERE underlying = %s AND trade_date = %s
                         GROUP BY expiry
                         ORDER BY expiry ASC
                         """,

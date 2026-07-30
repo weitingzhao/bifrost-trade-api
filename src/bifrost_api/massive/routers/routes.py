@@ -886,11 +886,10 @@ def get_watchlist_db_coverage(request: Request) -> Dict[str, Any]:
 
                 cur.execute(
                     """
-                    SELECT UPPER(TRIM(symbol)) AS u, COUNT(*)::bigint, MAX(updated_at)
-                    FROM option_expiration_cache
-                    WHERE source = 'massive'
-                      AND UPPER(TRIM(symbol)) = ANY(%s)
-                    GROUP BY UPPER(TRIM(symbol))
+                    SELECT UPPER(TRIM(underlying)) AS u, COUNT(*)::bigint, MAX(updated_at)
+                    FROM market.option_expiration
+                    WHERE UPPER(TRIM(underlying)) = ANY(%s)
+                    GROUP BY UPPER(TRIM(underlying))
                     """,
                     (syms,),
                 )
@@ -900,11 +899,10 @@ def get_watchlist_db_coverage(request: Request) -> Dict[str, Any]:
 
                 cur.execute(
                     """
-                    SELECT UPPER(TRIM(symbol)) AS u, COUNT(*)::bigint, MAX(trade_date), MAX(created_at)
-                    FROM option_open_interest_daily
-                    WHERE source = 'massive'
-                      AND UPPER(TRIM(symbol)) = ANY(%s)
-                    GROUP BY UPPER(TRIM(symbol))
+                    SELECT UPPER(TRIM(underlying)) AS u, COUNT(*)::bigint, MAX(trade_date), MAX(fetched_at)
+                    FROM market.option_open_interest
+                    WHERE UPPER(TRIM(underlying)) = ANY(%s)
+                    GROUP BY UPPER(TRIM(underlying))
                     """,
                     (syms,),
                 )
@@ -928,14 +926,13 @@ def get_watchlist_db_coverage(request: Request) -> Dict[str, Any]:
 
                 cur.execute(
                     """
-                    SELECT UPPER(TRIM(t.ticker)) AS u,
-                           t.tickers_id,
-                           t.updated_at,
-                           t.last_updated_utc,
-                           o.overview_updated_at
-                    FROM tickers t
-                    LEFT JOIN ticker_overview o ON o.tickers_id = t.tickers_id
-                    WHERE UPPER(TRIM(t.ticker)) = ANY(%s)
+                    SELECT UPPER(TRIM(symbol)) AS u,
+                           NULL::bigint AS tickers_id,
+                           updated_at,
+                           NULL::timestamptz AS last_updated_utc,
+                           updated_at AS overview_updated_at
+                    FROM market.ticker
+                    WHERE UPPER(TRIM(symbol)) = ANY(%s)
                     """,
                     (syms,),
                 )
@@ -2327,7 +2324,7 @@ def _ticker_ref_related_coverage_impl(request: Request) -> Dict[str, Any]:
 
 @router.get("/research/massive/reference/tickers/related-coverage")
 def get_ticker_reference_related_coverage(request: Request) -> Dict[str, Any]:
-    """Counts for ``tickers`` vs ``ticker_related_tickers`` (from_tickers_id)."""
+    """Counts for ``market.ticker`` vs ``ticker_related_tickers`` (from_symbol)."""
     return _ticker_ref_related_coverage_impl(request)
 
 
@@ -2370,7 +2367,7 @@ def get_ticker_reference_missing_related(
     limit: int = Query(500, ge=1, le=2000),
     offset: int = Query(0, ge=0),
 ) -> Dict[str, Any]:
-    """Paged tickers with no related rows (``ticker_related_tickers``)."""
+    """Paged tickers with no related rows (``ticker_related_tickers.from_symbol``)."""
     return _ticker_ref_missing_related_impl(request, limit, offset)
 
 
@@ -2565,7 +2562,7 @@ def _ticker_ref_related_impl(request: Request, symbol: str) -> Dict[str, Any]:
 
 @router.get("/research/massive/reference/tickers/{ticker}/related")
 def get_ticker_reference_related(request: Request, ticker: str) -> Dict[str, Any]:
-    """Related tickers from ``ticker_related_tickers`` (+ peer names from ``tickers``)."""
+    """Related tickers from ``ticker_related_tickers`` (+ peer names from ``market.ticker``)."""
     return _ticker_ref_related_impl(request, ticker)
 
 

@@ -539,13 +539,20 @@ class WorkerStateService:
                         st = str(row[0] or "").strip().lower()
                         if st in bars_counts:
                             bars_counts[st] = int(row[1])
-                    cur.execute(
-                        "SELECT status, COUNT(*)::bigint FROM job_massive_backfill GROUP BY status"
-                    )
-                    for row in cur.fetchall() or []:
-                        st = str(row[0] or "").strip().lower()
-                        if st in massive_counts:
-                            massive_counts[st] = int(row[1])
+                    try:
+                        cur.execute(
+                            "SELECT status, COUNT(*)::bigint FROM job_massive_backfill GROUP BY status"
+                        )
+                        for row in cur.fetchall() or []:
+                            st = str(row[0] or "").strip().lower()
+                            if st in massive_counts:
+                                massive_counts[st] = int(row[1])
+                    except Exception:
+                        # P9: table dropped; Massive jobs live in data_ops.job_ingest
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
                 return bars_counts, massive_counts
             finally:
                 conn.close()

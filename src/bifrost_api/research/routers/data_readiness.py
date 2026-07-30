@@ -1882,7 +1882,7 @@ def get_symbol_statements(
 
 @router.get("/research/data/ticker-overview/{symbol}")
 def get_ticker_overview(symbol: str, request: Request) -> Dict[str, Any]:
-    """Return tickers + ticker_overview + ticker_related_tickers for a single symbol."""
+    """Return market.ticker (+ related peers when available) for a single symbol."""
     import datetime
 
     import psycopg2
@@ -1908,18 +1908,28 @@ def get_ticker_overview(symbol: str, request: Request) -> Dict[str, Any]:
             cur.execute(
                 """
                 SELECT
-                    t.ticker, t.name, t.primary_exchange, t.instrument_type,
-                    t.active, t.currency_name, t.cik,
-                    o.sector, o.industry, o.sic_description,
-                    o.market_cap, o.total_employees,
-                    o.description, o.homepage_url,
-                    o.address_city, o.address_state,
-                    o.list_date, o.exchange,
-                    o.share_class_shares_outstanding,
-                    o.weighted_shares_outstanding
-                FROM public.tickers t
-                LEFT JOIN public.ticker_overview o ON o.tickers_id = t.tickers_id
-                WHERE t.ticker = %s
+                    t.symbol AS ticker,
+                    t.name,
+                    t.primary_exchange,
+                    t.instrument_type,
+                    t.active,
+                    t.currency AS currency_name,
+                    t.cik,
+                    t.sector,
+                    t.industry,
+                    NULL::text AS sic_description,
+                    t.market_cap,
+                    t.total_employees,
+                    t.description,
+                    t.homepage_url,
+                    NULL::text AS address_city,
+                    NULL::text AS address_state,
+                    t.list_date,
+                    t.primary_exchange AS exchange,
+                    NULL::double precision AS share_class_shares_outstanding,
+                    NULL::double precision AS weighted_shares_outstanding
+                FROM market.ticker t
+                WHERE t.symbol = %s
                 """,
                 (sym,),
             )
@@ -1927,12 +1937,12 @@ def get_ticker_overview(symbol: str, request: Request) -> Dict[str, Any]:
             if not row:
                 return {"ok": True, "found": False, "symbol": sym}
 
+            related: list = []
             cur.execute(
                 """
                 SELECT rt.to_symbol
                 FROM public.ticker_related_tickers rt
-                INNER JOIN public.tickers t ON t.tickers_id = rt.from_tickers_id
-                WHERE t.ticker = %s
+                WHERE rt.from_symbol = %s
                 ORDER BY rt.rank ASC
                 LIMIT 12
                 """,
