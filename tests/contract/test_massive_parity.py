@@ -28,11 +28,17 @@ def test_massive_prefixed_health() -> None:
 
 
 def test_massive_celery_beat_schedule() -> None:
+    from bifrost_worker.data.massive.celery_queues import MASSIVE_QUEUES_DISABLED
+
     r = _client().get("/research/massive/celery-beat-schedule")
     assert r.status_code == 200
     body = r.json()
     assert body.get("ok") is True
-    assert len(body.get("entries") or []) >= 1
+    if MASSIVE_QUEUES_DISABLED:
+        assert body.get("massive_queues_disabled") is True
+        assert len(body.get("entries") or []) == 0
+    else:
+        assert len(body.get("entries") or []) >= 1
 
 
 def test_massive_openapi_prefixed() -> None:

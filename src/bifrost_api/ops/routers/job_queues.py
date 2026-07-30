@@ -385,6 +385,14 @@ async def ops_retry_failed_massive_jobs(
     denied = _require_role(request, "operator")
     if denied:
         return denied
+    from bifrost_worker.data.massive.celery_queues import (
+        MASSIVE_QUEUES_DISABLED,
+        massive_enqueue_refused_payload,
+    )
+
+    if MASSIVE_QUEUES_DISABLED:
+        refused = massive_enqueue_refused_payload()
+        return {**refused, "reset": 0, "enqueued": 0, "enqueue_errors": []}
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return {"ok": False, "error": "No DB", "reset": 0, "enqueued": 0, "enqueue_errors": []}
@@ -408,6 +416,13 @@ async def ops_retry_one_massive_job(request: Request, job_id: str) -> Any:
     denied = _require_role(request, "operator")
     if denied:
         return denied
+    from bifrost_worker.data.massive.celery_queues import (
+        MASSIVE_QUEUES_DISABLED,
+        massive_enqueue_refused_payload,
+    )
+
+    if MASSIVE_QUEUES_DISABLED:
+        return massive_enqueue_refused_payload()
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return {"ok": False, "error": "No DB"}

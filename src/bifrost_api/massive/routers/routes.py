@@ -215,10 +215,12 @@ def get_massive_greeks_coverage(
         conn = psycopg2.connect(**params)
         try:
             with conn.cursor() as cur:
-                where = "source = %s AND contract_key LIKE %s"
-                args: list = [src, f"{sym}%"]
+                where = "underlying = %s"
+                args: list = [sym]
+                # source ignored — market.option_snapshot is single-vendor
+                _ = src
                 if exp_norm:
-                    where += " AND contract_key LIKE %s"
+                    where += " AND option_ticker LIKE %s"
                     args.append(f"%{exp_norm}%")
                 cur.execute(
                     f"""
@@ -236,11 +238,11 @@ def get_massive_greeks_coverage(
                         max(snapshot_ts) AS newest_ts,
                         count(CASE WHEN snapshot_ts < now() - interval '24 hours' THEN 1 END) AS stale_rows
                     FROM (
-                        SELECT DISTINCT ON (contract_key)
+                        SELECT DISTINCT ON (option_ticker)
                             iv, delta, gamma, theta, vega, open_interest, snapshot_ts
-                        FROM option_snapshots
+                        FROM market.option_snapshot
                         WHERE {where}
-                        ORDER BY contract_key, snapshot_ts DESC
+                        ORDER BY option_ticker, snapshot_ts DESC
                     ) latest
                     """,
                     args,
@@ -312,30 +314,30 @@ def get_massive_contracts_coverage(
         conn = psycopg2.connect(**params)
         try:
             with conn.cursor() as cur:
-                where = "symbol = %s"
+                where = "underlying = %s"
                 args: list = [sym]
                 if exp_norm:
-                    where += " AND expiry = %s"
+                    where += " AND to_char(expiry, 'YYYYMMDD') = %s"
                     args.append(exp_norm)
                 cur.execute(
                     f"""
                     SELECT
                         count(*) AS total,
-                        count(massive_option_ticker) AS with_ticker,
-                        count(CASE WHEN symbol != '' AND expiry != ''
+                        count(option_ticker) AS with_ticker,
+                        count(CASE WHEN underlying != '' AND expiry IS NOT NULL
                                     AND option_right != '' THEN 1 END) AS with_complete_identity,
-                        count(CASE WHEN massive_option_ticker IS NOT NULL
-                                    AND massive_option_ticker != ''
-                                    AND contract_key NOT LIKE '%%' || symbol || '%%' THEN 1 END) AS mapping_mismatch,
+                        count(CASE WHEN option_ticker IS NOT NULL
+                                    AND option_ticker != ''
+                                    AND option_ticker NOT ILIKE '%%' || underlying || '%%' THEN 1 END) AS mapping_mismatch,
                         count(CASE WHEN exercise_style IS NOT NULL AND trim(exercise_style) <> ''
                                     THEN 1 END) AS with_exercise_style,
                         count(CASE WHEN shares_per_contract IS NOT NULL THEN 1 END) AS with_shares_per_contract,
-                        min(created_at) AS oldest_ts,
-                        max(created_at) AS newest_ts,
-                        count(CASE WHEN created_at < now() - interval '7 days' THEN 1 END) AS stale_rows,
+                        min(first_seen_at) AS oldest_ts,
+                        max(updated_at) AS newest_ts,
+                        count(CASE WHEN updated_at < now() - interval '7 days' THEN 1 END) AS stale_rows,
                         count(DISTINCT expiry) AS distinct_expirations,
                         count(DISTINCT strike) AS distinct_strikes
-                    FROM option_contracts
+                    FROM market.option_contract
                     WHERE {where}
                     """,
                     args,
@@ -484,12 +486,12 @@ def get_db_coverage_summary(request: Request) -> Dict[str, Any]:
                     drill_down_hash="coverage-option",
                     cur=cur,
                     sql="""
-                        SELECT COUNT(DISTINCT UPPER(TRIM(symbol)))::bigint,
-                               MAX(created_at),
+                        SELECT COUNT(DISTINCT UPPER(TRIM(underlying)))::bigint,
+                               MAX(updated_at),
                                NULL::date
-                        FROM option_contracts
-                        WHERE massive_option_ticker IS NOT NULL
-                          AND TRIM(COALESCE(massive_option_ticker, '')) <> ''
+                        FROM market.option_contract
+                        WHERE option_ticker IS NOT NULL
+                          AND TRIM(COALESCE(option_ticker, '')) <> ''
                         """,
                 )
                 _append_table(
@@ -501,12 +503,10 @@ def get_db_coverage_summary(request: Request) -> Dict[str, Any]:
                     drill_down_hash="coverage-option",
                     cur=cur,
                     sql="""
-                        SELECT COUNT(DISTINCT UPPER(TRIM(split_part(contract_key, '|', 1))))::bigint,
+                        SELECT COUNT(DISTINCT UPPER(TRIM(underlying)))::bigint,
                                MAX(snapshot_ts),
                                NULL::date
-                        FROM option_snapshots
-                        WHERE source = 'massive'
-                          AND position('|' IN contract_key) > 0
+                        FROM market.option_snapshot
                         """,
                 )
                 _append_table(
@@ -535,10 +535,9 @@ def get_db_coverage_summary(request: Request) -> Dict[str, Any]:
                     cur=cur,
                     sql="""
                         SELECT COUNT(DISTINCT UPPER(TRIM(symbol)))::bigint,
-                               MAX(created_at),
-                               MAX(bar_time)
-                        FROM stock_day
-                        WHERE source = 'massive'
+                               MAX(fetched_at),
+                               MAX(bar_date)
+                        FROM market.stock_daily
                         """,
                 )
         finally:
@@ -635,15 +634,15 @@ def get_watchlist_db_coverage(request: Request) -> Dict[str, Any]:
                 cur.execute(
                     """
                     SELECT
-                        UPPER(TRIM(symbol)) AS u,
+                        UPPER(TRIM(underlying)) AS u,
                         COUNT(*)::bigint AS total,
-                        MAX(created_at) AS newest_ts,
-                        COUNT(massive_option_ticker) AS with_ticker,
-                        COUNT(CASE WHEN symbol != '' AND expiry != ''
+                        MAX(updated_at) AS newest_ts,
+                        COUNT(option_ticker) AS with_ticker,
+                        COUNT(CASE WHEN underlying != '' AND expiry IS NOT NULL
                                       AND option_right != '' THEN 1 END) AS with_complete_identity,
-                        COUNT(CASE WHEN massive_option_ticker IS NOT NULL
-                                    AND massive_option_ticker != ''
-                                    AND contract_key NOT LIKE '%%' || symbol || '%%' THEN 1 END) AS mapping_mismatch,
+                        COUNT(CASE WHEN option_ticker IS NOT NULL
+                                    AND option_ticker != ''
+                                    AND option_ticker NOT ILIKE '%%' || underlying || '%%' THEN 1 END) AS mapping_mismatch,
                         COUNT(CASE WHEN exercise_style IS NOT NULL AND trim(exercise_style) <> ''
                                     THEN 1 END) AS with_exercise_style,
                         COUNT(CASE WHEN shares_per_contract IS NOT NULL THEN 1 END) AS with_shares_per_contract,
@@ -651,9 +650,9 @@ def get_watchlist_db_coverage(request: Request) -> Dict[str, Any]:
                         COUNT(DISTINCT strike)::bigint AS distinct_strikes,
                         COALESCE(SUM(CASE WHEN exercise_style IS NULL THEN 1 ELSE 0 END), 0)::bigint AS exercise_style_null_rows,
                         COALESCE(SUM(CASE WHEN shares_per_contract IS NULL THEN 1 ELSE 0 END), 0)::bigint AS shares_per_contract_null_rows
-                    FROM option_contracts
-                    WHERE UPPER(TRIM(symbol)) = ANY(%s)
-                    GROUP BY UPPER(TRIM(symbol))
+                    FROM market.option_contract
+                    WHERE UPPER(TRIM(underlying)) = ANY(%s)
+                    GROUP BY UPPER(TRIM(underlying))
                     """,
                     (syms,),
                 )
@@ -698,9 +697,9 @@ def get_watchlist_db_coverage(request: Request) -> Dict[str, Any]:
                 cur.execute(
                     """
                     WITH latest AS (
-                        SELECT DISTINCT ON (os.contract_key)
-                            UPPER(TRIM(SPLIT_PART(os.contract_key, '|', 1))) AS u,
-                            os.contract_key,
+                        SELECT DISTINCT ON (os.option_ticker)
+                            UPPER(TRIM(os.underlying)) AS u,
+                            os.option_ticker AS contract_key,
                             os.snapshot_ts,
                             os.iv,
                             os.delta,
@@ -708,11 +707,9 @@ def get_watchlist_db_coverage(request: Request) -> Dict[str, Any]:
                             os.theta,
                             os.vega,
                             os.open_interest
-                        FROM option_snapshots os
-                        WHERE os.source = 'massive'
-                          AND POSITION('|' IN os.contract_key) > 0
-                          AND UPPER(TRIM(SPLIT_PART(os.contract_key, '|', 1))) = ANY(%s)
-                        ORDER BY os.contract_key, os.snapshot_ts DESC
+                        FROM market.option_snapshot os
+                        WHERE UPPER(TRIM(os.underlying)) = ANY(%s)
+                        ORDER BY os.option_ticker, os.snapshot_ts DESC
                     )
                     SELECT
                         u,
@@ -770,17 +767,16 @@ def get_watchlist_db_coverage(request: Request) -> Dict[str, Any]:
                     SELECT
                         UPPER(TRIM(symbol)) AS u,
                         COUNT(*)::bigint AS row_count,
-                        MAX(bar_time) AS last_bar_time,
-                        MAX(created_at) AS last_created_at,
+                        MAX(bar_date)::timestamptz AS last_bar_time,
+                        MAX(fetched_at) AS last_created_at,
                         ROUND(COUNT(CASE WHEN open IS NOT NULL AND high IS NOT NULL
                                           AND low IS NOT NULL AND close IS NOT NULL
                                      THEN 1 END)::numeric / NULLIF(COUNT(*),0) * 100, 1) AS ohlc_complete_pct,
                         ROUND(COUNT(volume)::numeric / NULLIF(COUNT(*),0) * 100, 1) AS volume_pct,
                         ROUND(COUNT(vwap)::numeric / NULLIF(COUNT(*),0) * 100, 1) AS vwap_pct,
-                        COUNT(DISTINCT bar_time)::bigint AS distinct_bar_dates
-                    FROM stock_day
-                    WHERE source = 'massive'
-                      AND UPPER(TRIM(symbol)) = ANY(%s)
+                        COUNT(DISTINCT bar_date)::bigint AS distinct_bar_dates
+                    FROM market.stock_daily
+                    WHERE UPPER(TRIM(symbol)) = ANY(%s)
                     GROUP BY UPPER(TRIM(symbol))
                     """,
                     (syms,),
@@ -795,16 +791,15 @@ def get_watchlist_db_coverage(request: Request) -> Dict[str, Any]:
                         UPPER(TRIM(symbol)) AS u,
                         COUNT(*)::bigint AS row_count,
                         MAX(bar_time) AS last_bar_time,
-                        MAX(created_at) AS last_created_at,
+                        MAX(fetched_at) AS last_created_at,
                         ROUND(COUNT(CASE WHEN open IS NOT NULL AND high IS NOT NULL
                                           AND low IS NOT NULL AND close IS NOT NULL
                                      THEN 1 END)::numeric / NULLIF(COUNT(*),0) * 100, 1) AS ohlc_complete_pct,
                         ROUND(COUNT(volume)::numeric / NULLIF(COUNT(*),0) * 100, 1) AS volume_pct,
                         ROUND(COUNT(vwap)::numeric / NULLIF(COUNT(*),0) * 100, 1) AS vwap_pct,
                         COUNT(DISTINCT period)::bigint AS distinct_periods
-                    FROM stock_min
-                    WHERE source = 'massive'
-                      AND UPPER(TRIM(symbol)) = ANY(%s)
+                    FROM market.stock_minute
+                    WHERE UPPER(TRIM(symbol)) = ANY(%s)
                     GROUP BY UPPER(TRIM(symbol))
                     """,
                     (syms,),
@@ -816,10 +811,10 @@ def get_watchlist_db_coverage(request: Request) -> Dict[str, Any]:
                 cur.execute(
                     """
                     SELECT
-                        UPPER(TRIM(symbol)) AS u,
+                        UPPER(TRIM(underlying)) AS u,
                         COUNT(*)::bigint AS row_count,
-                        MAX(bar_time) AS last_bar_time,
-                        MAX(created_at) AS last_created_at,
+                        MAX(bar_date)::timestamptz AS last_bar_time,
+                        MAX(fetched_at) AS last_created_at,
                         ROUND(COUNT(CASE WHEN open IS NOT NULL AND high IS NOT NULL
                                           AND low IS NOT NULL AND close IS NOT NULL
                                      THEN 1 END)::numeric / NULLIF(COUNT(*),0) * 100, 1) AS ohlc_complete_pct,
@@ -827,10 +822,9 @@ def get_watchlist_db_coverage(request: Request) -> Dict[str, Any]:
                         ROUND(COUNT(vwap)::numeric / NULLIF(COUNT(*),0) * 100, 1) AS vwap_pct,
                         COUNT(DISTINCT expiry)::bigint AS distinct_expirations,
                         COUNT(DISTINCT CONCAT(expiry,'|',strike::text,'|',option_right))::bigint AS distinct_contracts
-                    FROM option_day
-                    WHERE source = 'massive'
-                      AND UPPER(TRIM(symbol)) = ANY(%s)
-                    GROUP BY UPPER(TRIM(symbol))
+                    FROM market.option_daily
+                    WHERE UPPER(TRIM(underlying)) = ANY(%s)
+                    GROUP BY UPPER(TRIM(underlying))
                     """,
                     (syms,),
                 )
@@ -842,10 +836,10 @@ def get_watchlist_db_coverage(request: Request) -> Dict[str, Any]:
                 cur.execute(
                     """
                     SELECT
-                        UPPER(TRIM(symbol)) AS u,
+                        UPPER(TRIM(underlying)) AS u,
                         COUNT(*)::bigint AS row_count,
                         MAX(bar_time) AS last_bar_time,
-                        MAX(created_at) AS last_created_at,
+                        MAX(fetched_at) AS last_created_at,
                         ROUND(COUNT(CASE WHEN open IS NOT NULL AND high IS NOT NULL
                                           AND low IS NOT NULL AND close IS NOT NULL
                                      THEN 1 END)::numeric / NULLIF(COUNT(*),0) * 100, 1) AS ohlc_complete_pct,
@@ -853,10 +847,9 @@ def get_watchlist_db_coverage(request: Request) -> Dict[str, Any]:
                         ROUND(COUNT(vwap)::numeric / NULLIF(COUNT(*),0) * 100, 1) AS vwap_pct,
                         COUNT(DISTINCT expiry)::bigint AS distinct_expirations,
                         COUNT(DISTINCT CONCAT(expiry,'|',strike::text,'|',option_right))::bigint AS distinct_contracts
-                    FROM option_min
-                    WHERE source = 'massive'
-                      AND UPPER(TRIM(symbol)) = ANY(%s)
-                    GROUP BY UPPER(TRIM(symbol))
+                    FROM market.option_minute
+                    WHERE UPPER(TRIM(underlying)) = ANY(%s)
+                    GROUP BY UPPER(TRIM(underlying))
                     """,
                     (syms,),
                 )
@@ -867,11 +860,10 @@ def get_watchlist_db_coverage(request: Request) -> Dict[str, Any]:
 
                 cur.execute(
                     """
-                    SELECT UPPER(TRIM(underlying_ticker)) AS u, COUNT(*)::bigint, MAX(snapshot_ts), MAX(created_at)
-                    FROM option_snapshots_with_underlying_day
-                    WHERE source = 'massive'
-                      AND UPPER(TRIM(underlying_ticker)) = ANY(%s)
-                    GROUP BY UPPER(TRIM(underlying_ticker))
+                    SELECT UPPER(TRIM(underlying)) AS u, COUNT(*)::bigint, MAX(snapshot_ts), MAX(fetched_at)
+                    FROM market.v_option_snapshot_with_stock
+                    WHERE UPPER(TRIM(underlying)) = ANY(%s)
+                    GROUP BY UPPER(TRIM(underlying))
                     """,
                     (syms,),
                 )
@@ -1541,6 +1533,22 @@ def get_bar_quality_detail(
     if days < 1 or days > 365:
         days = 30
 
+    # Map API table names → market.* + period label → DB period ("1 min" → "1 minute")
+    pg_table = "market.option_daily" if table == "option_day" else "market.option_minute"
+    period_db = period
+    if table == "option_min" and period:
+        _PERIOD_MAP = {
+            "1 min": "1 minute",
+            "1 minute": "1 minute",
+            "5 mins": "5 minute",
+            "5 min": "5 minute",
+            "5 minutes": "5 minute",
+            "5 minute": "5 minute",
+            "1 hour": "1 hour",
+            "1 hours": "1 hour",
+        }
+        period_db = _PERIOD_MAP.get((period or "").strip(), period)
+
     def _iso(dt: Any) -> Optional[str]:
         if dt is None:
             return None
@@ -1558,25 +1566,31 @@ def get_bar_quality_detail(
         try:
             with conn.cursor() as cur:
                 # Query A — Daily breakdown (last N days)
-                period_filter = "AND period = %(period)s" if (table == "option_min" and period) else ""
+                if table == "option_day":
+                    bar_expr = "bar_date"
+                    time_filter = "AND bar_date >= CURRENT_DATE - (%(days)s || ' days')::interval"
+                    period_filter = ""
+                else:
+                    bar_expr = "DATE(timezone('America/New_York', bar_time))"
+                    time_filter = "AND bar_time >= NOW() - (%(days)s || ' days')::interval"
+                    period_filter = "AND period = %(period)s" if period_db else ""
                 cur.execute(
                     f"""
                     WITH daily_latest AS (
                         SELECT DISTINCT ON (
-                            DATE(timezone('America/New_York', bar_time)),
+                            {bar_expr},
                             expiry, strike, option_right
                         )
-                            DATE(timezone('America/New_York', bar_time)) AS bar_day,
+                            {bar_expr} AS bar_day,
                             open, high, low, close, volume, vwap
-                        FROM {table}
-                        WHERE source = 'massive'
-                          AND UPPER(TRIM(symbol)) = %(symbol)s
-                          AND bar_time >= NOW() - (%(days)s || ' days')::interval
+                        FROM {pg_table}
+                        WHERE UPPER(TRIM(underlying)) = %(symbol)s
+                          {time_filter}
                           {period_filter}
                         ORDER BY
-                            DATE(timezone('America/New_York', bar_time)),
+                            {bar_expr},
                             expiry, strike, option_right,
-                            bar_time DESC
+                            {"bar_date" if table == "option_day" else "bar_time"} DESC
                     )
                     SELECT
                         bar_day,
@@ -1590,7 +1604,7 @@ def get_bar_quality_detail(
                     GROUP BY bar_day
                     ORDER BY bar_day DESC
                     """,
-                    {"symbol": sym, "days": days, "period": period},
+                    {"symbol": sym, "days": days, "period": period_db},
                 )
                 daily_rows = []
                 for row in cur.fetchall() or []:
@@ -1607,18 +1621,23 @@ def get_bar_quality_detail(
 
                 # Query B — By expiry (using most recent bar_day worth of data)
                 if latest_date:
+                    if table == "option_day":
+                        day_filter = "AND bar_date = %(latest_date)s::date"
+                        order_ts = "bar_date"
+                    else:
+                        day_filter = "AND DATE(timezone('America/New_York', bar_time)) = %(latest_date)s::date"
+                        order_ts = "bar_time"
                     cur.execute(
                         f"""
                         WITH expiry_latest AS (
                             SELECT DISTINCT ON (expiry, strike, option_right)
                                 expiry,
                                 open, high, low, close, volume, vwap
-                            FROM {table}
-                            WHERE source = 'massive'
-                              AND UPPER(TRIM(symbol)) = %(symbol)s
-                              AND DATE(timezone('America/New_York', bar_time)) = %(latest_date)s
+                            FROM {pg_table}
+                            WHERE UPPER(TRIM(underlying)) = %(symbol)s
+                              {day_filter}
                               {period_filter}
-                            ORDER BY expiry, strike, option_right, bar_time DESC
+                            ORDER BY expiry, strike, option_right, {order_ts} DESC
                         )
                         SELECT
                             expiry,
@@ -1632,17 +1651,29 @@ def get_bar_quality_detail(
                         GROUP BY expiry
                         ORDER BY expiry ASC
                         """,
-                        {"symbol": sym, "latest_date": latest_date, "period": period},
+                        {"symbol": sym, "latest_date": latest_date, "period": period_db},
                     )
-                    today_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+                    today_d = datetime.now(timezone.utc).date()
                     expiry_rows = []
                     for row in cur.fetchall() or []:
-                        exp = str(row[0]).strip() if row[0] else ""
+                        exp_raw = row[0]
+                        exp = ""
+                        dte = None
                         try:
-                            # DTE: expiry is YYYYMMDD, today is YYYYMMDD
-                            exp_date = date(int(exp[:4]), int(exp[4:6]), int(exp[6:8]))
-                            today_date = date(int(today_str[:4]), int(today_str[4:6]), int(today_str[6:8]))
-                            dte = (exp_date - today_date).days
+                            if hasattr(exp_raw, "isoformat"):
+                                exp_date = exp_raw if isinstance(exp_raw, date) else exp_raw.date()
+                                exp = exp_date.strftime("%Y%m%d")
+                                dte = (exp_date - today_d).days
+                            else:
+                                exp = str(exp_raw).strip() if exp_raw else ""
+                                if len(exp) >= 8 and exp[:8].isdigit():
+                                    exp_date = date(int(exp[:4]), int(exp[4:6]), int(exp[6:8]))
+                                    exp = exp[:8]
+                                    dte = (exp_date - today_d).days
+                                elif len(exp) >= 10:
+                                    exp_date = date.fromisoformat(exp[:10])
+                                    exp = exp_date.strftime("%Y%m%d")
+                                    dte = (exp_date - today_d).days
                         except Exception:
                             dte = None
                         expiry_rows.append({
@@ -1670,9 +1701,8 @@ def get_bar_quality_detail(
                                          THEN 1 END)::numeric / NULLIF(COUNT(*),0) * 100, 1) AS ohlc_pct,
                             ROUND(COUNT(volume)::numeric / NULLIF(COUNT(*),0) * 100, 1) AS volume_pct,
                             ROUND(COUNT(vwap)::numeric / NULLIF(COUNT(*),0) * 100, 1) AS vwap_pct
-                        FROM option_min
-                        WHERE source = 'massive'
-                          AND UPPER(TRIM(symbol)) = %s
+                        FROM market.option_minute
+                        WHERE UPPER(TRIM(underlying)) = %s
                         GROUP BY period
                         ORDER BY period ASC
                         """,
@@ -3167,7 +3197,9 @@ def post_jobs_ticker_reference(request: Request, body: Dict[str, Any] = Body(...
 
     jid, deduplicated = insert_job_massive_backfill(db, kind, payload)
     if jid is None:
-        return {"ok": False, "error": "Failed to enqueue job"}
+        from bifrost_worker.data.massive.celery_queues import massive_insert_failed_payload
+
+        return massive_insert_failed_payload()
 
     if deduplicated:
         return {"ok": True, "job_id": str(jid), "deduplicated": True}
@@ -3568,9 +3600,12 @@ def post_massive_sync(request: Request, body: Dict[str, Any] = Body(...)) -> Dic
                     pl["fan_out_chunks_total"] = n_chunks
                     jid, deduplicated = insert_job_massive_backfill(db, kind, pl)
                     if jid is None:
+                        from bifrost_worker.data.massive.celery_queues import massive_insert_failed_payload
+
+                        refused = massive_insert_failed_payload()
                         return {
-                            "ok": False,
-                            "error": "Failed to enqueue job (fan-out chunk)",
+                            **refused,
+                            "error": f"{refused.get('error')} (fan-out chunk)",
                             "job_ids": job_ids,
                         }
                     if deduplicated:
@@ -3594,7 +3629,9 @@ def post_massive_sync(request: Request, body: Dict[str, Any] = Body(...)) -> Dic
 
     jid, deduplicated = insert_job_massive_backfill(db, kind, payload)
     if jid is None:
-        return {"ok": False, "error": "Failed to enqueue job"}
+        from bifrost_worker.data.massive.celery_queues import massive_insert_failed_payload
+
+        return massive_insert_failed_payload()
 
     if deduplicated:
         return {"ok": True, "job_id": str(jid), "deduplicated": True}
@@ -3684,16 +3721,15 @@ def get_snapshot_quality_detail(
                     WITH daily_latest AS (
                         SELECT DISTINCT ON (
                             DATE(timezone('America/New_York', snapshot_ts)),
-                            contract_key
+                            option_ticker
                         )
                             DATE(timezone('America/New_York', snapshot_ts)) AS snap_day,
                             iv, delta, gamma, theta, vega, open_interest, day_close
-                        FROM option_snapshots
-                        WHERE source = %(source)s
-                          AND UPPER(TRIM(SPLIT_PART(contract_key, '|', 1))) = %(symbol)s
+                        FROM market.option_snapshot
+                        WHERE UPPER(TRIM(underlying)) = %(symbol)s
                           AND snapshot_ts >= NOW() - (%(days)s || ' days')::interval
                         ORDER BY DATE(timezone('America/New_York', snapshot_ts)),
-                                 contract_key,
+                                 option_ticker,
                                  snapshot_ts DESC
                     )
                     SELECT
@@ -3709,7 +3745,7 @@ def get_snapshot_quality_detail(
                     GROUP BY snap_day
                     ORDER BY snap_day DESC
                     """,
-                    {"source": src, "symbol": sym, "days": days},
+                    {"symbol": sym, "days": days},
                 )
                 daily_raw = cur.fetchall()
 
@@ -3734,18 +3770,21 @@ def get_snapshot_quality_detail(
                     cur.execute(
                         """
                         WITH latest_day_rows AS (
-                            SELECT DISTINCT ON (contract_key)
-                                contract_key,
-                                iv, delta, gamma, theta, vega, open_interest, day_close
-                            FROM option_snapshots
-                            WHERE source = %(source)s
-                              AND UPPER(TRIM(SPLIT_PART(contract_key, '|', 1))) = %(symbol)s
-                              AND DATE(timezone('America/New_York', snapshot_ts)) = %(latest_date)s
-                            ORDER BY contract_key, snapshot_ts DESC
+                            SELECT DISTINCT ON (os.option_ticker)
+                                os.option_ticker AS contract_key,
+                                oc.expiry,
+                                os.iv, os.delta, os.gamma, os.theta, os.vega,
+                                os.open_interest, os.day_close
+                            FROM market.option_snapshot os
+                            LEFT JOIN market.option_contract oc
+                              ON oc.option_ticker = os.option_ticker
+                            WHERE UPPER(TRIM(os.underlying)) = %(symbol)s
+                              AND DATE(timezone('America/New_York', os.snapshot_ts)) = %(latest_date)s
+                            ORDER BY os.option_ticker, os.snapshot_ts DESC
                         )
                         SELECT
-                            SPLIT_PART(contract_key, '|', 3) AS expiry,
-                            (TO_DATE(SPLIT_PART(contract_key,'|',3),'YYYYMMDD') - CURRENT_DATE)::int AS dte,
+                            to_char(expiry, 'YYYYMMDD') AS expiry,
+                            (expiry - CURRENT_DATE)::int AS dte,
                             COUNT(*)::int AS contract_count,
                             ROUND(COUNT(iv)::numeric / COUNT(*)::numeric * 100, 1) AS iv_pct,
                             ROUND(COUNT(CASE WHEN delta IS NOT NULL AND gamma IS NOT NULL
@@ -3754,10 +3793,11 @@ def get_snapshot_quality_detail(
                             ROUND(COUNT(open_interest)::numeric / COUNT(*)::numeric * 100, 1) AS oi_pct,
                             ROUND(COUNT(day_close)::numeric / COUNT(*)::numeric * 100, 1) AS day_price_pct
                         FROM latest_day_rows
+                        WHERE expiry IS NOT NULL
                         GROUP BY expiry
                         ORDER BY expiry
                         """,
-                        {"source": src, "symbol": sym, "latest_date": latest_date},
+                        {"symbol": sym, "latest_date": latest_date},
                     )
                     expiry_raw = cur.fetchall()
                 expiry_rows = [

@@ -190,17 +190,15 @@ def _fetch_greeks_rows(
                     od.strike,
                     od.option_right,
                     od.close          AS market_price,
-                    od.bar_time,
+                    od.bar_date       AS bar_time,
                     sd.close          AS stock_price
-                FROM option_day od
-                JOIN stock_day sd
+                FROM market.option_daily od
+                JOIN market.stock_daily sd
                   ON sd.symbol = %s
-                 AND sd.bar_time::date = %s::date
-                 AND sd.source = 'massive'
+                 AND sd.bar_date = %s::date
                  AND sd.close > 0
-                WHERE od.symbol = %s
-                  AND od.bar_time::date = %s::date
-                  AND od.source = 'massive'
+                WHERE od.underlying = %s
+                  AND od.bar_date = %s::date
                   AND od.close > 0
                   AND od.expiry IS NOT NULL
                   AND od.strike > 0
@@ -297,10 +295,9 @@ def get_greeks_available_dates(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT DISTINCT bar_time::date AS trade_date
-                    FROM option_day
-                    WHERE symbol = %s
-                      AND source = 'massive'
+                    SELECT DISTINCT bar_date AS trade_date
+                    FROM market.option_daily
+                    WHERE underlying = %s
                     ORDER BY 1 DESC
                     LIMIT %s
                     """,

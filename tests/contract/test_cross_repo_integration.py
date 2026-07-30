@@ -38,14 +38,25 @@ def test_ops_and_massive_beat_tasks_aligned() -> None:
     import bifrost_worker.data.massive.tasks  # noqa: F401
     from bifrost_api.ops.services.celery_capabilities import build_celery_capabilities_payload
     from bifrost_worker.celery.celery_app import app as celery_app
-    from bifrost_worker.data.massive.beat_schedule_public import beat_tasks_payload_for_capabilities
+    from bifrost_worker.data.massive.beat_schedule_public import (
+        _MASSIVE_BEAT_SCHEDULE_SPEC_FULL,
+        beat_tasks_payload_for_capabilities,
+    )
+    from bifrost_worker.data.massive.celery_queues import MASSIVE_QUEUES_DISABLED
 
     caps = build_celery_capabilities_payload(celery_app)
     assert caps["beat_tasks"] == beat_tasks_payload_for_capabilities()
-    assert len(caps["beat_tasks"]) == 7
+    if MASSIVE_QUEUES_DISABLED:
+        # P8: plugin CronJobs own EOD; Celery Massive beat is empty.
+        assert caps["beat_tasks"] == []
+        assert len(_MASSIVE_BEAT_SCHEDULE_SPEC_FULL) == 7
+    else:
+        assert len(caps["beat_tasks"]) == 7
 
 
 def test_massive_http_beat_schedule_endpoint() -> None:
+    from bifrost_worker.data.massive.celery_queues import MASSIVE_QUEUES_DISABLED
+
     reader = MagicMock()
     reader._config = full_server_config()
     app = create_massive_app(reader=reader, control_via_db=None)
@@ -54,4 +65,8 @@ def test_massive_http_beat_schedule_endpoint() -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
-    assert len(body.get("entries") or []) == 7
+    if MASSIVE_QUEUES_DISABLED:
+        assert body.get("massive_queues_disabled") is True
+        assert len(body.get("entries") or []) == 0
+    else:
+        assert len(body.get("entries") or []) == 7

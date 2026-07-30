@@ -82,17 +82,18 @@ def _snapshot_oi_trend_by_day(cur, sym: str, lb: int) -> Dict[str, Tuple[int, in
         cur.execute(
             """
             WITH snap AS (
-              SELECT DISTINCT ON (oc.contract_key, os.day_last_updated_day)
+              SELECT DISTINCT ON (oc.option_ticker, DATE(timezone('America/New_York', os.snapshot_ts)))
                 oc.option_right,
                 COALESCE(os.open_interest, 0)::bigint AS open_interest,
-                os.day_last_updated_day::date AS trade_date
-              FROM option_contracts oc
-              INNER JOIN option_snapshots os
-                ON os.contract_key = oc.contract_key AND os.source = 'massive'
-              WHERE UPPER(TRIM(oc.symbol)) = %s
-                AND os.day_last_updated_day IS NOT NULL
-                AND os.day_last_updated_day >= CURRENT_DATE - %s::integer
-              ORDER BY oc.contract_key, os.day_last_updated_day, os.snapshot_ts DESC
+                DATE(timezone('America/New_York', os.snapshot_ts)) AS trade_date
+              FROM market.option_contract oc
+              INNER JOIN market.option_snapshot os
+                ON os.option_ticker = oc.option_ticker
+              WHERE UPPER(TRIM(oc.underlying)) = %s
+                AND os.snapshot_ts >= (CURRENT_DATE - %s::integer)
+              ORDER BY oc.option_ticker,
+                       DATE(timezone('America/New_York', os.snapshot_ts)),
+                       os.snapshot_ts DESC
             )
             SELECT trade_date,
                    SUM(CASE WHEN UPPER(TRIM(option_right)) IN ('P', 'PUT')
@@ -248,17 +249,18 @@ def fetch_symbol_option_pcr(
                     cur.execute(
                         """
                         WITH snap AS (
-                          SELECT DISTINCT ON (oc.contract_key, os.day_last_updated_day)
+                          SELECT DISTINCT ON (oc.option_ticker, DATE(timezone('America/New_York', os.snapshot_ts)))
                             oc.option_right,
                             COALESCE(os.day_volume, 0)::bigint AS day_volume,
-                            os.day_last_updated_day::date AS trade_date
-                          FROM option_contracts oc
-                          INNER JOIN option_snapshots os
-                            ON os.contract_key = oc.contract_key AND os.source = 'massive'
-                          WHERE UPPER(TRIM(oc.symbol)) = %s
-                            AND os.day_last_updated_day IS NOT NULL
-                            AND os.day_last_updated_day >= CURRENT_DATE - %s::integer
-                          ORDER BY oc.contract_key, os.day_last_updated_day, os.snapshot_ts DESC
+                            DATE(timezone('America/New_York', os.snapshot_ts)) AS trade_date
+                          FROM market.option_contract oc
+                          INNER JOIN market.option_snapshot os
+                            ON os.option_ticker = oc.option_ticker
+                          WHERE UPPER(TRIM(oc.underlying)) = %s
+                            AND os.snapshot_ts >= (CURRENT_DATE - %s::integer)
+                          ORDER BY oc.option_ticker,
+                                   DATE(timezone('America/New_York', os.snapshot_ts)),
+                                   os.snapshot_ts DESC
                         )
                         SELECT trade_date,
                                SUM(CASE WHEN UPPER(TRIM(option_right)) IN ('P', 'PUT')
@@ -316,8 +318,8 @@ def fetch_symbol_option_pcr(
                 try:
                     cur.execute(
                         """
-                        SELECT 1 FROM pg_matviews
-                        WHERE schemaname = 'public' AND matviewname = 'option_snapshots_latest'
+                        SELECT 1 FROM information_schema.views
+                        WHERE table_schema = 'market' AND table_name = 'v_option_chain_latest'
                         LIMIT 1
                         """
                     )
@@ -327,7 +329,7 @@ def fetch_symbol_option_pcr(
 
                 chain_sql_mv = """
                     SELECT oc.expiry,
-                           MAX(os.day_last_updated_day::date) AS snap_day,
+                           MAX(DATE(timezone('America/New_York', os.snapshot_ts))) AS snap_day,
                            SUM(CASE WHEN UPPER(TRIM(oc.option_right)) IN ('P', 'PUT')
                                THEN COALESCE(os.open_interest, 0) ELSE 0 END)::bigint AS put_oi,
                            SUM(CASE WHEN UPPER(TRIM(oc.option_right)) IN ('C', 'CALL')
@@ -336,16 +338,16 @@ def fetch_symbol_option_pcr(
                                THEN COALESCE(os.day_volume, 0) ELSE 0 END)::bigint AS put_vol,
                            SUM(CASE WHEN UPPER(TRIM(oc.option_right)) IN ('C', 'CALL')
                                THEN COALESCE(os.day_volume, 0) ELSE 0 END)::bigint AS call_vol
-                    FROM option_contracts oc
-                    LEFT JOIN option_snapshots_latest os
-                      ON os.contract_key = oc.contract_key AND os.source = 'massive'
-                    WHERE UPPER(TRIM(oc.symbol)) = %s
+                    FROM market.option_contract oc
+                    LEFT JOIN market.v_option_chain_latest os
+                      ON os.option_ticker = oc.option_ticker
+                    WHERE UPPER(TRIM(oc.underlying)) = %s
                     GROUP BY oc.expiry
                     ORDER BY oc.expiry ASC
                 """
                 chain_sql_snap = """
                     SELECT oc.expiry,
-                           MAX(os.day_last_updated_day::date) AS snap_day,
+                           MAX(DATE(timezone('America/New_York', os.snapshot_ts))) AS snap_day,
                            SUM(CASE WHEN UPPER(TRIM(oc.option_right)) IN ('P', 'PUT')
                                THEN COALESCE(os.open_interest, 0) ELSE 0 END)::bigint AS put_oi,
                            SUM(CASE WHEN UPPER(TRIM(oc.option_right)) IN ('C', 'CALL')
@@ -354,15 +356,15 @@ def fetch_symbol_option_pcr(
                                THEN COALESCE(os.day_volume, 0) ELSE 0 END)::bigint AS put_vol,
                            SUM(CASE WHEN UPPER(TRIM(oc.option_right)) IN ('C', 'CALL')
                                THEN COALESCE(os.day_volume, 0) ELSE 0 END)::bigint AS call_vol
-                    FROM option_contracts oc
+                    FROM market.option_contract oc
                     LEFT JOIN LATERAL (
-                      SELECT open_interest, day_volume, day_last_updated_day
-                      FROM option_snapshots s
-                      WHERE s.contract_key = oc.contract_key AND s.source = 'massive'
+                      SELECT open_interest, day_volume, snapshot_ts
+                      FROM market.option_snapshot s
+                      WHERE s.option_ticker = oc.option_ticker
                       ORDER BY s.snapshot_ts DESC
                       LIMIT 1
                     ) os ON TRUE
-                    WHERE UPPER(TRIM(oc.symbol)) = %s
+                    WHERE UPPER(TRIM(oc.underlying)) = %s
                     GROUP BY oc.expiry
                     ORDER BY oc.expiry ASC
                 """

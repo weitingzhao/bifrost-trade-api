@@ -40,10 +40,14 @@ def test_ops_celery_capabilities_imports_worker_tasks() -> None:
     import bifrost_worker.data.massive.tasks  # noqa: F401
     from bifrost_api.ops.services.celery_capabilities import build_celery_capabilities_payload
     from bifrost_worker.celery.celery_app import app as celery_app
+    from bifrost_worker.data.massive.celery_queues import MASSIVE_QUEUES_DISABLED
 
     out = build_celery_capabilities_payload(celery_app)
     assert out["ok"] is True
-    assert out.get("beat_tasks")
-    assert len(out["beat_tasks"]) >= 5
+    if MASSIVE_QUEUES_DISABLED:
+        assert out.get("beat_tasks") == []
+    else:
+        assert out.get("beat_tasks")
+        assert len(out["beat_tasks"]) >= 5
     names = {t["name"] for t in out.get("registered_tasks") or []}
     assert "src.bars.tasks.backfill_bars" in names

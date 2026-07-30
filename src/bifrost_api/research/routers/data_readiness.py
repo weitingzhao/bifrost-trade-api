@@ -71,7 +71,11 @@ def post_sepa_backfill_price_gaps(
     If body.symbols is provided (list of ticker strings), only those symbols are backfilled.
     Otherwise all gap symbols are queried from the DB (default bulk behaviour).
     """
-    from bifrost_worker.data.massive.celery_queues import celery_queue_for_massive_job
+    from bifrost_worker.data.massive.celery_queues import (
+        MASSIVE_QUEUES_DISABLED,
+        celery_queue_for_massive_job,
+        massive_enqueue_refused_payload,
+    )
     from bifrost_worker.data.massive.tasks import run_massive_job
     from bifrost_worker.data.massive.vendor.reader import (
         insert_job_massive_backfill,
@@ -81,6 +85,9 @@ def post_sepa_backfill_price_gaps(
     db = _db_config(request)
     if not db:
         return {"ok": False, "error": "PostgreSQL not configured"}
+
+    if MASSIVE_QUEUES_DISABLED:
+        return massive_enqueue_refused_payload()
 
     custom_symbols: list = body.get("symbols") or []
     # Smaller batches: each Celery job runs daily_smart per symbol (sequential REST); large batches risk timeouts.
@@ -122,7 +129,9 @@ def post_sepa_backfill_price_gaps(
         try:
             jid, deduplicated = insert_job_massive_backfill(db, "feed_stocks_aggregate", payload)
             if jid is None:
-                dispatch_errors.append("insert_job returned None for a batch")
+                from bifrost_worker.data.massive.celery_queues import MASSIVE_QUEUES_DISABLED_ERROR
+
+                dispatch_errors.append(MASSIVE_QUEUES_DISABLED_ERROR)
                 continue
             if not deduplicated:
                 countdown = min(float(idx) * 0.35, 120.0)
@@ -357,7 +366,11 @@ def post_sepa_backfill_grouped_history(
     One API call per date returns OHLCV for all 5,000+ US stocks simultaneously.
     Efficient for 420-day full-market historical backfill (420 calls vs 5000×420 for per-symbol).
     """
-    from bifrost_worker.data.massive.celery_queues import celery_queue_for_massive_job
+    from bifrost_worker.data.massive.celery_queues import (
+        MASSIVE_QUEUES_DISABLED,
+        celery_queue_for_massive_job,
+        massive_enqueue_refused_payload,
+    )
     from bifrost_worker.data.massive.tasks import run_massive_job
     from bifrost_worker.data.massive.vendor.reader import (
         insert_job_massive_backfill,
@@ -367,6 +380,9 @@ def post_sepa_backfill_grouped_history(
     db = _db_config(request)
     if not db:
         return {"ok": False, "error": "PostgreSQL not configured"}
+
+    if MASSIVE_QUEUES_DISABLED:
+        return massive_enqueue_refused_payload()
 
     days_back = min(int(body.get("days_back") or 420), 1500)
 
@@ -399,7 +415,9 @@ def post_sepa_backfill_grouped_history(
         try:
             jid, deduplicated = insert_job_massive_backfill(db, "feed_stocks_aggregate", payload)
             if jid is None:
-                dispatch_errors.append(f"insert failed for {date_str}")
+                from bifrost_worker.data.massive.celery_queues import MASSIVE_QUEUES_DISABLED_ERROR
+
+                dispatch_errors.append(f"{MASSIVE_QUEUES_DISABLED_ERROR} ({date_str})")
                 continue
             if not deduplicated:
                 countdown = min(float(idx) * 0.35, 120.0)
@@ -429,7 +447,11 @@ def _post_sepa_financials_backfill(
     import psycopg2
     from psycopg2.extras import RealDictCursor
 
-    from bifrost_worker.data.massive.celery_queues import celery_queue_for_massive_job
+    from bifrost_worker.data.massive.celery_queues import (
+        MASSIVE_QUEUES_DISABLED,
+        celery_queue_for_massive_job,
+        massive_enqueue_refused_payload,
+    )
     from bifrost_worker.data.massive.tasks import run_massive_job
     from bifrost_core.persistence.postgres.connection import _get_conn_params
     from bifrost_api.research.sepa import financials_data as fd
@@ -441,6 +463,9 @@ def _post_sepa_financials_backfill(
     db = _db_config(request)
     if not db:
         return {"ok": False, "error": "PostgreSQL not configured"}
+
+    if MASSIVE_QUEUES_DISABLED:
+        return massive_enqueue_refused_payload()
 
     custom_symbols: list = body.get("symbols") or []
     batch_size = int(body.get("batch_size") or 50)
@@ -484,7 +509,9 @@ def _post_sepa_financials_backfill(
         try:
             jid, deduplicated = insert_job_massive_backfill(db, kind, payload)
             if jid is None:
-                dispatch_errors.append("insert_job returned None for a batch")
+                from bifrost_worker.data.massive.celery_queues import MASSIVE_QUEUES_DISABLED_ERROR
+
+                dispatch_errors.append(MASSIVE_QUEUES_DISABLED_ERROR)
                 continue
             if not deduplicated:
                 countdown = min(float(idx) * 0.35, 120.0)
@@ -509,6 +536,8 @@ def _get_sepa_financials_gaps(
     *,
     detail_fetcher: str,
     limit: int = 2000,
+    ingest_status: str | None = None,
+    ingest_note: str | None = None,
 ) -> Dict[str, Any]:
     import psycopg2
     from psycopg2.extras import RealDictCursor
@@ -531,12 +560,24 @@ def _get_sepa_financials_gaps(
             rows, total = fn(cur, limit=limit)
     finally:
         conn.close()
-    return {
+    out: Dict[str, Any] = {
         "ok": True,
         "gaps": rows,
         "total_gap_count": total,
         "returned": len(rows),
     }
+    if ingest_status:
+        out["ingest_status"] = ingest_status
+    if ingest_note:
+        out["ingest_note"] = ingest_note
+    return out
+
+
+_PENDING_PLUGIN_NOTE = (
+    "Market-data plugin currently ingests statement report_types only "
+    "(income_statement / balance_sheet / cash_flow_statement). "
+    "ratios / short_interest / short_volume ingest is pending."
+)
 
 
 @router.get("/research/data/readiness/income-statements-gaps")
@@ -580,7 +621,12 @@ def post_sepa_backfill_cash_flows(
 
 @router.get("/research/data/readiness/ratios-gaps")
 def get_sepa_ratios_gaps(request: Request) -> Dict[str, Any]:
-    return _get_sepa_financials_gaps(request, detail_fetcher="get_ratios_gap_details")
+    return _get_sepa_financials_gaps(
+        request,
+        detail_fetcher="get_ratios_gap_details",
+        ingest_status="pending_plugin",
+        ingest_note=_PENDING_PLUGIN_NOTE,
+    )
 
 
 @router.post("/research/data/readiness/backfill-ratios")
@@ -593,7 +639,12 @@ def post_sepa_backfill_ratios(
 
 @router.get("/research/data/readiness/short-interest-gaps")
 def get_sepa_short_interest_gaps(request: Request) -> Dict[str, Any]:
-    return _get_sepa_financials_gaps(request, detail_fetcher="get_short_interest_gap_details")
+    return _get_sepa_financials_gaps(
+        request,
+        detail_fetcher="get_short_interest_gap_details",
+        ingest_status="pending_plugin",
+        ingest_note=_PENDING_PLUGIN_NOTE,
+    )
 
 
 @router.post("/research/data/readiness/backfill-short-interest")
@@ -606,7 +657,12 @@ def post_sepa_backfill_short_interest(
 
 @router.get("/research/data/readiness/short-volume-gaps")
 def get_sepa_short_volume_gaps(request: Request) -> Dict[str, Any]:
-    return _get_sepa_financials_gaps(request, detail_fetcher="get_short_volume_gap_details")
+    return _get_sepa_financials_gaps(
+        request,
+        detail_fetcher="get_short_volume_gap_details",
+        ingest_status="pending_plugin",
+        ingest_note=_PENDING_PLUGIN_NOTE,
+    )
 
 
 @router.post("/research/data/readiness/backfill-short-volume")
@@ -1527,42 +1583,56 @@ def get_symbol_fundamental_raw_data(
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SET statement_timeout = 8000")
 
+            from bifrost_api.research.sepa.financials_data import (
+                REPORT_INCOME,
+                _INCOME_FIELDS,
+                unpack_financial_data,
+            )
+
             # Last 10 quarterly rows (EPS + revenues)
             cur.execute(
                 """
-                SELECT
-                    fiscal_year,
-                    fiscal_quarter,
-                    basic_earnings_per_share  AS eps,
-                    revenues
-                FROM public.stock_income_statements
+                SELECT fiscal_year, fiscal_quarter, data
+                FROM market.stock_financials
                 WHERE symbol = %(sym)s
-                  AND source = 'massive'
-                  AND timeframe = 'quarterly'
-                ORDER BY fiscal_year DESC, fiscal_quarter DESC
+                  AND report_type = %(rtype)s
+                  AND lower(period_type) = 'quarterly'
+                ORDER BY fiscal_year DESC NULLS LAST, fiscal_quarter DESC NULLS LAST
                 LIMIT 10
                 """,
-                {"sym": sym},
+                {"sym": sym, "rtype": REPORT_INCOME},
             )
-            quarterly = [dict(r) for r in cur.fetchall()]
+            quarterly = []
+            for r in cur.fetchall() or []:
+                flat = unpack_financial_data(r.get("data"), _INCOME_FIELDS)
+                quarterly.append({
+                    "fiscal_year": r.get("fiscal_year"),
+                    "fiscal_quarter": r.get("fiscal_quarter"),
+                    "eps": flat.get("basic_earnings_per_share"),
+                    "revenues": flat.get("revenue"),
+                })
 
             # Last 5 annual rows (EPS + revenues)
             cur.execute(
                 """
-                SELECT
-                    fiscal_year,
-                    basic_earnings_per_share  AS eps,
-                    revenues
-                FROM public.stock_income_statements
+                SELECT fiscal_year, data
+                FROM market.stock_financials
                 WHERE symbol = %(sym)s
-                  AND source = 'massive'
-                  AND timeframe = 'annual'
-                ORDER BY fiscal_year DESC
+                  AND report_type = %(rtype)s
+                  AND lower(period_type) = 'annual'
+                ORDER BY fiscal_year DESC NULLS LAST
                 LIMIT 5
                 """,
-                {"sym": sym},
+                {"sym": sym, "rtype": REPORT_INCOME},
             )
-            annual = [dict(r) for r in cur.fetchall()]
+            annual = []
+            for r in cur.fetchall() or []:
+                flat = unpack_financial_data(r.get("data"), _INCOME_FIELDS)
+                annual.append({
+                    "fiscal_year": r.get("fiscal_year"),
+                    "eps": flat.get("basic_earnings_per_share"),
+                    "revenues": flat.get("revenue"),
+                })
 
             # Computed metrics stored inside fundamental_eval jsonb
             cur.execute(
@@ -1640,94 +1710,144 @@ def get_symbol_statements(
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SET statement_timeout = 8000")
 
+            from bifrost_api.research.sepa.financials_data import (
+                REPORT_BALANCE,
+                REPORT_CASH_FLOW,
+                REPORT_RATIOS,
+                REPORT_SHORT_INTEREST,
+                REPORT_SHORT_VOLUME,
+                _BALANCE_FIELDS,
+                _CASH_FLOW_FIELDS,
+                _RATIOS_FIELDS,
+                _SHORT_INTEREST_FIELDS,
+                _SHORT_VOLUME_FIELDS,
+                unpack_financial_data,
+            )
+
             # Balance sheets — last 6 quarterly rows, key fields
             cur.execute(
                 """
-                SELECT
-                    period_end, fiscal_year, fiscal_quarter,
-                    cash_and_equivalents,
-                    total_current_assets, total_current_liabilities,
-                    total_assets, total_liabilities, total_equity,
-                    receivables, inventories, debt_current,
-                    long_term_debt_and_capital_lease_obligations,
-                    property_plant_equipment_net,
-                    retained_earnings_deficit
-                FROM public.stock_balance_sheets
-                WHERE symbol = %(sym)s AND source = 'massive' AND timeframe = 'quarterly'
-                ORDER BY period_end DESC
+                SELECT period_date AS period_end, fiscal_year, fiscal_quarter, data
+                FROM market.stock_financials
+                WHERE symbol = %(sym)s
+                  AND report_type = %(rtype)s
+                  AND lower(period_type) = 'quarterly'
+                ORDER BY period_date DESC
                 LIMIT 6
                 """,
-                {"sym": sym},
+                {"sym": sym, "rtype": REPORT_BALANCE},
             )
-            balance_sheets = [dict(r) for r in cur.fetchall()]
+            balance_sheets = []
+            for r in cur.fetchall() or []:
+                flat = unpack_financial_data(r.get("data"), _BALANCE_FIELDS)
+                balance_sheets.append({
+                    "period_end": r.get("period_end"),
+                    "fiscal_year": r.get("fiscal_year"),
+                    "fiscal_quarter": r.get("fiscal_quarter"),
+                    **{k: flat.get(k) for k in (
+                        "cash_and_equivalents", "total_current_assets", "total_current_liabilities",
+                        "total_assets", "total_liabilities", "total_equity",
+                        "receivables", "inventories", "debt_current",
+                        "long_term_debt_and_capital_lease_obligations",
+                        "property_plant_equipment_net", "retained_earnings_deficit",
+                    )},
+                })
 
             # Cash flows — last 6 quarterly rows, key fields
             cur.execute(
                 """
-                SELECT
-                    period_end, fiscal_year, fiscal_quarter,
-                    net_income,
-                    net_cash_from_operating_activities,
-                    net_cash_from_investing_activities,
-                    net_cash_from_financing_activities,
-                    depreciation_depletion_and_amortization,
-                    purchase_of_property_plant_and_equipment,
-                    change_in_cash_and_equivalents
-                FROM public.stock_cash_flows
-                WHERE symbol = %(sym)s AND source = 'massive' AND timeframe = 'quarterly'
-                ORDER BY period_end DESC
+                SELECT period_date AS period_end, fiscal_year, fiscal_quarter, data
+                FROM market.stock_financials
+                WHERE symbol = %(sym)s
+                  AND report_type = %(rtype)s
+                  AND lower(period_type) = 'quarterly'
+                ORDER BY period_date DESC
                 LIMIT 6
                 """,
-                {"sym": sym},
+                {"sym": sym, "rtype": REPORT_CASH_FLOW},
             )
-            cash_flows = [dict(r) for r in cur.fetchall()]
+            cash_flows = []
+            for r in cur.fetchall() or []:
+                flat = unpack_financial_data(r.get("data"), _CASH_FLOW_FIELDS)
+                cash_flows.append({
+                    "period_end": r.get("period_end"),
+                    "fiscal_year": r.get("fiscal_year"),
+                    "fiscal_quarter": r.get("fiscal_quarter"),
+                    **{k: flat.get(k) for k in (
+                        "net_income", "net_cash_from_operating_activities",
+                        "net_cash_from_investing_activities", "net_cash_from_financing_activities",
+                        "depreciation_depletion_and_amortization",
+                        "purchase_of_property_plant_and_equipment",
+                        "change_in_cash_and_equivalents",
+                    )},
+                })
 
             # Ratios — last 8 rows by date
             cur.execute(
                 """
-                SELECT
-                    date,
-                    price_to_earnings, price_to_sales, price_to_book,
-                    price_to_free_cash_flow,
-                    debt_to_equity, return_on_equity, return_on_assets,
-                    market_cap, free_cash_flow, earnings_per_share,
-                    average_volume, dividend_yield
-                FROM public.stock_ratios
-                WHERE symbol = %(sym)s AND source = 'massive'
-                ORDER BY date DESC
+                SELECT period_date AS date, data
+                FROM market.stock_financials
+                WHERE symbol = %(sym)s AND report_type = %(rtype)s
+                ORDER BY period_date DESC
                 LIMIT 8
                 """,
-                {"sym": sym},
+                {"sym": sym, "rtype": REPORT_RATIOS},
             )
-            ratios = [dict(r) for r in cur.fetchall()]
+            ratios = []
+            for r in cur.fetchall() or []:
+                flat = unpack_financial_data(r.get("data"), _RATIOS_FIELDS)
+                ratios.append({
+                    "date": r.get("date"),
+                    **{k: flat.get(k) for k in (
+                        "price_to_earnings", "price_to_sales", "price_to_book",
+                        "price_to_free_cash_flow", "debt_to_equity",
+                        "return_on_equity", "return_on_assets",
+                        "market_cap", "free_cash_flow", "earnings_per_share",
+                        "average_volume", "dividend_yield",
+                    )},
+                })
 
             # Short interest — last 8 settlement dates
             cur.execute(
                 """
-                SELECT
-                    settlement_date, short_interest, avg_daily_volume, days_to_cover
-                FROM public.stock_short_interest
-                WHERE symbol = %(sym)s AND source = 'massive'
-                ORDER BY settlement_date DESC
+                SELECT period_date AS settlement_date, data
+                FROM market.stock_financials
+                WHERE symbol = %(sym)s AND report_type = %(rtype)s
+                ORDER BY period_date DESC
                 LIMIT 8
                 """,
-                {"sym": sym},
+                {"sym": sym, "rtype": REPORT_SHORT_INTEREST},
             )
-            short_interest = [dict(r) for r in cur.fetchall()]
+            short_interest = []
+            for r in cur.fetchall() or []:
+                flat = unpack_financial_data(r.get("data"), _SHORT_INTEREST_FIELDS)
+                short_interest.append({
+                    "settlement_date": r.get("settlement_date"),
+                    "short_interest": flat.get("short_interest"),
+                    "avg_daily_volume": flat.get("avg_daily_volume"),
+                    "days_to_cover": flat.get("days_to_cover"),
+                })
 
             # Short volume — last 12 trade dates
             cur.execute(
                 """
-                SELECT
-                    trade_date, short_volume, short_volume_ratio, total_volume
-                FROM public.stock_short_volume
-                WHERE symbol = %(sym)s AND source = 'massive'
-                ORDER BY trade_date DESC
+                SELECT period_date AS trade_date, data
+                FROM market.stock_financials
+                WHERE symbol = %(sym)s AND report_type = %(rtype)s
+                ORDER BY period_date DESC
                 LIMIT 12
                 """,
-                {"sym": sym},
+                {"sym": sym, "rtype": REPORT_SHORT_VOLUME},
             )
-            short_volume = [dict(r) for r in cur.fetchall()]
+            short_volume = []
+            for r in cur.fetchall() or []:
+                flat = unpack_financial_data(r.get("data"), _SHORT_VOLUME_FIELDS)
+                short_volume.append({
+                    "trade_date": r.get("trade_date"),
+                    "short_volume": flat.get("short_volume"),
+                    "short_volume_ratio": flat.get("short_volume_ratio"),
+                    "total_volume": flat.get("total_volume"),
+                })
 
     except Exception as e:
         return {"ok": False, "error": str(e)}

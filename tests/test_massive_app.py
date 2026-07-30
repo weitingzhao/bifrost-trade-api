@@ -105,6 +105,8 @@ class TestMassiveHealth:
         assert "PostgreSQL" in str(body.get("error", ""))
 
     def test_celery_beat_schedule_ok(self):
+        from bifrost_worker.data.massive.celery_queues import MASSIVE_QUEUES_DISABLED
+
         client = _make_client()
         r = client.get("/research/massive/celery-beat-schedule")
         assert r.status_code == 200
@@ -112,9 +114,13 @@ class TestMassiveHealth:
         assert body.get("ok") is True
         assert body.get("timezone") == "UTC"
         entries = body.get("entries") or []
-        assert len(entries) >= 1
-        first = entries[0]
-        assert "name" in first and "task" in first and "label" in first and "crontab" in first
+        if MASSIVE_QUEUES_DISABLED:
+            assert body.get("massive_queues_disabled") is True
+            assert entries == []
+        else:
+            assert len(entries) >= 1
+            first = entries[0]
+            assert "name" in first and "task" in first and "label" in first and "crontab" in first
 
     def test_watchlist_db_coverage_requires_postgres(self):
         client = _make_client()

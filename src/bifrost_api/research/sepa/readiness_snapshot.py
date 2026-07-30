@@ -55,12 +55,11 @@ cand_fast AS MATERIALIZED (
         ON c.symbol = u.symbol
        AND c.session_close IS NOT NULL
     LEFT JOIN LATERAL (
-        SELECT sd.bar_time::date AS bt, sd.close AS cl
-        FROM public.stock_day sd
+        SELECT sd.bar_date AS bt, sd.close AS cl
+        FROM market.stock_daily sd
         WHERE sd.symbol = c.symbol
-          AND sd.source = 'massive'
-          AND sd.bar_time >= (CURRENT_DATE - integer '{_STOCK_DAY_GAP_LATEST_BAR_LOOKBACK_DAYS}')::date
-        ORDER BY sd.bar_time DESC NULLS LAST
+          AND sd.bar_date >= (CURRENT_DATE - integer '{_STOCK_DAY_GAP_LATEST_BAR_LOOKBACK_DAYS}')::date
+        ORDER BY sd.bar_date DESC NULLS LAST
         LIMIT 1
     ) recent ON true
     WHERE lower(coalesce(u.instrument_type, '')) <> 'warrant'
@@ -69,11 +68,10 @@ older_lookup AS MATERIALIZED (
     SELECT s.symbol, dl.bt AS last_bar_max_older, dl.cl AS last_bar_day_close_older
     FROM (SELECT symbol FROM cand_fast WHERE last_bar_max_recent IS NULL) s
     LEFT JOIN LATERAL (
-        SELECT sd.bar_time::date AS bt, sd.close AS cl
-        FROM public.stock_day sd
+        SELECT sd.bar_date AS bt, sd.close AS cl
+        FROM market.stock_daily sd
         WHERE sd.symbol = s.symbol
-          AND sd.source = 'massive'
-        ORDER BY sd.bar_time DESC NULLS LAST
+        ORDER BY sd.bar_date DESC NULLS LAST
         LIMIT 1
     ) dl ON true
 ),
@@ -81,24 +79,23 @@ fallback_p AS MATERIALIZED (
     SELECT
         sd.symbol,
         count(*)::integer AS bar_rows,
-        min(sd.bar_time)::date AS first_bar_date,
-        max(sd.bar_time)::date AS last_bar_date,
+        min(sd.bar_date) AS first_bar_date,
+        max(sd.bar_date) AS last_bar_date,
         count(*) FILTER (WHERE sd.close IS NULL)::integer AS null_close_rows,
         count(*) FILTER (WHERE sd.volume IS NULL)::integer AS null_volume_rows,
         (
             count(*) >= 240
-            AND max(sd.bar_time) >= (CURRENT_DATE - integer '7')::date
+            AND max(sd.bar_date) >= (CURRENT_DATE - integer '7')::date
             AND count(*) FILTER (WHERE sd.close IS NULL) = 0
             AND count(*) FILTER (WHERE sd.volume IS NULL) = 0
         ) AS price_ready
-    FROM public.stock_day sd
+    FROM market.stock_daily sd
     JOIN public.cache_stock_snapshot fc
       ON fc.symbol = sd.symbol
      AND fc.session_close IS NOT NULL
      AND fc.last_minute_updated IS NULL
-    WHERE sd.source = 'massive'
-      AND sd.bar_time >= (CURRENT_DATE - integer '420')::date
-      AND sd.bar_time <= CURRENT_DATE
+    WHERE sd.bar_date >= (CURRENT_DATE - integer '420')::date
+      AND sd.bar_date <= CURRENT_DATE
     GROUP BY sd.symbol
 ),
 cand AS (
@@ -182,7 +179,7 @@ READINESS_DATA_CATALOG: Dict[str, Any] = {
         },
         {
             "id": "stock_day",
-            "object": "public.stock_day",
+            "object": "market.stock_daily",
             "role": "Daily OHLCV bars; SEPA Phase1/CRS read source=massive.",
             "typical_ingest": "Celery kind feed_stocks_aggregate (and related)",
             "data_points": [
@@ -493,15 +490,14 @@ bars AS (
         upper(trim(sd.symbol)) AS symbol,
         p.price_source,
         count(*)::integer AS bar_rows,
-        min(sd.bar_time)::date AS first_bar_date,
-        max(sd.bar_time)::date AS last_bar_date,
+        min(sd.bar_date) AS first_bar_date,
+        max(sd.bar_date) AS last_bar_date,
         count(*) FILTER (WHERE sd.close IS NULL)::integer AS null_close_rows,
         count(*) FILTER (WHERE sd.volume IS NULL)::integer AS null_volume_rows
     FROM params p
-    JOIN public.stock_day sd
-        ON sd.source = p.price_source
-       AND sd.bar_time >= p.window_start
-       AND sd.bar_time <= p.as_of_date
+    JOIN market.stock_daily sd
+        ON sd.bar_date >= p.window_start
+       AND sd.bar_date <= p.as_of_date
     GROUP BY p.as_of_date, p.price_source, p.window_start, upper(trim(sd.symbol))
 ),
 symbols AS (
@@ -512,34 +508,37 @@ symbols AS (
 -- Stage 2 financial coverage aggregates (one full-table pass each)
 inc_agg AS MATERIALIZED (
     SELECT upper(trim(symbol)) AS symbol,
-           count(*) FILTER (WHERE timeframe = 'quarterly')::integer AS q_count,
-           count(*) FILTER (WHERE timeframe = 'annual')::integer    AS a_count
-    FROM public.stock_income_statements
-    WHERE source = 'massive'
+           count(*) FILTER (WHERE lower(period_type) = 'quarterly')::integer AS q_count,
+           count(*) FILTER (WHERE lower(period_type) = 'annual')::integer    AS a_count
+    FROM market.stock_financials
+    WHERE report_type = 'income_statement'
     GROUP BY upper(trim(symbol))
 ),
 bs_agg AS MATERIALIZED (
     SELECT DISTINCT upper(trim(symbol)) AS symbol
-    FROM public.stock_balance_sheets
-    WHERE source = 'massive'
+    FROM market.stock_financials
+    WHERE report_type = 'balance_sheet'
 ),
 cf_agg AS MATERIALIZED (
     SELECT DISTINCT upper(trim(symbol)) AS symbol
-    FROM public.stock_cash_flows
-    WHERE source = 'massive'
+    FROM market.stock_financials
+    WHERE report_type = 'cash_flow_statement'
 ),
 rat_agg AS MATERIALIZED (
     SELECT DISTINCT upper(trim(symbol)) AS symbol
-    FROM public.stock_ratios
+    FROM market.stock_financials
+    WHERE report_type = 'ratios'
 ),
 -- Stage 3 short data coverage aggregates
 si_agg AS MATERIALIZED (
     SELECT DISTINCT upper(trim(symbol)) AS symbol
-    FROM public.stock_short_interest
+    FROM market.stock_financials
+    WHERE report_type = 'short_interest'
 ),
 sv_agg AS MATERIALIZED (
     SELECT DISTINCT upper(trim(symbol)) AS symbol
-    FROM public.stock_short_volume
+    FROM market.stock_financials
+    WHERE report_type = 'short_volume'
 )
 SELECT
     p.as_of_date,
@@ -713,17 +712,14 @@ def _fetch_fundamentals_symbol_counts_by_instrument_type(cur: Any) -> Optional[L
     Join: ``upper(trim(tickers.ticker)) = fundamentals.symbol``, universe filter matches Step 2 snapshot
     breakdown (active US ``stocks`` market).
     """
-    specs: List[Tuple[str, str]] = []
-    if _pg_rel_exists(cur, "public.stock_income_statements"):
-        specs.append(("income_statement_symbols", "stock_income_statements"))
-    if _pg_rel_exists(cur, "public.stock_balance_sheets"):
-        specs.append(("balance_sheet_symbols", "stock_balance_sheets"))
-    if _pg_rel_exists(cur, "public.stock_cash_flows"):
-        specs.append(("cash_flow_symbols", "stock_cash_flows"))
-    if _pg_rel_exists(cur, "public.stock_ratios"):
-        specs.append(("ratio_symbols", "stock_ratios"))
-    if not specs:
+    if not _pg_rel_exists(cur, "market.stock_financials"):
         return []
+    specs: List[Tuple[str, str]] = [
+        ("income_statement_symbols", "income_statement"),
+        ("balance_sheet_symbols", "balance_sheet"),
+        ("cash_flow_symbols", "cash_flow_statement"),
+        ("ratio_symbols", "ratios"),
+    ]
 
     _join_tickers = """
         INNER JOIN public.tickers t
@@ -754,16 +750,17 @@ def _fetch_fundamentals_symbol_counts_by_instrument_type(cur: Any) -> Optional[L
                 "ratio_symbols": 0,
             }
 
-        for col, tbl in specs:
+        for col, rtype in specs:
             cur.execute(
                 f"""
                 SELECT COALESCE(NULLIF(t.instrument_type, ''), '(unknown)') AS code,
                        count(DISTINCT f.symbol)::bigint AS n
-                FROM public.{tbl} f
+                FROM market.stock_financials f
                 {_join_tickers}
-                WHERE f.source = 'massive'
+                WHERE f.report_type = %s
                 GROUP BY 1
-                """
+                """,
+                (rtype,),
             )
             for r in cur.fetchall() or []:
                 code = str(r.get("code") or "(unknown)")
@@ -940,49 +937,27 @@ def fetch_sepa_readiness_summary(status_config: dict) -> Dict[str, Any]:
                 logger.debug("stock_day_vendor_fill_gap_count query failed: %s", e)
                 out["stock_day_vendor_fill_gap_count"] = None
 
-            # Fundamentals raw tables (SEPA Data Ready Steps 4–9) — gap counts when tables exist.
+            # Fundamentals via market.stock_financials (SEPA Data Ready Steps 4–9).
             try:
                 from bifrost_api.research.sepa import financials_data as _fd
 
                 cur.execute(
-                    "SELECT (to_regclass('public.stock_income_statements') IS NOT NULL) AS texists"
+                    "SELECT (to_regclass('market.stock_financials') IS NOT NULL) AS texists"
                 )
-                if bool((cur.fetchone() or {}).get("texists")):
+                fin_ok = bool((cur.fetchone() or {}).get("texists"))
+                if fin_ok:
                     out["income_statements_gap_count"] = _fd.count_income_statements_gaps(cur)
-                else:
-                    out["income_statements_gap_count"] = None
-                cur.execute(
-                    "SELECT (to_regclass('public.stock_balance_sheets') IS NOT NULL) AS texists"
-                )
-                if bool((cur.fetchone() or {}).get("texists")):
                     out["balance_sheets_gap_count"] = _fd.count_balance_sheet_gaps(cur)
-                else:
-                    out["balance_sheets_gap_count"] = None
-                cur.execute(
-                    "SELECT (to_regclass('public.stock_cash_flows') IS NOT NULL) AS texists"
-                )
-                if bool((cur.fetchone() or {}).get("texists")):
                     out["cash_flows_gap_count"] = _fd.count_cash_flow_gaps(cur)
-                else:
-                    out["cash_flows_gap_count"] = None
-                cur.execute("SELECT (to_regclass('public.stock_ratios') IS NOT NULL) AS texists")
-                if bool((cur.fetchone() or {}).get("texists")):
                     out["ratios_gap_count"] = _fd.count_ratios_gaps(cur)
-                else:
-                    out["ratios_gap_count"] = None
-                cur.execute(
-                    "SELECT (to_regclass('public.stock_short_interest') IS NOT NULL) AS texists"
-                )
-                if bool((cur.fetchone() or {}).get("texists")):
                     out["short_interest_gap_count"] = _fd.count_short_interest_gaps(cur)
-                else:
-                    out["short_interest_gap_count"] = None
-                cur.execute(
-                    "SELECT (to_regclass('public.stock_short_volume') IS NOT NULL) AS texists"
-                )
-                if bool((cur.fetchone() or {}).get("texists")):
                     out["short_volume_gap_count"] = _fd.count_short_volume_gaps(cur)
                 else:
+                    out["income_statements_gap_count"] = None
+                    out["balance_sheets_gap_count"] = None
+                    out["cash_flows_gap_count"] = None
+                    out["ratios_gap_count"] = None
+                    out["short_interest_gap_count"] = None
                     out["short_volume_gap_count"] = None
             except Exception as e:
                 logger.debug("fundamentals gap counts failed: %s", e)
@@ -1469,36 +1444,50 @@ def run_fundamentals_local_backfill(
     try:
         with conn_r.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
-                "SELECT to_regclass('public.stock_income_statements') IS NOT NULL AS t"
+                "SELECT to_regclass('market.stock_financials') IS NOT NULL AS t"
             )
             if not bool((cur.fetchone() or {}).get("t")):
-                return {"ok": False, "error": "stock_income_statements table not found"}
+                return {"ok": False, "error": "market.stock_financials table not found"}
+
+            from bifrost_api.research.sepa.financials_data import (
+                REPORT_INCOME,
+                _INCOME_FIELDS,
+                unpack_financial_data,
+            )
 
             # SEPA core income reads
             cur.execute(
                 """
-                SELECT symbol, fiscal_year, fiscal_quarter, period_end, filing_date,
-                       basic_earnings_per_share, revenue, diluted_earnings_per_share
-                FROM public.stock_income_statements
-                WHERE symbol = ANY(%s) AND source = 'massive' AND timeframe = 'quarterly'
-                ORDER BY symbol, fiscal_year ASC, fiscal_quarter ASC
+                SELECT symbol, fiscal_year, fiscal_quarter,
+                       period_date AS period_end, data
+                FROM market.stock_financials
+                WHERE symbol = ANY(%s)
+                  AND report_type = %s
+                  AND lower(period_type) = 'quarterly'
+                ORDER BY symbol, fiscal_year ASC NULLS LAST, fiscal_quarter ASC NULLS LAST
                 """,
-                (syms,),
+                (syms, REPORT_INCOME),
             )
             for r in cur.fetchall() or []:
-                q_by_sym[r["symbol"]].append(_map_q(r))
+                row = dict(r)
+                flat = unpack_financial_data(row.pop("data", None), _INCOME_FIELDS)
+                q_by_sym[row["symbol"]].append(_map_q({**row, **flat}))
             cur.execute(
                 """
-                SELECT symbol, fiscal_year, fiscal_quarter, period_end, filing_date,
-                       basic_earnings_per_share, revenue, diluted_earnings_per_share
-                FROM public.stock_income_statements
-                WHERE symbol = ANY(%s) AND source = 'massive' AND timeframe = 'annual'
-                ORDER BY symbol, fiscal_year ASC
+                SELECT symbol, fiscal_year, fiscal_quarter,
+                       period_date AS period_end, data
+                FROM market.stock_financials
+                WHERE symbol = ANY(%s)
+                  AND report_type = %s
+                  AND lower(period_type) = 'annual'
+                ORDER BY symbol, fiscal_year ASC NULLS LAST
                 """,
-                (syms,),
+                (syms, REPORT_INCOME),
             )
             for r in cur.fetchall() or []:
-                a_by_sym[r["symbol"]].append(_map_a(r))
+                row = dict(r)
+                flat = unpack_financial_data(row.pop("data", None), _INCOME_FIELDS)
+                a_by_sym[row["symbol"]].append(_map_a({**row, **flat}))
 
             # Extension batch reads (best-effort; individual failures don't block SEPA core)
             try:
@@ -2316,9 +2305,10 @@ def compute_sepa_criteria_stats(status_config: dict) -> Dict[str, Any]:
 
 
 def compute_data_inventory_stats(status_config: dict) -> Dict[str, Any]:
-    """Return fill-rate counts for unused financial table columns scoped to the SEPA universe.
+    """Return fill-rate counts for financial jsonb keys scoped to the SEPA universe.
 
-    Each table is a single aggregation query; results are keyed by table → column → filled_symbol_count.
+    Reads ``market.stock_financials`` by ``report_type``. Response keys keep legacy
+    table aliases (``stock_income_statements``, …) for FE compatibility.
     """
     if not _db_ok(status_config):
         return {"ok": False, "error": "PostgreSQL not configured"}
@@ -2329,37 +2319,52 @@ def compute_data_inventory_stats(status_config: dict) -> Dict[str, Any]:
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-    tables_spec: Dict[str, List[str]] = {
-        "stock_ratios": [
-            "return_on_equity", "price_to_earnings", "debt_to_equity",
-            "price_to_book", "price_to_sales", "return_on_assets",
-            "market_cap", "free_cash_flow", "price_to_free_cash_flow",
-            "ev_to_ebitda", "ev_to_sales", "enterprise_value",
-        ],
-        "stock_balance_sheets": [
-            "total_equity", "long_term_debt_and_capital_lease_obligations",
-            "cash_and_equivalents", "total_current_assets", "total_current_liabilities",
-            "total_assets", "total_liabilities", "retained_earnings_deficit",
-            "goodwill", "intangible_assets_net",
-        ],
-        "stock_cash_flows": [
-            "net_cash_from_operating_activities",
-            "purchase_of_property_plant_and_equipment",
-            "net_cash_from_investing_activities",
-            "net_cash_from_financing_activities",
-            "cash_from_operating_activities_continuing_operations",
-        ],
-        "stock_income_statements": [
-            "gross_profit", "operating_income", "ebitda",
-            "cost_of_revenue", "research_development", "selling_general_administrative",
-            "diluted_earnings_per_share",
-        ],
-        "stock_short_interest": [
-            "short_interest", "days_to_cover", "avg_daily_volume",
-        ],
-        "stock_short_volume": [
-            "short_volume_ratio", "total_volume", "short_volume",
-        ],
+    # legacy_alias -> (report_type, jsonb keys to score)
+    tables_spec: Dict[str, tuple[str, List[str]]] = {
+        "stock_ratios": (
+            "ratios",
+            [
+                "return_on_equity", "price_to_earnings", "debt_to_equity",
+                "price_to_book", "price_to_sales", "return_on_assets",
+                "market_cap", "free_cash_flow", "price_to_free_cash_flow",
+                "ev_to_ebitda", "ev_to_sales", "enterprise_value",
+            ],
+        ),
+        "stock_balance_sheets": (
+            "balance_sheet",
+            [
+                "total_equity", "long_term_debt_and_capital_lease_obligations",
+                "cash_and_equivalents", "total_current_assets", "total_current_liabilities",
+                "total_assets", "total_liabilities", "retained_earnings_deficit",
+                "goodwill", "intangible_assets_net",
+            ],
+        ),
+        "stock_cash_flows": (
+            "cash_flow_statement",
+            [
+                "net_cash_from_operating_activities",
+                "purchase_of_property_plant_and_equipment",
+                "net_cash_from_investing_activities",
+                "net_cash_from_financing_activities",
+                "cash_from_operating_activities_continuing_operations",
+            ],
+        ),
+        "stock_income_statements": (
+            "income_statement",
+            [
+                "gross_profit", "operating_income", "ebitda",
+                "cost_of_revenue", "research_development", "selling_general_administrative",
+                "diluted_earnings_per_share",
+            ],
+        ),
+        "stock_short_interest": (
+            "short_interest",
+            ["short_interest", "days_to_cover", "avg_daily_volume"],
+        ),
+        "stock_short_volume": (
+            "short_volume",
+            ["short_volume_ratio", "total_volume", "short_volume"],
+        ),
     }
 
     result: Dict[str, Dict[str, int]] = {}
@@ -2372,24 +2377,39 @@ def compute_data_inventory_stats(status_config: dict) -> Dict[str, Any]:
             except Exception:
                 pass
 
-            for table, columns in tables_spec.items():
+            for alias, (report_type, columns) in tables_spec.items():
                 if not columns:
                     continue
                 agg_parts = ", ".join(
-                    f"count(DISTINCT t.symbol) FILTER (WHERE t.{col} IS NOT NULL) AS {col}"
+                    f"count(DISTINCT t.symbol) FILTER ("
+                    f"WHERE (t.data ? '{col}') AND NULLIF(t.data->>'{col}', '') IS NOT NULL"
+                    f") AS {col}"
                     for col in columns
                 )
                 try:
-                    cur.execute(f"""
+                    cur.execute(
+                        f"""
                         SELECT {agg_parts}
-                        FROM public.{table} t
-                        WHERE t.symbol IN (SELECT symbol FROM v_us_equity_universe)
-                    """)
+                        FROM market.stock_financials t
+                        WHERE t.report_type = %s
+                          AND t.symbol IN (SELECT symbol FROM v_us_equity_universe)
+                        """,
+                        (report_type,),
+                    )
                     row = dict(cur.fetchone() or {})
-                    result[table] = {col: int(row.get(col) or 0) for col in columns}
+                    result[alias] = {col: int(row.get(col) or 0) for col in columns}
                 except Exception as e:
-                    logger.debug("data_inventory fill rate query failed for %s: %s", table, e)
-                    result[table] = {col: 0 for col in columns}
+                    logger.debug(
+                        "data_inventory fill rate query failed for %s (%s): %s",
+                        alias,
+                        report_type,
+                        e,
+                    )
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    result[alias] = {col: 0 for col in columns}
     except Exception as e:
         return {"ok": False, "error": str(e)}
     finally:
@@ -2445,9 +2465,8 @@ def get_sepa_grouped_backfill_dates(
                         w.d,
                         count(DISTINCT sd.symbol)::int AS symbol_count
                     FROM weekdays w
-                    LEFT JOIN public.stock_day sd
-                        ON sd.bar_time::date = w.d
-                        AND sd.source = 'massive'
+                    LEFT JOIN market.stock_daily sd
+                        ON sd.bar_date = w.d
                     GROUP BY w.d
                 )
                 SELECT
