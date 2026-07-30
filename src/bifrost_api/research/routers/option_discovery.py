@@ -258,18 +258,11 @@ async def get_option_expirations(
         return _option_expirations_cache_response(out, {"X-Expiration-Cache": "miss"})
 
     async def _massive_db_first_flow() -> JSONResponse:
-        """PostgreSQL cache / contracts first; then Massive REST with persist."""
-        if not ms["api_key"]:
-            return JSONResponse(
-                content={
-                    "symbol": symbol,
-                    "expirations": [],
-                    "strikes": [],
-                    "error": "Massive API key not configured",
-                    "provider": "massive",
-                }
-            )
+        """PostgreSQL cache / contracts first; then Massive REST with persist.
 
+        P8: market.option_contract (plugin) can satisfy Discovery without a Trade-side
+        Polygon API key. Key is required only when falling through to REST refresh.
+        """
         exp_q = (expiration or "").strip()
 
         # Single-expiry: strikes from option_contracts or REST refresh.
@@ -289,6 +282,16 @@ async def get_option_expirations(
                     if last_price is not None:
                         body["last_price"] = last_price
                     return _option_expirations_cache_response(body, {"X-Expiration-Cache": "hit"})
+            if not ms["api_key"]:
+                return JSONResponse(
+                    content={
+                        "symbol": symbol,
+                        "expirations": [],
+                        "strikes": [],
+                        "error": "Massive API key not configured",
+                        "provider": "massive",
+                    }
+                )
             result = await asyncio.to_thread(
                 refresh_expirations_from_massive_api,
                 db,
@@ -317,7 +320,7 @@ async def get_option_expirations(
                         if last_price is not None:
                             body_f["last_price"] = last_price
                         return _option_expirations_cache_response(body_f, {"X-Expiration-Cache": "fresh"})
-                    if ecfg["stale_while_revalidate"]:
+                    if ecfg["stale_while_revalidate"] and ms["api_key"]:
                         db_cfg = db
                         cfg_c = config
 
@@ -357,6 +360,17 @@ async def get_option_expirations(
                 if last_price is not None:
                     body_c["last_price"] = last_price
                 return _option_expirations_cache_response(body_c, {"X-Expiration-Cache": "hit"})
+
+        if not ms["api_key"]:
+            return JSONResponse(
+                content={
+                    "symbol": symbol,
+                    "expirations": [],
+                    "strikes": [],
+                    "error": "Massive API key not configured",
+                    "provider": "massive",
+                }
+            )
 
         result = await asyncio.to_thread(
             refresh_expirations_from_massive_api,
