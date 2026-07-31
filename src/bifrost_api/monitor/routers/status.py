@@ -318,14 +318,15 @@ def get_status(request: Request) -> Dict[str, Any]:
             sym = (w.get("symbol") or "").strip()
             if sym and (st == "STK" or not st):
                 symbols_set.add(sym)
-        if hb is not None and hb.get("subscribed_tickers") is not None and isinstance(
-            hb["subscribed_tickers"], list
-        ):
-            subscribed_tickers = sorted(
+        # Prefer daemon heartbeat list when it has real tickers. An explicit empty
+        # list must fall back to watchlist/strategy symbols — otherwise Live UI
+        # stays empty while observe-only watchlist symbols still exist.
+        hb_tickers: List[str] = []
+        if hb is not None and isinstance(hb.get("subscribed_tickers"), list):
+            hb_tickers = sorted(
                 s for s in hb["subscribed_tickers"] if s and str(s).strip()
             )
-        else:
-            subscribed_tickers = sorted(s for s in symbols_set if s)
+        subscribed_tickers = hb_tickers or sorted(s for s in symbols_set if s)
 
         merged_cfg = getattr(app.state, "bifrost_merged_config", None) or {}
         reference_indices = merge_reference_indices(
