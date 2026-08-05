@@ -10,6 +10,7 @@ from bifrost_api.monitor.routers.status import (
     STATUS_SCHEMA_VERSION,
     _assemble_status_v3,
     _status_error_payload,
+    apply_platform_gateway_ib_heartbeat_overlay,
 )
 
 _NOW = 1_700_000_000.0
@@ -184,3 +185,26 @@ def test_build_ib_socket_status_unified_host_slot_fields() -> None:
     assert aa["host"]["last_ib_probe_at"] == _NOW - 1
     assert aa["secondary"] is not None
     assert aa["secondary"]["last_ib_probe_at"] == _NOW - 1
+
+
+def test_apply_platform_gateway_ib_heartbeat_overlay_applies_when_gateway() -> None:
+    hb = {"ib_connected": False, "ib_client_id": None}
+    applied = apply_platform_gateway_ib_heartbeat_overlay(
+        hb,
+        {"ib_connected": True, "ib_client_id": 70, "ib_transport": "platform_gateway"},
+    )
+    assert applied is True
+    assert hb["ib_connected"] is True
+    assert hb["ib_client_id"] == 70
+    assert hb["ib_transport"] == "platform_gateway"
+
+
+def test_apply_platform_gateway_ib_heartbeat_overlay_skips_legacy() -> None:
+    hb = {"ib_connected": False, "ib_client_id": None}
+    applied = apply_platform_gateway_ib_heartbeat_overlay(
+        hb,
+        {"ib_connected": True, "ib_client_id": 70, "ib_transport": "legacy_socket"},
+    )
+    assert applied is False
+    assert hb["ib_connected"] is False
+    assert "ib_transport" not in hb

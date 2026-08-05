@@ -38,6 +38,23 @@ _status_cache: Dict[str, Any] = {}
 _status_cache_ts: float = 0.0
 _STATUS_CACHE_TTL = 2.0
 
+
+def apply_platform_gateway_ib_heartbeat_overlay(
+    daemon_heartbeat: Dict[str, Any],
+    live: Dict[str, Any],
+) -> bool:
+    """Overlay redis-derived IB fields when transport is platform_gateway.
+
+    Returns True when fields were applied. PG heartbeat may still hold
+    ib_connected=False because the daemon no longer owns a direct TWS socket.
+    """
+    if live.get("ib_transport") != "platform_gateway":
+        return False
+    daemon_heartbeat["ib_connected"] = bool(live.get("ib_connected"))
+    daemon_heartbeat["ib_client_id"] = live.get("ib_client_id")
+    daemon_heartbeat["ib_transport"] = "platform_gateway"
+    return True
+
 # GET /status polls often; Celery control.inspect waits the full timeout when no worker replies.
 # Ops uses longer CELERY_INSPECT_TIMEOUT_SEC in celery_app (e.g. 15s) for worker snapshots.
 _STATUS_CELERY_INSPECT_TIMEOUT_SEC = float(
@@ -652,6 +669,34 @@ def get_status(request: Request) -> Dict[str, Any]:
             ib_ingestor = None
             ib_account_agent = None
             platform_ib_gateway = None
+
+        # SSOT: when Platform IB Gateway transport is active, overlay redis-ib live
+        # IB connectivity onto PG daemon_heartbeat before health roll-up. PG may still
+        # hold ib_connected=False because the daemon no longer owns a direct TWS socket.
+        if daemon_heartbeat is not None and _ib_r is not None:
+            try:
+                from bifrost_core.config.startup import get_effective_ib_config
+                from bifrost_core.monitor.integrations.platform_ib_gateway import (
+                    derive_daemon_ib_heartbeat_from_redis,
+                )
+
+                _live = derive_daemon_ib_heartbeat_from_redis(
+                    _ib_r,
+                    get_effective_ib_config(reader._config),
+                    now=time.time(),
+                )
+                if apply_platform_gateway_ib_heartbeat_overlay(daemon_heartbeat, _live):
+                    dsc = derive_daemon_self_check(
+                        daemon_heartbeat,
+                        auto_status_row=status_current_row,
+                        data_lag_threshold_ms=data_lag_threshold_ms,
+                        trading_suspended=ts_flag,
+                    )
+                    daemon_self_check = dsc["daemon_self_check"]
+                    daemon_lamp = dsc["daemon_lamp"]
+                    daemon_block_reasons = dsc["daemon_block_reasons"]
+            except Exception:
+                pass
 
         hc = derive_health_roll_up(
             daemon_lamp=daemon_lamp,
