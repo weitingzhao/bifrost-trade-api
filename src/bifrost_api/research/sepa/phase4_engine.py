@@ -16,7 +16,7 @@ from bifrost_api.research.sepa.fundamentals_engine import (
     evaluate_fundamentals,
 )
 from bifrost_api.research.sepa.phase1_engine import Phase1Config, evaluate_phase1_batch
-from bifrost_worker.data.massive.vendor.reader import (
+from bifrost_api.research.market_pg import (
     get_sepa_fundamentals_cache_snapshot,
     get_job_sepa_phase4,
     get_job_sepa_phase4_result,
@@ -28,7 +28,7 @@ from bifrost_worker.data.massive.vendor.reader import (
     update_job_sepa_phase4,
     upsert_sepa_fundamentals_cache,
 )
-from bifrost_worker.data.massive.vendor.reference_cache_keys import (
+from bifrost_api.research.reference_cache_keys import (
     CACHE_TTL_SEPA_FUNDAMENTALS_SEC,
     key_sepa_fundamentals,
     redis_client_from_status_config,

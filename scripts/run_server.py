@@ -3,7 +3,7 @@
 Usage:
     python scripts/run_server.py <domain>
 
-Domains: monitor | massive | docs | ops | trading | strategy | portfolio | market | research
+Domains: monitor | docs | ops | trading | strategy | portfolio | market | research
 """
 
 from __future__ import annotations
@@ -21,9 +21,6 @@ DOMAIN_RUNNERS: dict[str, Callable[[dict, str | None], None]] = {
     "monitor": lambda cfg, path: __import__(
         "bifrost_api.monitor.app", fromlist=["run_server"]
     ).run_server(cfg, resolved_config_path=path),
-    "massive": lambda cfg, path: __import__(
-        "bifrost_api.massive.app", fromlist=["run_massive_server"]
-    ).run_massive_server(cfg, resolved_config_path=path),
     "docs": lambda cfg, path: __import__(
         "bifrost_api.docs_api.app", fromlist=["run_docs_server"]
     ).run_docs_server(cfg, resolved_config_path=path),

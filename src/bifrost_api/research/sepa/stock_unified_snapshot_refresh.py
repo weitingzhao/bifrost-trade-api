@@ -10,8 +10,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import psycopg2
 
 from bifrost_core.persistence.postgres.connection import _get_conn_params
-from bifrost_worker.data.massive.vendor.client import MassiveClient
-from bifrost_worker.data.massive.vendor.config import get_massive_settings
+from bifrost_api.research.polygon_http import MassiveClient
+from bifrost_api.research.polygon_http import get_massive_settings
 
 logger = logging.getLogger(__name__)
 

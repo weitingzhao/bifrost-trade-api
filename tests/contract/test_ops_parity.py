@@ -37,17 +37,13 @@ def test_ops_health_shape() -> None:
 
 def test_ops_celery_capabilities_imports_worker_tasks() -> None:
     import bifrost_worker.data.bars.tasks  # noqa: F401
-    import bifrost_worker.data.massive.tasks  # noqa: F401
     from bifrost_api.ops.services.celery_capabilities import build_celery_capabilities_payload
     from bifrost_worker.celery.celery_app import app as celery_app
-    from bifrost_worker.data.massive.celery_queues import MASSIVE_QUEUES_DISABLED
 
     out = build_celery_capabilities_payload(celery_app)
     assert out["ok"] is True
-    if MASSIVE_QUEUES_DISABLED:
-        assert out.get("beat_tasks") == []
-    else:
-        assert out.get("beat_tasks")
-        assert len(out["beat_tasks"]) >= 5
+    assert out.get("beat_tasks") == []
+    assert out.get("run_massive_job_matrix") == []
+    assert out.get("massive_retired") is True
     names = {t["name"] for t in out.get("registered_tasks") or []}
     assert "src.bars.tasks.backfill_bars" in names

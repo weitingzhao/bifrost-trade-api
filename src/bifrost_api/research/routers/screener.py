@@ -138,7 +138,7 @@ def _get_iv_history_series(
     Uses report_option_atm_iv_daily via the public reader function.
     Groups all expirations' ATM IVs by trade_date and returns one average per day.
     """
-    from bifrost_worker.data.massive.vendor.reader import get_report_option_atm_iv_daily
+    from bifrost_api.research.market_pg import get_report_option_atm_iv_daily
 
     since = (datetime.now(timezone.utc) - timedelta(days=365)).date()
     rows = get_report_option_atm_iv_daily(db, symbol, all_exps, source, since)
@@ -184,8 +184,8 @@ def _scan_csp(
     Returns (group_dict, warning_str).  group_dict is None on hard failure
     (no data).  warning_str is set when a soft or hard issue occurred.
     """
-    from bifrost_worker.data.massive.vendor.client import contract_key_from_parts
-    from bifrost_worker.data.massive.vendor.reader import (
+    from bifrost_api.research.polygon_http import contract_key_from_parts
+    from bifrost_api.research.market_pg import (
         get_option_expirations_from_contracts_db,
         get_option_snapshots_latest,
     )

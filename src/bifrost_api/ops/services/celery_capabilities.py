@@ -1,4 +1,7 @@
-"""Aggregate Celery self-description: task routes, canonical broker queues, ``run_massive_job`` matrix."""
+"""Aggregate Celery self-description: task routes, canonical broker queues.
+
+Massive ``run_massive_job`` matrix retired (Wave 7-C) — use market-data plugin.
+"""
 
 from __future__ import annotations
 
@@ -6,8 +9,6 @@ import logging
 from typing import Any, Dict, List
 
 from bifrost_api.ops.services.celery_supported_tasks import build_supported_tasks_payload
-from bifrost_worker.data.massive.beat_schedule_public import beat_tasks_payload_for_capabilities
-from bifrost_worker.data.massive.run_massive_job_manifest import RUN_MASSIVE_JOB_MATRIX
 from bifrost_worker.celery.celery_queue_names import (
     build_broker_queue_labels,
     load_canonical_broker_queue_names,
@@ -34,7 +35,7 @@ def build_celery_capabilities_payload(
     beat_running: bool | None = None,
     consuming_queues: List[str] | None = None,
 ) -> Dict[str, Any]:
-    """Return registered tasks + canonical queue names + ``run_massive_job`` kind/mode matrix + beat tasks."""
+    """Return registered tasks + canonical queue names (Massive matrix empty)."""
     cfg = _config_for_capabilities()
     for msg in ops_celery_config_validation_errors(cfg):
         logger.warning("ops celery config: %s", msg)
@@ -54,8 +55,6 @@ def build_celery_capabilities_payload(
             }
         )
 
-    beat_tasks = beat_tasks_payload_for_capabilities()
-    matrix = [r.to_api_dict() for r in RUN_MASSIVE_JOB_MATRIX]
     broker_queue_labels = build_broker_queue_labels(cfg)
 
     out: Dict[str, Any] = {
@@ -63,10 +62,12 @@ def build_celery_capabilities_payload(
         "registered_tasks": registered,
         "count": len(registered),
         "canonical_broker_queues": list(load_canonical_broker_queue_names(cfg)),
-        "run_massive_job_matrix": matrix,
-        "beat_tasks": beat_tasks,
+        "run_massive_job_matrix": [],
+        "beat_tasks": [],
         "broker_queue_labels": broker_queue_labels,
         "beat_running": beat_running,
         "consuming_queues": list(consuming_queues or []),
+        "massive_retired": True,
+        "massive_note": "Massive Celery queues retired — use market-data plugin",
     }
     return out

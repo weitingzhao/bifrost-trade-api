@@ -11,7 +11,7 @@ API = Path(__file__).resolve().parents[1] / "src" / "bifrost_api"
 
 DOMAIN_MAP = {
     "backend/monitor": "monitor",
-    "backend/massive": "massive",
+    # backend/massive retired (Wave 7-C) — do not map into bifrost_api.massive
     "backend/docs": "docs_api",
     "backend/ops": "ops",
     "backend/trading": "trading",
@@ -23,7 +23,6 @@ DOMAIN_MAP = {
 
 REPLS = [
     (r"\bfrom backend\.monitor\b", "from bifrost_api.monitor"),
-    (r"\bfrom backend\.massive\b", "from bifrost_api.massive"),
     (r"\bfrom backend\.docs\b", "from bifrost_api.docs_api"),
     (r"\bfrom backend\.ops\b", "from bifrost_api.ops"),
     (r"\bfrom backend\.trading\b", "from bifrost_api.trading"),
@@ -39,8 +38,8 @@ REPLS = [
     (r"\bfrom src\.monitor\b", "from bifrost_core.monitor"),
     (r"\bfrom src\.ib_operator\b", "from bifrost_core.ib_operator"),
     (r"\bfrom src\.app\.config\b", "from bifrost_core.config.startup"),
-    (r"\bfrom src\.massive\b", "from bifrost_worker.data.massive"),
-    (r"\bfrom src\.vendor\.massive\b", "from bifrost_worker.data.massive.vendor"),
+    (r"\bfrom src\.massive\b", "from bifrost_api.research.market_pg"),
+    (r"\bfrom src\.vendor\.massive\b", "from bifrost_api.research.polygon_http"),
 ]
 
 

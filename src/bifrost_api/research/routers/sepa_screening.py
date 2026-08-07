@@ -7,7 +7,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from bifrost_api.research.sepa.phase1_engine import Phase1Config, evaluate_phase1_batch
-from bifrost_worker.data.massive.vendor.reader import get_stock_day_series_for_sepa
+from bifrost_api.research.market_pg import get_stock_day_series_for_sepa
 
 router = APIRouter(tags=["research"])
 

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from bifrost_api.research.sepa.crs_engine import compute_crs_scores
-from bifrost_worker.data.massive.vendor.reader import get_stock_day_close_series_for_crs
+from bifrost_api.research.market_pg import get_stock_day_close_series_for_crs
 
 router = APIRouter(tags=["research"])
 

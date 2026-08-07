@@ -11,8 +11,8 @@ from bifrost_api.research.sepa.fundamentals_engine import (
     FundamentalsConfig,
     fetch_and_evaluate_fundamentals_batch,
 )
-from bifrost_worker.data.massive.vendor.client import MassiveClient
-from bifrost_worker.data.massive.vendor.config import get_massive_settings
+from bifrost_api.research.polygon_http import MassiveClient
+from bifrost_api.research.polygon_http import get_massive_settings
 
 router = APIRouter(tags=["research"])
 

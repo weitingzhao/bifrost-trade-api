@@ -9,9 +9,7 @@ from bifrost_api.research.sepa.readiness_snapshot import (
     compute_data_inventory_stats,
     compute_sepa_criteria_stats,
     fetch_sepa_readiness_summary,
-    get_sepa_grouped_backfill_dates,
     get_sepa_price_gap_details,
-    get_sepa_price_gap_symbols,
     run_fundamentals_local_backfill,
     run_sepa_universe_readiness_snapshot,
     run_technical_local_backfill,
@@ -19,6 +17,18 @@ from bifrost_api.research.sepa.readiness_snapshot import (
 from bifrost_api.research.sepa.stock_unified_snapshot_refresh import run_refresh_cache_stock_unified_snapshots
 
 router = APIRouter(tags=["research"])
+
+
+def _massive_enqueue_retired(
+    message: str = "Massive Celery queues retired — use market-data plugin",
+) -> Dict[str, Any]:
+    return {
+        "ok": False,
+        "error": message,
+        "reason": "massive_retired",
+        "job_ids": [],
+        "chunks": 0,
+    }
 
 
 def _db_config(request: Request) -> Optional[dict]:
@@ -66,88 +76,9 @@ def post_sepa_backfill_price_gaps(
     request: Request,
     body: Dict[str, Any] = Body(default={}),
 ) -> Dict[str, Any]:
-    """Fan-out daily_smart Celery jobs for universe symbols that are NOT price_ready.
-
-    If body.symbols is provided (list of ticker strings), only those symbols are backfilled.
-    Otherwise all gap symbols are queried from the DB (default bulk behaviour).
-    """
-    from bifrost_worker.data.massive.celery_queues import (
-        MASSIVE_QUEUES_DISABLED,
-        celery_queue_for_massive_job,
-        massive_enqueue_refused_payload,
-    )
-    from bifrost_worker.data.massive.tasks import run_massive_job
-    from bifrost_worker.data.massive.vendor.reader import (
-        insert_job_massive_backfill,
-        update_job_massive_backfill_celery_task_id,
-    )
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-
-    if MASSIVE_QUEUES_DISABLED:
-        return massive_enqueue_refused_payload()
-
-    custom_symbols: list = body.get("symbols") or []
-    # Smaller batches: each Celery job runs daily_smart per symbol (sequential REST); large batches risk timeouts.
-    batch_size = max(5, min(int(body.get("batch_size") or 25), 80))
-    if custom_symbols:
-        symbols = [str(s).strip().upper() for s in custom_symbols if s]
-        batches: list = [symbols[i : i + batch_size] for i in range(0, len(symbols), batch_size)]
-        gap_count: int = len(symbols)
-    else:
-        gap_result = get_sepa_price_gap_symbols(db, batch_size=batch_size)
-        if not gap_result.get("ok"):
-            return gap_result
-        gap_count = gap_result["gap_count"]
-        batches = gap_result["batches"]
-
-    if not batches:
-        return {
-            "ok": True,
-            "gap_count": 0,
-            "chunks": 0,
-            "job_ids": [],
-            "message": "No price gaps — all universe symbols are price_ready.",
-        }
-
-    queue_name = celery_queue_for_massive_job("feed_stocks_aggregate", priority_high=False)
-    job_ids: list = []
-    dispatch_errors: list = []
-
-    for idx, batch in enumerate(batches):
-        payload: Dict[str, Any] = {
-            "mode": "custom_bars",
-            "sync_all_periods": True,
-            "custom_bars_period_group": "daily",
-            "custom_bars_sync_mode": "daily_smart",
-            "start_ms": 0,
-            "end_ms": 0,
-            "symbols": batch,
-        }
-        try:
-            jid, deduplicated = insert_job_massive_backfill(db, "feed_stocks_aggregate", payload)
-            if jid is None:
-                from bifrost_worker.data.massive.celery_queues import MASSIVE_QUEUES_DISABLED_ERROR
-
-                dispatch_errors.append(MASSIVE_QUEUES_DISABLED_ERROR)
-                continue
-            if not deduplicated:
-                countdown = min(float(idx) * 0.35, 120.0)
-                ar = run_massive_job.apply_async(args=[jid], queue=queue_name, countdown=countdown)
-                update_job_massive_backfill_celery_task_id(db, jid, ar.id)
-            job_ids.append(str(jid))
-        except Exception as exc:
-            dispatch_errors.append(str(exc))
-
-    return {
-        "ok": True,
-        "gap_count": gap_count,
-        "chunks": len(batches),
-        "job_ids": job_ids,
-        **({"errors": dispatch_errors} if dispatch_errors else {}),
-    }
+    """Retired: Massive daily_smart Celery enqueue — use market-data plugin ingest."""
+    _ = (request, body)
+    return _massive_enqueue_retired()
 
 
 @router.post("/research/data/readiness/backfill-fundamentals")
@@ -339,20 +270,13 @@ def post_sepa_backfill_technical(
 
 @router.post("/research/data/readiness/sync-holidays")
 def post_sepa_sync_holidays(request: Request) -> Dict[str, Any]:
-    """Pull market holidays from Massive REST and upsert into reference_us_holidays.
-
-    Triggered alongside Step 1 (Sync All Tickers) on the SEPA Data Ready page so
-    downstream gap detection can exclude NYSE closed days.
-    """
-    from bifrost_worker.data.massive.vendor.holidays_sync import sync_market_holidays_from_massive
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-
-    reader = getattr(request.app.state, "reader", None)
-    cfg = getattr(reader, "_config", None) if reader else None
-    return sync_market_holidays_from_massive(db, cfg=cfg)
+    """Retired: Massive holidays sync — use market-data plugin."""
+    _ = request
+    return {
+        "ok": False,
+        "error": "Market holidays sync via Massive retired — use market-data plugin",
+        "reason": "massive_retired",
+    }
 
 
 @router.post("/research/data/readiness/backfill-grouped-history")
@@ -360,81 +284,9 @@ def post_sepa_backfill_grouped_history(
     request: Request,
     body: Dict[str, Any] = Body(default={}),
 ) -> Dict[str, Any]:
-    """Enqueue one daily_market_summary Celery job per missing trading date in the lookback window.
-
-    Uses Massive Grouped Daily Bars API (GET /v2/aggs/grouped/locale/us/market/stocks/{date}).
-    One API call per date returns OHLCV for all 5,000+ US stocks simultaneously.
-    Efficient for 420-day full-market historical backfill (420 calls vs 5000×420 for per-symbol).
-    """
-    from bifrost_worker.data.massive.celery_queues import (
-        MASSIVE_QUEUES_DISABLED,
-        celery_queue_for_massive_job,
-        massive_enqueue_refused_payload,
-    )
-    from bifrost_worker.data.massive.tasks import run_massive_job
-    from bifrost_worker.data.massive.vendor.reader import (
-        insert_job_massive_backfill,
-        update_job_massive_backfill_celery_task_id,
-    )
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-
-    if MASSIVE_QUEUES_DISABLED:
-        return massive_enqueue_refused_payload()
-
-    days_back = min(int(body.get("days_back") or 420), 1500)
-
-    dates_result = get_sepa_grouped_backfill_dates(db, days_back=days_back)
-    if not dates_result.get("ok"):
-        return dates_result
-
-    missing_dates: list = dates_result["missing_dates"]
-    checked_dates: int = dates_result.get("checked_dates", 0)
-
-    if not missing_dates:
-        return {
-            "ok": True,
-            "dates_queued": 0,
-            "checked_dates": checked_dates,
-            "job_ids": [],
-            "message": f"All {checked_dates} trading dates in the {days_back}d window already have full coverage (≥1,000 symbols/day).",
-        }
-
-    queue_name = celery_queue_for_massive_job("feed_stocks_aggregate", priority_high=False)
-    job_ids: list = []
-    dispatch_errors: list = []
-
-    for idx, date_str in enumerate(missing_dates):
-        payload: Dict[str, Any] = {
-            "mode": "daily_market_summary",
-            "date": date_str,
-            "adjusted": True,
-        }
-        try:
-            jid, deduplicated = insert_job_massive_backfill(db, "feed_stocks_aggregate", payload)
-            if jid is None:
-                from bifrost_worker.data.massive.celery_queues import MASSIVE_QUEUES_DISABLED_ERROR
-
-                dispatch_errors.append(f"{MASSIVE_QUEUES_DISABLED_ERROR} ({date_str})")
-                continue
-            if not deduplicated:
-                countdown = min(float(idx) * 0.35, 120.0)
-                ar = run_massive_job.apply_async(args=[jid], queue=queue_name, countdown=countdown)
-                update_job_massive_backfill_celery_task_id(db, jid, ar.id)
-            job_ids.append(str(jid))
-        except Exception as exc:
-            dispatch_errors.append(f"{date_str}: {exc}")
-
-    return {
-        "ok": True,
-        "dates_queued": len(missing_dates),
-        "checked_dates": checked_dates,
-        "days_back": days_back,
-        "job_ids": job_ids,
-        **({"errors": dispatch_errors} if dispatch_errors else {}),
-    }
+    """Retired: Massive grouped daily Celery enqueue — use market-data plugin ingest."""
+    _ = (request, body)
+    return _massive_enqueue_retired()
 
 
 def _post_sepa_financials_backfill(
@@ -443,92 +295,9 @@ def _post_sepa_financials_backfill(
     *,
     kind: str,
 ) -> Dict[str, Any]:
-    """Insert ``job_massive_backfill`` rows and ``apply_async`` for a fundamentals feed kind."""
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_worker.data.massive.celery_queues import (
-        MASSIVE_QUEUES_DISABLED,
-        celery_queue_for_massive_job,
-        massive_enqueue_refused_payload,
-    )
-    from bifrost_worker.data.massive.tasks import run_massive_job
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-    from bifrost_api.research.sepa import financials_data as fd
-    from bifrost_worker.data.massive.vendor.reader import (
-        insert_job_massive_backfill,
-        update_job_massive_backfill_celery_task_id,
-    )
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-
-    if MASSIVE_QUEUES_DISABLED:
-        return massive_enqueue_refused_payload()
-
-    custom_symbols: list = body.get("symbols") or []
-    batch_size = int(body.get("batch_size") or 50)
-    if custom_symbols:
-        symbols = [str(s).strip().upper() for s in custom_symbols if s]
-        batches = [symbols[i : i + batch_size] for i in range(0, len(symbols), batch_size)]
-        gap_count = len(symbols)
-    else:
-        params = _get_conn_params(db)
-        params["connect_timeout"] = 15
-        try:
-            conn = psycopg2.connect(**params)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-        try:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                gap_result = fd.financials_gap_symbols_from_db(cur, kind, batch_size=batch_size)
-        finally:
-            conn.close()
-        if not gap_result.get("ok"):
-            return gap_result
-        gap_count = int(gap_result.get("gap_count") or 0)
-        batches = gap_result.get("batches") or []
-
-    if not batches:
-        return {
-            "ok": True,
-            "gap_count": 0,
-            "chunks": 0,
-            "job_ids": [],
-            "message": f"No {kind} gaps — universe coverage meets thresholds.",
-        }
-
-    queue_name = celery_queue_for_massive_job(kind, priority_high=False)
-    job_ids: list = []
-    dispatch_errors: list = []
-    for idx, batch in enumerate(batches):
-        payload: Dict[str, Any] = {"symbols": batch, "throttle_sec": float(body.get("throttle_sec") or 0.22)}
-        if kind == "feed_stocks_ratios" and "use_v1_endpoint" in body:
-            payload["use_v1_endpoint"] = bool(body.get("use_v1_endpoint"))
-        try:
-            jid, deduplicated = insert_job_massive_backfill(db, kind, payload)
-            if jid is None:
-                from bifrost_worker.data.massive.celery_queues import MASSIVE_QUEUES_DISABLED_ERROR
-
-                dispatch_errors.append(MASSIVE_QUEUES_DISABLED_ERROR)
-                continue
-            if not deduplicated:
-                countdown = min(float(idx) * 0.35, 120.0)
-                ar = run_massive_job.apply_async(args=[jid], queue=queue_name, countdown=countdown)
-                update_job_massive_backfill_celery_task_id(db, jid, ar.id)
-            job_ids.append(str(jid))
-        except Exception as exc:
-            dispatch_errors.append(str(exc))
-
-    return {
-        "ok": True,
-        "gap_count": gap_count,
-        "chunks": len(batches),
-        "job_ids": job_ids,
-        "kind": kind,
-        **({"errors": dispatch_errors} if dispatch_errors else {}),
-    }
+    """Retired: Massive financials Celery enqueue — use market-data plugin."""
+    _ = (request, body, kind)
+    return {**_massive_enqueue_retired(), "kind": kind}
 
 
 def _get_sepa_financials_gaps(
@@ -680,7 +449,6 @@ _VALID_GAP_ACK_TYPES = frozenset(
 
 def _gap_ack_db(request: Request):
     import psycopg2
-    from psycopg2.extras import RealDictCursor
     from bifrost_core.persistence.postgres.connection import _get_conn_params
 
     db = _db_config(request)

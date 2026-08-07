@@ -1,4 +1,4 @@
-"""Bifrost Docs API — merged OpenAPI (Main + Massive + Research), same URL layout as Massive API."""
+"""Bifrost Docs API — merged OpenAPI (Main + Research; Massive domain retired)."""
 
 from __future__ import annotations
 
@@ -22,42 +22,34 @@ from bifrost_core.observability.prometheus import instrument_app
 
 logger = logging.getLogger(__name__)
 
-# Same pattern as backend.massive.routers.routes (POST /research/massive/shutdown).
 DOCS_STOP_EXIT_DELAY_SEC = 2.5
-
-# Same pattern as backend.massive.app (Massive API).
 DOCS_PATH_PREFIX = "/research/docs"
 
 
 def create_docs_app(
     main_openapi_url: str,
-    massive_openapi_url: str,
     research_openapi_url: str,
     *,
+    massive_openapi_url: Optional[str] = None,
     config: Optional[dict] = None,
     resolved_config_path: Optional[str] = None,
 ) -> FastAPI:
     """Build the docs-only FastAPI: merged OpenAPI + Swagger/ReDoc.
 
-    Canonical paths (mirror ``/research/massive/*``)::
+    Canonical paths::
 
         /research/docs/openapi.json
         /research/docs/docs
         /research/docs/redoc
         /research/docs/health
 
-    ``config`` may use categorized ``server.{architecture,account,research,feed}`` YAML; it is normalized
-    the same way as ``read_config()``.
-
-    Root ``/openapi.json``, ``/docs``, ``/redoc`` remain for nginx
-    ``/bifrost-api-docs/`` → docs listen port on 127.0.0.1 (stripped prefix). Set
-    ``BIFROST_DOCS_ROOT_PATH=/bifrost-api-docs`` so Swagger loads the correct
-    ``openapi.json`` URL in the browser.
+    Massive OpenAPI merge is optional/retired (Wave 7-C); when ``massive_openapi_url``
+    is set it is best-effort only (failure does not block Main+Research merge).
     """
 
     app = FastAPI(
         title="Bifrost Docs API",
-        description="Aggregated OpenAPI documentation for Main, Massive, and Research services.",
+        description="Aggregated OpenAPI documentation for Main and Research services.",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
@@ -97,6 +89,7 @@ def create_docs_app(
             "main_url": _state["main_url"],
             "massive_url": _state["massive_url"],
             "research_url": _state["research_url"],
+            "massive_retired": True,
         }
         srv = _cfg["server"]
         out["port"] = int(srv["docs_port"])
@@ -173,14 +166,6 @@ def create_docs_app(
                 content={"detail": f"Cannot reach main API: {exc}"},
             )
         try:
-            massive_spec = fetch_openapi(_state["massive_url"])
-        except Exception as exc:
-            logger.warning("Failed to fetch Massive OpenAPI from %s: %s", _state["massive_url"], exc)
-            return JSONResponse(
-                status_code=502,
-                content={"detail": f"Cannot reach Massive API: {exc}"},
-            )
-        try:
             research_spec = fetch_openapi(_state["research_url"])
         except Exception as exc:
             logger.warning("Failed to fetch Research OpenAPI from %s: %s", _state["research_url"], exc)
@@ -188,8 +173,18 @@ def create_docs_app(
                 status_code=502,
                 content={"detail": f"Cannot reach Research API: {exc}"},
             )
-        merged = merge_openapi_specs(main_spec, massive_spec, secondary_prefix="Massive")
-        merged = merge_openapi_specs(merged, research_spec, secondary_prefix="Research")
+        merged = merge_openapi_specs(main_spec, research_spec, secondary_prefix="Research")
+        massive_url = _state.get("massive_url")
+        if massive_url:
+            try:
+                massive_spec = fetch_openapi(massive_url)
+                merged = merge_openapi_specs(merged, massive_spec, secondary_prefix="Massive")
+            except Exception as exc:
+                logger.info(
+                    "Massive OpenAPI skipped (retired domain) from %s: %s",
+                    massive_url,
+                    exc,
+                )
         return JSONResponse(content=merged)
 
     from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
@@ -206,7 +201,6 @@ def create_docs_app(
             title="Bifrost API (merged) — ReDoc",
         )
 
-    # --- Canonical /research/docs/* (same layout as Massive API) ---
     @app.get(f"{DOCS_PATH_PREFIX}/openapi.json", include_in_schema=False)
     def merged_openapi_prefixed() -> JSONResponse:
         return _merged_openapi_response()
@@ -219,7 +213,6 @@ def create_docs_app(
     def redoc_prefixed() -> Any:
         return _redoc(f"{DOCS_PATH_PREFIX}/openapi.json")
 
-    # --- Legacy: upstream root when nginx strips /bifrost-api-docs/ ---
     _root_openapi_browser = f"{_legacy_browser_prefix}/openapi.json" if _legacy_browser_prefix else "/openapi.json"
 
     @app.get("/openapi.json", include_in_schema=False)
@@ -246,7 +239,7 @@ def run_docs_server(
     massive_openapi_url: Optional[str] = None,
     research_openapi_url: Optional[str] = None,
 ) -> None:
-    """Start the Docs API server (merged OpenAPI)."""
+    """Start the Docs API server (merged OpenAPI: Main + Research)."""
     import uvicorn
 
     server_raw = config.get("server")
@@ -254,7 +247,6 @@ def run_docs_server(
         raise ValueError("run_docs_server requires config['server'] from merged YAML (read_config).")
     server_cfg = normalize_server_config(server_raw)
     main_port = int(server_cfg["monitor_port"])
-    massive_port = int(server_cfg["massive_port"])
     research_port = int(server_cfg["research_port"])
     docs_port = int(server_cfg["docs_port"])
 
@@ -263,11 +255,9 @@ def run_docs_server(
             "BIFROST_DOCS_MAIN_OPENAPI",
             f"http://127.0.0.1:{main_port}/openapi.json",
         )
+    # Massive domain removed (Wave 7-C); only merge if explicitly provided via env.
     if massive_openapi_url is None:
-        massive_openapi_url = os.environ.get(
-            "BIFROST_DOCS_MASSIVE_OPENAPI",
-            f"http://127.0.0.1:{massive_port}/research/massive/openapi.json",
-        )
+        massive_openapi_url = os.environ.get("BIFROST_DOCS_MASSIVE_OPENAPI") or None
     if research_openapi_url is None:
         research_openapi_url = os.environ.get(
             "BIFROST_DOCS_RESEARCH_OPENAPI",
@@ -276,18 +266,18 @@ def run_docs_server(
 
     app = create_docs_app(
         main_openapi_url,
-        massive_openapi_url,
         research_openapi_url,
+        massive_openapi_url=massive_openapi_url,
         config=config,
         resolved_config_path=resolved_config_path,
     )
     host = "0.0.0.0"
     logger.info(
-        "Docs API server on %s:%s  (main=%s, massive=%s, research=%s)",
+        "Docs API server on %s:%s  (main=%s, research=%s, massive=%s)",
         host,
         docs_port,
         main_openapi_url,
-        massive_openapi_url,
         research_openapi_url,
+        massive_openapi_url or "(retired)",
     )
     uvicorn.run(app, host=host, port=docs_port, log_level="info", log_config=None)

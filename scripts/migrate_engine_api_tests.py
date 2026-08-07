@@ -20,7 +20,6 @@ TESTS = [
 
 REPLS = [
     (r"\bfrom backend\.monitor\b", "from bifrost_api.monitor"),
-    (r"\bfrom backend\.massive\b", "from bifrost_api.massive"),
     (r"\bfrom backend\.docs\b", "from bifrost_api.docs_api"),
     (r"\bfrom backend\.research\b", "from bifrost_api.research"),
     (r"\bfrom src\.app\.config\b", "from bifrost_core.config.startup"),

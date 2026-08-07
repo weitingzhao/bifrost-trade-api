@@ -9,10 +9,10 @@ from typing import Any, Dict, List
 def build_supported_tasks_payload(celery_app: Any) -> Dict[str, Any]:
     """Return sorted project tasks (``src.*``) with default queue from ``task_routes`` / ``task_default_queue``.
 
-    Ensures bars/massive task modules are imported so ``app.tasks`` is populated (task names stay ``src.*``).
+    Ensures bars task modules are imported so ``app.tasks`` is populated (task names stay ``src.*``).
+    Massive Celery tasks retired (Wave 7-C).
     """
     importlib.import_module("bifrost_worker.data.bars.tasks")
-    importlib.import_module("bifrost_worker.data.massive.tasks")
 
     default_q = str(getattr(celery_app.conf, "task_default_queue", None) or "stocks_ib")
     routes = getattr(celery_app.conf, "task_routes", None) or {}

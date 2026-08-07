@@ -511,8 +511,7 @@ def get_status(request: Request) -> Dict[str, Any]:
                 detect_ib_transport,
                 is_platform_ib_gateway_health,
             )
-            from bifrost_worker.data.massive.vendor.config import get_massive_settings
-            from bifrost_worker.data.massive.vendor.reader import count_pending_massive_jobs
+            from bifrost_api.research.polygon_http import get_massive_settings
             from bifrost_core.monitor.redis_url import ib_redis_url_from_config, redis_url_from_config
             import redis as redis_mod
 
@@ -521,12 +520,13 @@ def get_status(request: Request) -> Dict[str, Any]:
             _status_now = time.time()
 
             _ms = get_massive_settings(reader._config)
-            _pending_m = count_pending_massive_jobs(control_via_db) if control_via_db else 0
             massive_info: Dict[str, Any] = {
                 "configured": bool(_ms.get("api_key")),
                 "tier": _ms.get("tier"),
-                "pending_jobs": _pending_m,
+                "pending_jobs": 0,
                 "last_snapshot_age_s": None,
+                "retired": True,
+                "note": "Massive job queue retired — use market-data plugin",
             }
             _rurl = redis_url_from_config(reader._config)
             _ib_rurl = ib_redis_url_from_config(reader._config)

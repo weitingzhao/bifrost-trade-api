@@ -1686,7 +1686,7 @@ def run_technical_local_backfill(
         TechnicalConfig,
         evaluate_symbol_all_tiers,
     )
-    from bifrost_worker.data.massive.vendor.reader import (
+    from bifrost_api.research.market_pg import (
         get_short_interest_recent,
         get_short_volume_recent,
         get_spy_close_series,

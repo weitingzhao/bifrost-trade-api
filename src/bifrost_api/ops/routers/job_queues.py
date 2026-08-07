@@ -1,14 +1,12 @@
-"""Bars and Massive Celery job tables — moved from main server / Massive API to Ops."""
+"""Bars Celery job tables (Massive job queues retired — Wave 7-C)."""
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Query, Request
 
-from bifrost_api.massive.routers.routes import _massive_job_to_api
 from bifrost_api.ops.routers.workers import _require_role
 from bifrost_core.monitor.reader import (
     count_job_bars_backfill_by_status,
@@ -33,8 +31,8 @@ def _db_config(request: Request) -> Optional[dict]:
 
 @router.get("/ops/jobs/queues/summary")
 def ops_aggregated_job_queues_summary(request: Request) -> Dict[str, Any]:
-    """One sheet: status counts for every Celery queue from ``ops.worker_profiles`` (fallback: canonical queues)."""
-    from bifrost_worker.data.massive.vendor.reader import count_job_massive_backfill_by_status
+    """One sheet: status counts for Celery queues (IB bars only; Massive retired)."""
+    _empty = {"pending": 0, "running": 0, "done": 0, "failed": 0}
 
     db = _db_config(request)
     if not db:
@@ -69,14 +67,14 @@ def ops_aggregated_job_queues_summary(request: Request) -> Dict[str, Any]:
                         },
                     )
                 else:
-                    counts = count_job_massive_backfill_by_status(db, celery_queue=qn)
                     rows.append(
                         {
                             "profile_key": str(pk),
                             "label": label,
                             "celery_queue": qn,
-                            "pipeline": "massive_async",
-                            "counts": counts,
+                            "pipeline": "massive_retired",
+                            "counts": dict(_empty),
+                            "note": "massive queues retired — use market-data plugin",
                         },
                     )
 
@@ -101,14 +99,14 @@ def ops_aggregated_job_queues_summary(request: Request) -> Dict[str, Any]:
                     },
                 )
             else:
-                counts = count_job_massive_backfill_by_status(db, celery_queue=qn)
                 rows.append(
                     {
                         "profile_key": qn,
                         "label": label,
                         "celery_queue": qn,
-                        "pipeline": "massive_async",
-                        "counts": counts,
+                        "pipeline": "massive_retired",
+                        "counts": dict(_empty),
+                        "note": "massive queues retired — use market-data plugin",
                     },
                 )
 
@@ -281,21 +279,14 @@ def ops_trim_bars_jobs(
     return {"ok": True, "deleted": deleted}
 
 
-# --- Massive (job_massive_backfill) ---
 
+# --- Massive (job_massive_backfill) — retired stubs ---
 
-def _purge_all_massive_jobs_response(
-    request: Request, status: Optional[str], celery_queue: Optional[str] = None,
-) -> Dict[str, Any]:
-    from bifrost_worker.data.massive.vendor.reader import delete_all_job_massive_backfill
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "No DB", "deleted": 0}
-    deleted = delete_all_job_massive_backfill(
-        db, status_filter=status, celery_queue=celery_queue,
-    )
-    return {"ok": True, "deleted": deleted}
+_MASSIVE_RETIRED = {
+    "ok": False,
+    "error": "massive queues retired — use market-data plugin",
+    "reason": "massive_retired",
+}
 
 
 @router.get("/ops/research/massive/jobs")
@@ -303,254 +294,103 @@ def ops_list_massive_jobs(
     request: Request,
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    status: Optional[str] = Query(None, description="Filter by job status"),
-    kind: Optional[str] = Query(None, description="Filter by job kind"),
-    celery_queue: Optional[str] = Query(
-        None,
-        description="Filter by broker queue (options_massive, options_massive_high, stocks_massive, stocks_massive_high)",
-    ),
+    status: Optional[str] = Query(None),
+    kind: Optional[str] = Query(None),
+    celery_queue: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
-    from bifrost_worker.data.massive.vendor.reader import list_job_massive_backfill
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "No DB", "jobs": []}
-    rows = list_job_massive_backfill(
-        db,
-        limit=limit,
-        offset=offset,
-        status_filter=status,
-        kind_filter=kind,
-        celery_queue=celery_queue,
-    )
-    jobs = [_massive_job_to_api(dict(r)) for r in rows]
-    return {"ok": True, "jobs": jobs}
+    _ = (request, limit, offset, status, kind, celery_queue)
+    return {**_MASSIVE_RETIRED, "jobs": []}
 
 
 @router.get("/ops/research/massive/jobs/summary")
 def ops_massive_jobs_summary(
     request: Request,
-    celery_queue: Optional[str] = Query(
-        None,
-        description="If set, counts only rows routed to this broker queue",
-    ),
+    celery_queue: Optional[str] = Query(None),
 ) -> Dict[str, Any]:
-    """Aggregated status counts for ``job_massive_backfill`` (optionally per Celery queue slice)."""
-    from bifrost_worker.data.massive.vendor.reader import count_job_massive_backfill_by_status
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "No DB", "counts": {}}
-    try:
-        counts = count_job_massive_backfill_by_status(db, celery_queue=celery_queue)
-    except Exception as e:
-        logger.warning("GET /ops/research/massive/jobs/summary failed: %s", e)
-        return {"ok": False, "error": str(e), "counts": {}}
-    return {"ok": True, "counts": counts}
+    _ = (request, celery_queue)
+    return {
+        **_MASSIVE_RETIRED,
+        "counts": {"pending": 0, "running": 0, "done": 0, "failed": 0},
+    }
 
 
 @router.post("/ops/research/massive/jobs/clear-done")
 def ops_massive_jobs_clear_done(
     request: Request,
-    celery_queue: Optional[str] = Query(
-        None,
-        description="If set, only delete done rows in this broker queue slice",
-    ),
+    celery_queue: Optional[str] = Query(None),
 ) -> Any:
-    """Delete rows with status ``done`` (optionally scoped to one broker queue)."""
     denied = _require_role(request, "operator")
     if denied:
         return denied
-    from bifrost_worker.data.massive.vendor.reader import delete_all_job_massive_backfill
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "No DB", "deleted": 0}
-    deleted = delete_all_job_massive_backfill(
-        db, status_filter="done", celery_queue=celery_queue,
-    )
-    return {"ok": True, "deleted": deleted}
+    _ = celery_queue
+    return {**_MASSIVE_RETIRED, "deleted": 0}
 
 
 @router.post("/ops/research/massive/jobs/retry-failed")
 async def ops_retry_failed_massive_jobs(
     request: Request,
-    celery_queue: Optional[str] = Query(
-        None,
-        description="Only reset failed jobs in this broker queue slice (recommended)",
-    ),
-    limit: int = Query(200, ge=1, le=2000, description="Max failed jobs to reset (oldest first)"),
+    celery_queue: Optional[str] = Query(None),
+    limit: int = Query(200, ge=1, le=2000),
 ) -> Any:
-    """Reset failed Massive jobs to ``pending`` and broker-top-up Celery dispatch up to ``massive_pending_dispatch_inflight_cap``."""
     denied = _require_role(request, "operator")
     if denied:
         return denied
-    from bifrost_worker.data.massive.celery_queues import (
-        MASSIVE_QUEUES_DISABLED,
-        massive_enqueue_refused_payload,
-    )
-
-    if MASSIVE_QUEUES_DISABLED:
-        refused = massive_enqueue_refused_payload()
-        return {**refused, "reset": 0, "enqueued": 0, "enqueue_errors": []}
-    control_via_db = request.app.state.control_via_db
-    if not control_via_db:
-        return {"ok": False, "error": "No DB", "reset": 0, "enqueued": 0, "enqueue_errors": []}
-    from bifrost_worker.data.massive.vendor.reader import reset_failed_job_massive_backfill_batch
-
-    rows = reset_failed_job_massive_backfill_batch(control_via_db, celery_queue, limit)
-    from bifrost_worker.data.massive.pending_dispatch import dispatch_pending_massive_topup
-
-    enqueued = dispatch_pending_massive_topup(control_via_db, celery_queue)
-    return {
-        "ok": True,
-        "reset": len(rows),
-        "enqueued": enqueued,
-        "enqueue_errors": [],
-    }
+    _ = (celery_queue, limit)
+    return {**_MASSIVE_RETIRED, "reset": 0, "enqueued": 0, "enqueue_errors": []}
 
 
 @router.post("/ops/research/massive/jobs/{job_id}/retry")
 async def ops_retry_one_massive_job(request: Request, job_id: str) -> Any:
-    """Reset one failed Massive job to ``pending`` and ``apply_async`` to the broker."""
     denied = _require_role(request, "operator")
     if denied:
         return denied
-    from bifrost_worker.data.massive.celery_queues import (
-        MASSIVE_QUEUES_DISABLED,
-        massive_enqueue_refused_payload,
-    )
-
-    if MASSIVE_QUEUES_DISABLED:
-        return massive_enqueue_refused_payload()
-    control_via_db = request.app.state.control_via_db
-    if not control_via_db:
-        return {"ok": False, "error": "No DB"}
-    from bifrost_worker.data.massive.celery_queues import celery_queue_for_massive_job
-    from bifrost_worker.data.massive.pending_dispatch import dispatch_pending_massive_topup
-    from bifrost_worker.data.massive.tasks import reenqueue_massive_job_from_row
-    from bifrost_core.persistence.postgres.ticker_reference import normalize_ticker_ref_kind
-    from bifrost_worker.data.massive.vendor.reader import (
-        get_job_massive_backfill,
-        reset_failed_job_massive_backfill_one,
-        update_job_massive_backfill_result,
-    )
-
-    row = reset_failed_job_massive_backfill_one(control_via_db, job_id)
-    if row is None:
-        return {"ok": False, "error": "Job not found or not in failed status"}
-    jid = row.get("job_massive_backfill_id")
-
-    ok, err = reenqueue_massive_job_from_row(control_via_db, row)
-    if not ok:
-        try:
-            jid_i = int(jid)
-        except (TypeError, ValueError):
-            jid_i = int(job_id)
-        update_job_massive_backfill_result(
-            control_via_db,
-            jid_i,
-            "failed",
-            {
-                "ok": False,
-                "error": "Celery enqueue failed — task was not published to the broker.",
-                "detail": err or "unknown",
-            },
-        )
-        fresh_bad = get_job_massive_backfill(control_via_db, jid_i)
-        return {
-            "ok": False,
-            "error": err or "Re-enqueue failed",
-            "job": _massive_job_to_api(dict(fresh_bad)) if fresh_bad else None,
-        }
-    try:
-        kind = normalize_ticker_ref_kind(str(row.get("kind") or "").strip())
-        payload = row.get("payload") or {}
-        if isinstance(payload, str):
-            try:
-                payload = json.loads(payload)
-            except json.JSONDecodeError:
-                payload = {}
-        if not isinstance(payload, dict):
-            payload = {}
-        qh = str(payload.get("priority") or "").strip().lower() == "high"
-        qname = celery_queue_for_massive_job(kind, priority_high=qh)
-        dispatch_pending_massive_topup(control_via_db, qname)
-    except Exception:
-        logger.debug("dispatch_pending_massive_topup after single-job retry failed", exc_info=True)
-
-    try:
-        jid_i = int(jid)
-    except (TypeError, ValueError):
-        jid_i = int(job_id)
-    fresh = get_job_massive_backfill(control_via_db, jid_i)
-    if fresh is None:
-        return {"ok": True, "job": _massive_job_to_api(dict(row))}
-    return {"ok": True, "job": _massive_job_to_api(dict(fresh))}
+    _ = job_id
+    return _MASSIVE_RETIRED
 
 
 @router.post("/ops/research/massive/jobs/trim")
 def ops_trim_massive_jobs(
     request: Request,
-    keep: int = Query(200, ge=1, le=50000, description="Keep newest N jobs by id; delete older rows"),
-    celery_queue: Optional[str] = Query(
-        None,
-        description="If set, trim only within this broker queue slice (same as GET filter)",
-    ),
+    keep: int = Query(200, ge=1, le=50000),
+    celery_queue: Optional[str] = Query(None),
 ) -> Any:
     denied = _require_role(request, "operator")
     if denied:
         return denied
-    from bifrost_worker.data.massive.vendor.reader import trim_job_massive_backfill
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "No DB", "deleted": 0}
-    deleted = trim_job_massive_backfill(db, keep=keep, celery_queue=celery_queue)
-    return {"ok": True, "deleted": deleted}
+    _ = (keep, celery_queue)
+    return {**_MASSIVE_RETIRED, "deleted": 0}
 
 
 @router.delete("/ops/research/massive/jobs")
 def ops_delete_all_massive_jobs(
     request: Request,
-    status: Optional[str] = Query(None, description="If set, only delete jobs with this status"),
-    celery_queue: Optional[str] = Query(
-        None,
-        description="If set, only delete jobs routed to this broker queue",
-    ),
+    status: Optional[str] = Query(None),
+    celery_queue: Optional[str] = Query(None),
 ) -> Any:
     denied = _require_role(request, "operator")
     if denied:
         return denied
-    return _purge_all_massive_jobs_response(request, status, celery_queue=celery_queue)
+    _ = (status, celery_queue)
+    return {**_MASSIVE_RETIRED, "deleted": 0}
 
 
 @router.post("/ops/research/massive/jobs/purge")
 def ops_purge_all_massive_jobs(
     request: Request,
-    status: Optional[str] = Query(None, description="If set, only delete jobs with this status"),
-    celery_queue: Optional[str] = Query(
-        None,
-        description="If set, only delete jobs routed to this broker queue",
-    ),
+    status: Optional[str] = Query(None),
+    celery_queue: Optional[str] = Query(None),
 ) -> Any:
     denied = _require_role(request, "operator")
     if denied:
         return denied
-    return _purge_all_massive_jobs_response(request, status, celery_queue=celery_queue)
+    _ = (status, celery_queue)
+    return {**_MASSIVE_RETIRED, "deleted": 0}
 
 
 @router.get("/ops/research/massive/jobs/{job_id}")
 def ops_get_massive_job(request: Request, job_id: str) -> Dict[str, Any]:
-    from bifrost_worker.data.massive.vendor.reader import get_job_massive_backfill
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "No DB"}
-    job = get_job_massive_backfill(db, job_id)
-    if job is None:
-        return {"ok": False, "error": "Job not found"}
-    return {"ok": True, "job": _massive_job_to_api(job)}
+    _ = (request, job_id)
+    return _MASSIVE_RETIRED
 
 
 @router.delete("/ops/research/massive/jobs/{job_id}")
@@ -558,11 +398,5 @@ def ops_delete_massive_job(request: Request, job_id: str) -> Any:
     denied = _require_role(request, "operator")
     if denied:
         return denied
-    from bifrost_worker.data.massive.vendor.reader import delete_job_massive_backfill
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "No DB"}
-    if delete_job_massive_backfill(db, job_id):
-        return {"ok": True}
-    return {"ok": False, "error": "Delete failed"}
+    _ = job_id
+    return _MASSIVE_RETIRED

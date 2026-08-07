@@ -279,7 +279,7 @@ def build_cone_key_maps(
     last_price: float,
 ) -> Tuple[List[str], List[str], Dict[str, str], Dict[str, str]]:
     """Narrow + wide contract keys for latest vs historical cone bands."""
-    from bifrost_worker.data.massive.vendor.client import contract_key_from_parts
+    from bifrost_api.research.polygon_http import contract_key_from_parts
 
     atm_narrow = strikes_around_spot(last_price, count=2)
     atm_wide = strikes_around_spot(last_price, count=10)

@@ -281,7 +281,7 @@ def fetch_income_rows_for_sepa_from_pg(
 
 
 # Celery feed upserts + job runners (worker-owned; re-exported for API/tests).
-from bifrost_worker.data.massive.financials_feed import (  # noqa: E402
+from bifrost_api.research.financials_feed import (  # noqa: E402
     SOURCE_DEFAULT as FEED_SOURCE_DEFAULT,
     run_feed_stocks_balance_sheets_job,
     run_feed_stocks_cash_flows_job,

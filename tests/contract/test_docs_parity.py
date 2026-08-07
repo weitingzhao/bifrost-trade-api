@@ -24,7 +24,6 @@ _FULL_SERVER = {
 def _client() -> TestClient:
     app = create_docs_app(
         "http://127.0.0.1:8765/openapi.json",
-        "http://127.0.0.1:8766/research/massive/openapi.json",
         "http://127.0.0.1:8773/openapi.json",
         config={"server": dict(_FULL_SERVER)},
     )
@@ -37,12 +36,13 @@ def test_docs_health_shape() -> None:
     body = r.json()
     assert body["status"] == "ok"
     assert body["service"] == "bifrost-docs"
+    assert body.get("massive_retired") is True
     assert "ts" in body
 
 
 def test_docs_openapi_reachable() -> None:
     minimal = {"openapi": "3.0.0", "info": {"title": "T", "version": "1"}, "paths": {}}
-    with patch("bifrost_api.docs_api.app.fetch_openapi", side_effect=[minimal, minimal, minimal]):
+    with patch("bifrost_api.docs_api.app.fetch_openapi", side_effect=[minimal, minimal]):
         r = _client().get(f"{DOCS_PATH_PREFIX}/openapi.json")
     assert r.status_code == 200
     assert "paths" in r.json()

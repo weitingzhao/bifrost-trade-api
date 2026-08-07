@@ -15,8 +15,8 @@ from bifrost_api.research.sepa.phase4_engine import (
     list_phase4_jobs,
     run_sepa_phase4_job,
 )
-from bifrost_worker.data.massive.vendor.client import MassiveClient
-from bifrost_worker.data.massive.vendor.config import get_massive_settings
+from bifrost_api.research.polygon_http import MassiveClient
+from bifrost_api.research.polygon_http import get_massive_settings
 
 router = APIRouter(tags=["research"])
 

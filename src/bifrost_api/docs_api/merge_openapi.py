@@ -6,8 +6,7 @@ import copy
 import json
 import logging
 import sys
-from typing import Any, Dict, List, Optional
-from urllib.error import URLError
+from typing import Any, Dict, List
 from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
@@ -136,9 +135,9 @@ def main_cli() -> None:
     parser.add_argument(
         "--secondary-url",
         default=None,
-        help="Massive OpenAPI URL (default: from read_config server.massive_port on 127.0.0.1).",
+        help="Optional secondary OpenAPI URL (e.g. Research). Massive domain retired.",
     )
-    parser.add_argument("--prefix", default="Massive")
+    parser.add_argument("--prefix", default="Research")
     parser.add_argument("-o", "--output", help="Write to file instead of stdout")
     args = parser.parse_args()
 
@@ -150,11 +149,11 @@ def main_cli() -> None:
         cfg, _ = read_config()
         srv = cfg["server"]
         mp = int(srv["monitor_port"])
-        massive_p = int(srv["massive_port"])
+        research_p = int(srv["research_port"])
         if main_url is None:
             main_url = f"http://127.0.0.1:{mp}/openapi.json"
         if secondary_url is None:
-            secondary_url = f"http://127.0.0.1:{massive_p}/research/massive/openapi.json"
+            secondary_url = f"http://127.0.0.1:{research_p}/openapi.json"
 
     main_spec = fetch_openapi(main_url)
     sec_spec = fetch_openapi(secondary_url)

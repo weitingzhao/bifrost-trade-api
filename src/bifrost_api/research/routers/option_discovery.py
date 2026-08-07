@@ -121,8 +121,8 @@ def _expiration_cache_is_fresh(max_updated_at: Optional[Any], ttl_sec: int) -> b
 
 
 def _ttl_sec_expiration_cache(config: dict) -> int:
-    from bifrost_worker.data.massive.vendor.config import get_expiration_cache_settings
-    from bifrost_worker.data.massive.vendor.reader import is_us_equity_regular_session_et
+    from bifrost_api.research.polygon_http import get_expiration_cache_settings
+    from bifrost_api.research.market_pg import is_us_equity_regular_session_et
 
     s = get_expiration_cache_settings(config)
     return s["ttl_trading_sec"] if is_us_equity_regular_session_et() else s["ttl_off_hours_sec"]
@@ -201,8 +201,8 @@ async def get_option_expirations(
     ),
 ) -> Any:
     """R-OD1: Expirations and strikes from IB and/or Massive REST (PostgreSQL cache first)."""
-    from bifrost_worker.data.massive.vendor.config import get_expiration_cache_settings, get_massive_settings
-    from bifrost_worker.data.massive.vendor.reader import (
+    from bifrost_api.research.polygon_http import get_expiration_cache_settings, get_massive_settings
+    from bifrost_api.research.market_pg import (
         get_option_expiration_cache_snapshot,
         get_option_expirations_from_contracts_db,
         get_strikes_for_expiry_from_contracts_db,
@@ -416,8 +416,8 @@ def get_option_snapshots_pg(
     source: str = Query("massive", description="Snapshot source column: massive | ib"),
 ) -> Any:
     """Latest option_snapshots rows from PostgreSQL (Massive sync or IB sink)."""
-    from bifrost_worker.data.massive.vendor.client import contract_key_from_parts
-    from bifrost_worker.data.massive.vendor.reader import get_option_snapshots_latest
+    from bifrost_api.research.polygon_http import contract_key_from_parts
+    from bifrost_api.research.market_pg import get_option_snapshots_latest
 
     db = _db_config(request)
     if not db:
@@ -572,8 +572,8 @@ def get_option_contract_liquidity_summary(
     source: str = Query("massive", description="massive | ib"),
 ) -> Dict[str, Any]:
     """P1: Aggregate liquidity stats for a single contract — spread percentile, OI rank, snapshot freshness."""
-    from bifrost_worker.data.massive.vendor.client import contract_key_from_parts
-    from bifrost_worker.data.massive.vendor.reader import get_option_snapshots_latest
+    from bifrost_api.research.polygon_http import contract_key_from_parts
+    from bifrost_api.research.market_pg import get_option_snapshots_latest
 
     db = _db_config(request)
     if not db:
@@ -688,8 +688,8 @@ def get_option_contract_relative_value(
     source: str = Query("massive", description="massive | ib"),
 ) -> Dict[str, Any]:
     """P2: IV relative value — z-score vs same-right contracts in same expiry."""
-    from bifrost_worker.data.massive.vendor.client import contract_key_from_parts
-    from bifrost_worker.data.massive.vendor.reader import get_option_snapshots_latest
+    from bifrost_api.research.polygon_http import contract_key_from_parts
+    from bifrost_api.research.market_pg import get_option_snapshots_latest
     import math
 
     db = _db_config(request)
@@ -784,7 +784,7 @@ def get_research_option_oi(
     date_to: Optional[str] = Query(None, description="YYYY-MM-DD"),
     limit: int = Query(100, ge=1, le=500),
 ) -> Dict[str, Any]:
-    from bifrost_worker.data.massive.vendor.reader import get_option_open_interest_daily
+    from bifrost_api.research.market_pg import get_option_open_interest_daily
 
     db = _db_config(request)
     if not db:
@@ -806,8 +806,8 @@ def get_research_option_trades(
     symbol: str = Query(...),
     limit: int = Query(100, ge=1, le=500),
 ) -> Any:
-    from bifrost_worker.data.massive.vendor.config import get_massive_settings
-    from bifrost_worker.data.massive.vendor.reader import get_option_trades
+    from bifrost_api.research.polygon_http import get_massive_settings
+    from bifrost_api.research.market_pg import get_option_trades
 
     reader = getattr(request.app.state, "reader", None)
     cfg = reader._config if reader else {}
@@ -928,8 +928,8 @@ def get_iv_term_structure(
     """ATM IV for multiple expirations — powers the IV term structure chart."""
     from datetime import date, datetime
 
-    from bifrost_worker.data.massive.vendor.client import contract_key_from_parts
-    from bifrost_worker.data.massive.vendor.reader import get_option_snapshots_latest
+    from bifrost_api.research.polygon_http import contract_key_from_parts
+    from bifrost_api.research.market_pg import get_option_snapshots_latest
 
     db = _db_config(request)
     if not db:
@@ -1020,7 +1020,7 @@ def get_iv_volatility_cone(
     """ATM IV percentile bands per expiration from historical option_snapshots (IV volatility cone)."""
     from datetime import date, datetime
 
-    from bifrost_worker.data.massive.vendor.reader import (
+    from bifrost_api.research.market_pg import (
         get_option_snapshots_eod_per_day,
         get_option_snapshots_latest,
         get_report_option_atm_iv_daily,
