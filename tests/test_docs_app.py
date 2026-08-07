@@ -60,8 +60,8 @@ class TestDocsHealth:
         assert body["service"] == "bifrost-docs"
         assert "ts" in body
         assert "main_url" in body
-        assert "massive_url" in body
         assert "research_url" in body
+        assert "massive_url" not in body
 
     def test_prefixed_health(self):
         client = _make_client(config={"server": {"docs_port": 9902}})

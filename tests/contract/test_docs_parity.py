@@ -36,7 +36,7 @@ def test_docs_health_shape() -> None:
     body = r.json()
     assert body["status"] == "ok"
     assert body["service"] == "bifrost-docs"
-    assert body.get("massive_retired") is True
+    assert "massive_retired" not in body
     assert "ts" in body
 
 
