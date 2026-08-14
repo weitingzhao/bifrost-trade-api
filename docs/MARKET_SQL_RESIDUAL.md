@@ -1,12 +1,22 @@
-# Residual `market.*` Direct SQL — Audit (W1-P3)
+# Residual `market.*` Direct SQL — Audit
 
-> **Date**: 2026-08-14
+> **Date**: 2026-08-14 (updated post-cleanup)
 > **Program**: `market-data-golden-source`
-> **Phase**: W1-P3 — Remaining market_pg reads → Plugin HTTP + residual audit
+> **Status**: Golden Source migration COMPLETE. Feature flag + SQL fallback REMOVED.
 
-After W1-P1/P2/P3 migrations, the following files still contain direct SQL against
-`market.*` tables. Each entry documents the functions, reason for deferral, and
-suggested future migration approach.
+## Cleanup completed (2026-08-14)
+
+- `market_pg.py`: 11 migrated functions now call Plugin API exclusively (1639→792 lines)
+- `_use_plugin()` feature flag and all `_sql_*` fallback functions deleted
+- 17 sql_mode/fallback tests deleted; 30 tests retained and passing
+- `bifrost_stg` / `bifrost_prod` market schemas DROPPED
+- `plugin-market-data-stg` / `plugin-market-data-prod` K8s namespaces DELETED
+
+## Remaining direct SQL (requires separate program)
+
+The following files still contain direct SQL against `market.*` tables in
+`bifrost_dev`. These were NOT in scope for the Golden Source migration and
+require a separate program to address.
 
 ---
 
