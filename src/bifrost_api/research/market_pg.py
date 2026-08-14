@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import date as date_type
 from datetime import datetime
 from datetime import time as time_of_day
@@ -20,7 +21,14 @@ from psycopg2.extras import RealDictCursor
 
 from bifrost_core.persistence.postgres.connection import _get_conn_params
 
+from bifrost_api.research import market_data_client
+
 logger = logging.getLogger(__name__)
+
+
+def _use_plugin() -> bool:
+    """Feature flag: MARKET_DATA_SOURCE=plugin (default) uses HTTP client."""
+    return os.environ.get("MARKET_DATA_SOURCE", "plugin").lower() != "sql"
 
 def _norm_expiry_date(expiry: str) -> Optional[date_type]:
     """Normalize expiry to date. Accepts YYYY-MM-DD or YYYYMMDD."""
@@ -312,6 +320,33 @@ def get_option_open_interest_daily(
     date_to: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Latest OI rows for symbol from market.option_open_interest (optional expiry / trade_date range)."""
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return []
+    if _use_plugin():
+        try:
+            exp_param = _norm_expiry_db(expiry) if expiry else None
+            return market_data_client.fetch_option_oi(
+                sym,
+                expiry=exp_param,
+                limit=limit,
+                date_from=date_from[:10] if date_from else None,
+                date_to=date_to[:10] if date_to else None,
+            )
+        except Exception as e:
+            logger.warning("Plugin API failed for get_option_open_interest_daily, falling back to SQL: %s", e)
+    return _sql_get_option_open_interest_daily(status_config, sym, expiry=expiry, limit=limit, date_from=date_from, date_to=date_to)
+
+
+def _sql_get_option_open_interest_daily(
+    status_config: dict,
+    symbol: str,
+    expiry: Optional[str] = None,
+    limit: int = 100,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """SQL fallback: direct PostgreSQL read for option OI."""
     if not status_config or (status_config.get("sink") != "postgres" and not status_config.get("postgres")):
         return []
     sym = (symbol or "").strip().upper()
@@ -384,7 +419,7 @@ def get_option_open_interest_daily(
         finally:
             conn.close()
     except Exception as e:
-        logger.debug("get_option_open_interest_daily failed: %s", e)
+        logger.debug("_sql_get_option_open_interest_daily failed: %s", e)
         return []
 
 _SNAPSHOT_LATEST_SELECT = """
@@ -587,25 +622,45 @@ def get_option_snapshots_latest(
     Accepts IB keys (``SYM|OPT|…``) and Polygon tickers (``O:…``). Always returns
     IB-shaped ``contract_key`` so Discovery/Screener ``parse_contract_key`` works.
     ``source`` is accepted for API compatibility but ignored.
+
+    In plugin mode, the Plugin API handles IB↔Polygon key bridging internally.
+    contract_key_bridge.py is only needed for the SQL fallback path.
     """
     _ = source  # unused — market.* has no source column
-    if not contract_keys or not status_config or (
-        status_config.get("sink") != "postgres" and not status_config.get("postgres")
-    ):
+    if not contract_keys:
         return []
     keys = [k for k in contract_keys if k and str(k).strip()][:120]
     if not keys:
+        return []
+    if _use_plugin():
+        try:
+            return market_data_client.fetch_option_chain_latest(keys)
+        except Exception as e:
+            logger.warning("Plugin API failed for get_option_snapshots_latest, falling back to SQL: %s", e)
+    return _sql_get_option_snapshots_latest(status_config, keys)
+
+
+def _sql_get_option_snapshots_latest(
+    status_config: dict,
+    contract_keys: List[str],
+) -> List[Dict[str, Any]]:
+    """SQL fallback: direct PostgreSQL read with contract_key_bridge."""
+    if not status_config or (
+        status_config.get("sink") != "postgres" and not status_config.get("postgres")
+    ):
+        return []
+    if not contract_keys:
         return []
     try:
         params = _get_conn_params(status_config)
         conn = psycopg2.connect(**params)
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                return _fetch_option_snapshots_latest_bridged(cur, keys)
+                return _fetch_option_snapshots_latest_bridged(cur, contract_keys)
         finally:
             conn.close()
     except Exception as e:
-        logger.debug("get_option_snapshots_latest failed: %s", e)
+        logger.debug("_sql_get_option_snapshots_latest failed: %s", e)
         return []
 
 
@@ -740,14 +795,38 @@ def get_option_snapshots_eod_per_day(
 
     Reads ``market.v_option_snapshot_with_stock``. Accepts IB and Polygon keys;
     returns IB-shaped ``contract_key``. ``source`` kept for API compat.
+
+    In plugin mode, the Plugin API handles key bridging and chunking internally.
     """
     _ = source  # unused — market.* has no source column
-    if not contract_keys or not status_config or (
-        status_config.get("sink") != "postgres" and not status_config.get("postgres")
-    ):
+    if not contract_keys:
         return []
     keys = [k for k in contract_keys if k and str(k).strip()]
     if not keys:
+        return []
+    if _use_plugin():
+        try:
+            since_iso: Optional[str] = None
+            if since_ts is not None:
+                since_iso = since_ts.isoformat() if since_ts.year > 1970 else None
+            return market_data_client.fetch_option_chain_eod(keys, since=since_iso)
+        except Exception as e:
+            logger.warning("Plugin API failed for get_option_snapshots_eod_per_day, falling back to SQL: %s", e)
+    return _sql_get_option_snapshots_eod_per_day(status_config, keys, since_ts=since_ts, chunk_size=chunk_size)
+
+
+def _sql_get_option_snapshots_eod_per_day(
+    status_config: dict,
+    contract_keys: List[str],
+    since_ts: Optional[datetime] = None,
+    chunk_size: int = 100,
+) -> List[Dict[str, Any]]:
+    """SQL fallback: direct PostgreSQL read with contract_key_bridge."""
+    if not status_config or (
+        status_config.get("sink") != "postgres" and not status_config.get("postgres")
+    ):
+        return []
+    if not contract_keys:
         return []
     if since_ts is None:
         since_ts = datetime(1970, 1, 1)
@@ -759,14 +838,14 @@ def get_option_snapshots_eod_per_day(
         conn = psycopg2.connect(**params)
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                for i in range(0, len(keys), chunk_size):
-                    batch = keys[i : i + chunk_size]
+                for i in range(0, len(contract_keys), chunk_size):
+                    batch = contract_keys[i : i + chunk_size]
                     out.extend(_fetch_option_snapshots_eod_bridged(cur, batch, since_ts))
             return out
         finally:
             conn.close()
     except Exception as e:
-        logger.debug("get_option_snapshots_eod_per_day failed: %s", e)
+        logger.debug("_sql_get_option_snapshots_eod_per_day failed: %s", e)
         return []
 def _norm_expiry_db(expiry: str) -> str:
     e = (expiry or "").strip()
@@ -787,7 +866,26 @@ def get_stock_day_series_for_sepa(
     ``symbol, bar_time, open, high, low, close, volume, source``.
     ``source`` is accepted for API compatibility but ignored.
     """
-    _ = source  # unused — market.* has no source column
+    if _use_plugin():
+        try:
+            return market_data_client.fetch_stock_bars_daily(
+                [str(s or "").strip().upper() for s in symbols if str(s or "").strip()],
+                days=lookback_days,
+            )
+        except Exception as e:
+            logger.warning("Plugin API failed for get_stock_day_series_for_sepa, falling back to SQL: %s", e)
+    return _sql_get_stock_day_series_for_sepa(status_config, symbols, lookback_days=lookback_days, source=source)
+
+
+def _sql_get_stock_day_series_for_sepa(
+    status_config: dict,
+    symbols: List[str],
+    *,
+    lookback_days: int = 400,
+    source: str = "massive",
+) -> Dict[str, List[Dict[str, Any]]]:
+    """SQL fallback: direct PostgreSQL read for SEPA stock bars."""
+    _ = source
     if not status_config or (status_config.get("sink") != "postgres" and not status_config.get("postgres")):
         return {}
     syms = sorted({str(s or "").strip().upper() for s in symbols if str(s or "").strip()})
@@ -829,7 +927,7 @@ def get_stock_day_series_for_sepa(
         finally:
             conn.close()
     except Exception as e:
-        logger.warning("get_stock_day_series_for_sepa failed: %s", e)
+        logger.warning("_sql_get_stock_day_series_for_sepa failed: %s", e)
         return out
     return out
 
@@ -842,7 +940,26 @@ def get_stock_day_close_series_for_crs(
     source: str = "massive",
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Batch-read market.stock_daily close series for CRS calculation."""
-    _ = source  # unused — market.* has no source column
+    if _use_plugin():
+        try:
+            return market_data_client.fetch_stock_bars_daily_close(
+                [str(s or "").strip().upper() for s in symbols if str(s or "").strip()],
+                days=lookback_days,
+            )
+        except Exception as e:
+            logger.warning("Plugin API failed for get_stock_day_close_series_for_crs, falling back to SQL: %s", e)
+    return _sql_get_stock_day_close_series_for_crs(status_config, symbols, lookback_days=lookback_days, source=source)
+
+
+def _sql_get_stock_day_close_series_for_crs(
+    status_config: dict,
+    symbols: List[str],
+    *,
+    lookback_days: int = 420,
+    source: str = "massive",
+) -> Dict[str, List[Dict[str, Any]]]:
+    """SQL fallback: direct PostgreSQL read for CRS close series."""
+    _ = source
     if not status_config or (status_config.get("sink") != "postgres" and not status_config.get("postgres")):
         return {}
     syms = sorted({str(s or "").strip().upper() for s in symbols if str(s or "").strip()})
@@ -878,7 +995,7 @@ def get_stock_day_close_series_for_crs(
         finally:
             conn.close()
     except Exception as e:
-        logger.warning("get_stock_day_close_series_for_crs failed: %s", e)
+        logger.warning("_sql_get_stock_day_close_series_for_crs failed: %s", e)
         return out
     return out
 
@@ -906,6 +1023,19 @@ def is_us_equity_regular_session_et(now: Optional[datetime] = None) -> bool:
 
 def get_option_expirations_from_contracts_db(status_config: dict, symbol: str) -> List[str]:
     """Distinct expirations (YYYYMMDD) from market.option_contract for an underlying."""
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return []
+    if _use_plugin():
+        try:
+            return market_data_client.fetch_option_expirations_yyyymmdd(sym)
+        except Exception as e:
+            logger.warning("Plugin API failed for get_option_expirations_from_contracts_db, falling back to SQL: %s", e)
+    return _sql_get_option_expirations_from_contracts_db(status_config, sym)
+
+
+def _sql_get_option_expirations_from_contracts_db(status_config: dict, symbol: str) -> List[str]:
+    """SQL fallback: direct PostgreSQL read for option expirations."""
     if not status_config or (status_config.get("sink") != "postgres" and not status_config.get("postgres")):
         return []
     sym = (symbol or "").strip().upper()
@@ -941,7 +1071,7 @@ def get_option_expirations_from_contracts_db(status_config: dict, symbol: str) -
         finally:
             conn.close()
     except Exception as e:
-        logger.debug("get_option_expirations_from_contracts_db failed: %s", e)
+        logger.debug("_sql_get_option_expirations_from_contracts_db failed: %s", e)
         return []
 
 
@@ -949,6 +1079,23 @@ def get_strikes_for_expiry_from_contracts_db(
     status_config: dict, symbol: str, expiration: str
 ) -> List[float]:
     """Distinct strikes for symbol + expiry from market.option_contract."""
+    sym = (symbol or "").strip().upper()
+    exp_raw = (expiration or "").strip()
+    if not sym or not exp_raw:
+        return []
+    if _use_plugin():
+        try:
+            exp_param = _norm_expiry_db(exp_raw)
+            return market_data_client.fetch_option_strikes(sym, exp_param)
+        except Exception as e:
+            logger.warning("Plugin API failed for get_strikes_for_expiry_from_contracts_db, falling back to SQL: %s", e)
+    return _sql_get_strikes_for_expiry_from_contracts_db(status_config, sym, expiration)
+
+
+def _sql_get_strikes_for_expiry_from_contracts_db(
+    status_config: dict, symbol: str, expiration: str
+) -> List[float]:
+    """SQL fallback: direct PostgreSQL read for option strikes."""
     if not status_config or (status_config.get("sink") != "postgres" and not status_config.get("postgres")):
         return []
     sym = (symbol or "").strip().upper()
@@ -979,7 +1126,7 @@ def get_strikes_for_expiry_from_contracts_db(
         finally:
             conn.close()
     except Exception as e:
-        logger.debug("get_strikes_for_expiry_from_contracts_db failed: %s", e)
+        logger.debug("_sql_get_strikes_for_expiry_from_contracts_db failed: %s", e)
         return []
 
 
@@ -989,8 +1136,36 @@ def get_option_expiration_cache_snapshot(
     """Return (sorted expirations, max updated_at) from market.option_expiration.
 
     ``source`` is accepted for API compatibility but ignored (no source column).
+    In plugin mode, fetches from Plugin API and transforms to match expected shape.
     """
     _ = source
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return None
+    if _use_plugin():
+        try:
+            result = market_data_client.fetch_option_expirations(sym)
+            if result is None:
+                return None
+            exps_raw, updated_at_iso = result
+            max_u: Optional[datetime] = None
+            if updated_at_iso:
+                try:
+                    max_u = datetime.fromisoformat(updated_at_iso)
+                    if max_u.tzinfo is None:
+                        max_u = max_u.replace(tzinfo=ZoneInfo("UTC"))
+                except (TypeError, ValueError):
+                    max_u = None
+            return (exps_raw, max_u)
+        except Exception as e:
+            logger.warning("Plugin API failed for get_option_expiration_cache_snapshot, falling back to SQL: %s", e)
+    return _sql_get_option_expiration_cache_snapshot(status_config, sym)
+
+
+def _sql_get_option_expiration_cache_snapshot(
+    status_config: dict, symbol: str
+) -> Optional[Tuple[List[str], Optional[datetime]]]:
+    """SQL fallback: direct PostgreSQL read for option expiration cache."""
     if not status_config or (status_config.get("sink") != "postgres" and not status_config.get("postgres")):
         return None
     sym = (symbol or "").strip().upper()
@@ -1032,10 +1207,10 @@ def get_option_expiration_cache_snapshot(
     except ProgrammingError as e:
         if getattr(e, "pgcode", None) == "42P01":
             return None
-        logger.debug("get_option_expiration_cache_snapshot: %s", e)
+        logger.debug("_sql_get_option_expiration_cache_snapshot: %s", e)
         return None
     except Exception as e:
-        logger.debug("get_option_expiration_cache_snapshot failed: %s", e)
+        logger.debug("_sql_get_option_expiration_cache_snapshot failed: %s", e)
         return None
 
 def replace_option_expiration_cache(
@@ -1210,7 +1385,22 @@ def get_spy_close_series(
     source: str = "massive",
 ) -> List[float]:
     """Read SPY daily closes (ascending) from market.stock_daily. Shared by all symbols."""
-    _ = source  # unused — market.* has no source column
+    if _use_plugin():
+        try:
+            return market_data_client.fetch_spy_close_series(days=lookback_days)
+        except Exception as e:
+            logger.warning("Plugin API failed for get_spy_close_series, falling back to SQL: %s", e)
+    return _sql_get_spy_close_series(status_config, lookback_days=lookback_days, source=source)
+
+
+def _sql_get_spy_close_series(
+    status_config: dict,
+    *,
+    lookback_days: int = 420,
+    source: str = "massive",
+) -> List[float]:
+    """SQL fallback: direct PostgreSQL read for SPY closes."""
+    _ = source
     if not status_config or (status_config.get("sink") != "postgres" and not status_config.get("postgres")):
         return []
     lb = max(260, min(int(lookback_days), 3000))
@@ -1235,7 +1425,7 @@ def get_spy_close_series(
         finally:
             conn.close()
     except Exception as e:
-        logger.warning("get_spy_close_series failed: %s", e)
+        logger.warning("_sql_get_spy_close_series failed: %s", e)
         return []
 
 
@@ -1248,10 +1438,28 @@ def get_short_interest_recent(
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Batch-read recent short interest rows per symbol (settlement_date DESC).
 
-    Reads ``market.stock_financials`` where ``report_type = 'short_interest'`` and
-    unpacks jsonb ``data``. ``source`` kept for API compat.
+    In plugin mode, fetches from Plugin API ``/stocks/fundamentals/db/short-interest``.
+    ``source`` kept for API compat.
     """
-    _ = source  # unused — market.* has no source column
+    _ = source
+    syms = sorted({str(s or "").strip().upper() for s in symbols if str(s or "").strip()})
+    if not syms:
+        return {}
+    if _use_plugin():
+        try:
+            return market_data_client.fetch_short_interest(syms, settlements=settlements)
+        except Exception as e:
+            logger.warning("Plugin API failed for get_short_interest_recent, falling back to SQL: %s", e)
+    return _sql_get_short_interest_recent(status_config, syms, settlements=settlements)
+
+
+def _sql_get_short_interest_recent(
+    status_config: dict,
+    symbols: List[str],
+    *,
+    settlements: int = 6,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """SQL fallback: direct PostgreSQL read for short interest."""
     if not status_config or (status_config.get("sink") != "postgres" and not status_config.get("postgres")):
         return {}
     syms = sorted({str(s or "").strip().upper() for s in symbols if str(s or "").strip()})
@@ -1299,7 +1507,7 @@ def get_short_interest_recent(
         finally:
             conn.close()
     except Exception as e:
-        logger.warning("get_short_interest_recent failed: %s", e)
+        logger.warning("_sql_get_short_interest_recent failed: %s", e)
     return out
 
 
@@ -1312,10 +1520,28 @@ def get_short_volume_recent(
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Batch-read recent short volume rows per symbol (trade_date DESC).
 
-    Reads ``market.stock_financials`` where ``report_type = 'short_volume'`` and
-    unpacks jsonb ``data``. ``source`` kept for API compat.
+    In plugin mode, fetches from Plugin API ``/stocks/fundamentals/db/short-volume``.
+    ``source`` kept for API compat.
     """
-    _ = source  # unused — market.* has no source column
+    _ = source
+    syms = sorted({str(s or "").strip().upper() for s in symbols if str(s or "").strip()})
+    if not syms:
+        return {}
+    if _use_plugin():
+        try:
+            return market_data_client.fetch_short_volume(syms, trade_days=trade_days)
+        except Exception as e:
+            logger.warning("Plugin API failed for get_short_volume_recent, falling back to SQL: %s", e)
+    return _sql_get_short_volume_recent(status_config, syms, trade_days=trade_days)
+
+
+def _sql_get_short_volume_recent(
+    status_config: dict,
+    symbols: List[str],
+    *,
+    trade_days: int = 60,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """SQL fallback: direct PostgreSQL read for short volume."""
     if not status_config or (status_config.get("sink") != "postgres" and not status_config.get("postgres")):
         return {}
     syms = sorted({str(s or "").strip().upper() for s in symbols if str(s or "").strip()})
@@ -1356,7 +1582,7 @@ def get_short_volume_recent(
         finally:
             conn.close()
     except Exception as e:
-        logger.warning("get_short_volume_recent failed: %s", e)
+        logger.warning("_sql_get_short_volume_recent failed: %s", e)
     return out
 
 
