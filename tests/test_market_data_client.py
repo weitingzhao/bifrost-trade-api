@@ -1,4 +1,4 @@
-"""Tests for market_data_client HTTP client and feature-flag fallback."""
+"""Tests for market_data_client HTTP client and market_pg wrappers."""
 
 from __future__ import annotations
 
@@ -113,13 +113,11 @@ def test_plugin_base_url_from_env(mock_urlopen: MagicMock, monkeypatch: pytest.M
     assert "custom-host:9999" in req.full_url
 
 
-# ─── Feature flag integration tests ─────────────────────────────────────────
+# ─── market_pg wrapper integration tests ─────────────────────────────────────
 
 
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_stock_day_series_for_sepa_plugin_mode(mock_urlopen: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    """Default mode (plugin) routes to HTTP client."""
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
+def test_get_stock_day_series_for_sepa_plugin_mode(mock_urlopen: MagicMock):
     payload = {
         "data": {
             "AAPL": [{"symbol": "AAPL", "bar_time": "2025-01-02", "open": 150.0, "high": 155.0, "low": 149.0, "close": 153.0, "volume": 1000000, "source": "massive"}]
@@ -133,35 +131,8 @@ def test_get_stock_day_series_for_sepa_plugin_mode(mock_urlopen: MagicMock, monk
     mock_urlopen.assert_called_once()
 
 
-@patch("bifrost_api.research.market_pg._sql_get_stock_day_series_for_sepa")
-def test_get_stock_day_series_for_sepa_sql_mode(mock_sql: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    """MARKET_DATA_SOURCE=sql bypasses HTTP, calls SQL directly."""
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "sql")
-    mock_sql.return_value = {"AAPL": [{"symbol": "AAPL", "close": 150.0}]}
-
-    result = get_stock_day_series_for_sepa({"postgres": {"host": "localhost"}}, ["AAPL"])
-
-    mock_sql.assert_called_once()
-    assert "AAPL" in result
-
-
-@patch("bifrost_api.research.market_pg._sql_get_stock_day_series_for_sepa")
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_fallback_on_http_error(mock_urlopen: MagicMock, mock_sql: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    """HTTP failure triggers automatic fallback to SQL."""
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
-    mock_urlopen.side_effect = OSError("Connection refused")
-    mock_sql.return_value = {"AAPL": [{"symbol": "AAPL", "close": 150.0}]}
-
-    result = get_stock_day_series_for_sepa({"postgres": {"host": "localhost"}}, ["AAPL"])
-
-    mock_sql.assert_called_once()
-    assert "AAPL" in result
-
-
-@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_stock_day_close_series_for_crs_plugin_mode(mock_urlopen: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
+def test_get_stock_day_close_series_for_crs_plugin_mode(mock_urlopen: MagicMock):
     payload = {"data": {"TSLA": [{"symbol": "TSLA", "bar_time": "2025-01-02", "close": 250.0}]}}
     mock_urlopen.return_value = _FakeResponse(payload)
 
@@ -171,21 +142,8 @@ def test_get_stock_day_close_series_for_crs_plugin_mode(mock_urlopen: MagicMock,
     mock_urlopen.assert_called_once()
 
 
-@patch("bifrost_api.research.market_pg._sql_get_stock_day_close_series_for_crs")
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_stock_day_close_series_for_crs_fallback(mock_urlopen: MagicMock, mock_sql: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
-    mock_urlopen.side_effect = TimeoutError("timeout")
-    mock_sql.return_value = {"TSLA": [{"symbol": "TSLA", "bar_time": "2025-01-02", "close": 250.0}]}
-
-    get_stock_day_close_series_for_crs({"postgres": {"host": "localhost"}}, ["TSLA"])
-
-    mock_sql.assert_called_once()
-
-
-@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_spy_close_series_plugin_mode(mock_urlopen: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
+def test_get_spy_close_series_plugin_mode(mock_urlopen: MagicMock):
     payload = {"closes": [450.0, 451.5]}
     mock_urlopen.return_value = _FakeResponse(payload)
 
@@ -193,30 +151,6 @@ def test_get_spy_close_series_plugin_mode(mock_urlopen: MagicMock, monkeypatch: 
 
     assert result == [450.0, 451.5]
     mock_urlopen.assert_called_once()
-
-
-@patch("bifrost_api.research.market_pg._sql_get_spy_close_series")
-@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_spy_close_series_fallback(mock_urlopen: MagicMock, mock_sql: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
-    mock_urlopen.side_effect = OSError("Network unreachable")
-    mock_sql.return_value = [450.0, 451.5]
-
-    result = get_spy_close_series({"postgres": {"host": "localhost"}})
-
-    mock_sql.assert_called_once()
-    assert result == [450.0, 451.5]
-
-
-@patch("bifrost_api.research.market_pg._sql_get_spy_close_series")
-def test_get_spy_close_series_sql_mode(mock_sql: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "sql")
-    mock_sql.return_value = [100.0, 101.0]
-
-    result = get_spy_close_series({"postgres": {"host": "localhost"}})
-
-    mock_sql.assert_called_once()
-    assert result == [100.0, 101.0]
 
 
 # ─── Option HTTP client unit tests ───────────────────────────────────────────
@@ -340,12 +274,11 @@ def test_fetch_option_expirations_empty(mock_urlopen: MagicMock):
     assert result is None
 
 
-# ─── Option feature-flag integration tests ───────────────────────────────────
+# ─── Option market_pg wrapper integration tests ──────────────────────────────
 
 
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_option_snapshots_latest_plugin_mode(mock_urlopen: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
+def test_get_option_snapshots_latest_plugin_mode(mock_urlopen: MagicMock):
     payload = {"data": [{"contract_key": "AAPL|OPT|20260919|150.0|C", "iv": 0.35}]}
     mock_urlopen.return_value = _FakeResponse(payload)
 
@@ -356,33 +289,8 @@ def test_get_option_snapshots_latest_plugin_mode(mock_urlopen: MagicMock, monkey
     mock_urlopen.assert_called_once()
 
 
-@patch("bifrost_api.research.market_pg._sql_get_option_snapshots_latest")
-def test_get_option_snapshots_latest_sql_mode(mock_sql: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "sql")
-    mock_sql.return_value = [{"contract_key": "K1", "iv": 0.30}]
-
-    result = get_option_snapshots_latest({"postgres": {"host": "localhost"}}, ["K1"])
-
-    mock_sql.assert_called_once()
-    assert result[0]["iv"] == 0.30
-
-
-@patch("bifrost_api.research.market_pg._sql_get_option_snapshots_latest")
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_option_snapshots_latest_fallback(mock_urlopen: MagicMock, mock_sql: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
-    mock_urlopen.side_effect = OSError("Connection refused")
-    mock_sql.return_value = [{"contract_key": "K1", "iv": 0.28}]
-
-    result = get_option_snapshots_latest({"postgres": {"host": "localhost"}}, ["K1"])
-
-    mock_sql.assert_called_once()
-    assert result[0]["iv"] == 0.28
-
-
-@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_option_snapshots_eod_plugin_mode(mock_urlopen: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
+def test_get_option_snapshots_eod_plugin_mode(mock_urlopen: MagicMock):
     payload = {"data": [{"snap_day": "2026-08-01", "iv": 0.33, "contract_key": "K1"}]}
     mock_urlopen.return_value = _FakeResponse(payload)
 
@@ -393,23 +301,8 @@ def test_get_option_snapshots_eod_plugin_mode(mock_urlopen: MagicMock, monkeypat
     mock_urlopen.assert_called_once()
 
 
-@patch("bifrost_api.research.market_pg._sql_get_option_snapshots_eod_per_day")
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_option_snapshots_eod_fallback(mock_urlopen: MagicMock, mock_sql: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
-    mock_urlopen.side_effect = TimeoutError("timeout")
-    mock_sql.return_value = [{"snap_day": "2026-08-01", "iv": 0.30, "contract_key": "K1"}]
-
-    from datetime import datetime
-    result = get_option_snapshots_eod_per_day({"postgres": {"host": "localhost"}}, ["K1"], since_ts=datetime(2026, 7, 1))
-
-    mock_sql.assert_called_once()
-    assert result[0]["iv"] == 0.30
-
-
-@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_option_open_interest_daily_plugin_mode(mock_urlopen: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
+def test_get_option_open_interest_daily_plugin_mode(mock_urlopen: MagicMock):
     payload = {"data": [{"option_ticker": "O:AAPL260919C00150000", "open_interest": 5000}]}
     mock_urlopen.return_value = _FakeResponse(payload)
 
@@ -420,22 +313,8 @@ def test_get_option_open_interest_daily_plugin_mode(mock_urlopen: MagicMock, mon
     mock_urlopen.assert_called_once()
 
 
-@patch("bifrost_api.research.market_pg._sql_get_option_open_interest_daily")
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_option_open_interest_daily_fallback(mock_urlopen: MagicMock, mock_sql: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
-    mock_urlopen.side_effect = OSError("Network error")
-    mock_sql.return_value = [{"open_interest": 3000}]
-
-    result = get_option_open_interest_daily({"postgres": {"host": "localhost"}}, "AAPL")
-
-    mock_sql.assert_called_once()
-    assert result[0]["open_interest"] == 3000
-
-
-@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_option_expirations_from_contracts_db_plugin_mode(mock_urlopen: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
+def test_get_option_expirations_from_contracts_db_plugin_mode(mock_urlopen: MagicMock):
     payload = {"expirations": ["20260919", "20261016"]}
     mock_urlopen.return_value = _FakeResponse(payload)
 
@@ -445,22 +324,8 @@ def test_get_option_expirations_from_contracts_db_plugin_mode(mock_urlopen: Magi
     mock_urlopen.assert_called_once()
 
 
-@patch("bifrost_api.research.market_pg._sql_get_option_expirations_from_contracts_db")
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_option_expirations_from_contracts_db_fallback(mock_urlopen: MagicMock, mock_sql: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
-    mock_urlopen.side_effect = OSError("Connection refused")
-    mock_sql.return_value = ["20260919"]
-
-    result = get_option_expirations_from_contracts_db({"postgres": {"host": "localhost"}}, "AAPL")
-
-    mock_sql.assert_called_once()
-    assert result == ["20260919"]
-
-
-@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_strikes_for_expiry_plugin_mode(mock_urlopen: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
+def test_get_strikes_for_expiry_plugin_mode(mock_urlopen: MagicMock):
     payload = {"strikes": [140.0, 145.0, 150.0]}
     mock_urlopen.return_value = _FakeResponse(payload)
 
@@ -470,22 +335,8 @@ def test_get_strikes_for_expiry_plugin_mode(mock_urlopen: MagicMock, monkeypatch
     mock_urlopen.assert_called_once()
 
 
-@patch("bifrost_api.research.market_pg._sql_get_strikes_for_expiry_from_contracts_db")
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_strikes_for_expiry_fallback(mock_urlopen: MagicMock, mock_sql: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
-    mock_urlopen.side_effect = TimeoutError("timeout")
-    mock_sql.return_value = [150.0, 155.0]
-
-    result = get_strikes_for_expiry_from_contracts_db({"postgres": {"host": "localhost"}}, "AAPL", "20260919")
-
-    mock_sql.assert_called_once()
-    assert result == [150.0, 155.0]
-
-
-@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_option_expiration_cache_snapshot_plugin_mode(mock_urlopen: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
+def test_get_option_expiration_cache_snapshot_plugin_mode(mock_urlopen: MagicMock):
     payload = {"expirations": ["2026-09-19", "2026-10-16"], "updated_at": "2026-08-14T10:00:00+00:00"}
     mock_urlopen.return_value = _FakeResponse(payload)
 
@@ -495,33 +346,6 @@ def test_get_option_expiration_cache_snapshot_plugin_mode(mock_urlopen: MagicMoc
     exps, updated_at = result
     assert exps == ["2026-09-19", "2026-10-16"]
     assert updated_at is not None
-
-
-@patch("bifrost_api.research.market_pg._sql_get_option_expiration_cache_snapshot")
-@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_option_expiration_cache_snapshot_fallback(mock_urlopen: MagicMock, mock_sql: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
-    mock_urlopen.side_effect = OSError("Network unreachable")
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-    mock_sql.return_value = (["2026-09-19"], datetime(2026, 8, 14, tzinfo=ZoneInfo("UTC")))
-
-    result = get_option_expiration_cache_snapshot({"postgres": {"host": "localhost"}}, "AAPL")
-
-    mock_sql.assert_called_once()
-    assert result is not None
-    assert result[0] == ["2026-09-19"]
-
-
-@patch("bifrost_api.research.market_pg._sql_get_option_expirations_from_contracts_db")
-def test_get_option_expirations_sql_mode(mock_sql: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "sql")
-    mock_sql.return_value = ["20260919", "20261016"]
-
-    result = get_option_expirations_from_contracts_db({"postgres": {"host": "localhost"}}, "AAPL")
-
-    mock_sql.assert_called_once()
-    assert result == ["20260919", "20261016"]
 
 
 # ─── Short interest / short volume HTTP client tests ─────────────────────────
@@ -592,12 +416,11 @@ def test_fetch_short_volume_empty(mock_urlopen: MagicMock):
     assert result == {}
 
 
-# ─── Short interest / short volume feature-flag integration tests ────────────
+# ─── Short interest / short volume market_pg wrapper tests ───────────────────
 
 
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_short_interest_recent_plugin_mode(mock_urlopen: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
+def test_get_short_interest_recent_plugin_mode(mock_urlopen: MagicMock):
     payload = {
         "ok": True,
         "data": {"AAPL": [{"symbol": "AAPL", "settlement_date": "2026-08-01", "short_interest": 50000}]},
@@ -612,33 +435,8 @@ def test_get_short_interest_recent_plugin_mode(mock_urlopen: MagicMock, monkeypa
     mock_urlopen.assert_called_once()
 
 
-@patch("bifrost_api.research.market_pg._sql_get_short_interest_recent")
-def test_get_short_interest_recent_sql_mode(mock_sql: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "sql")
-    mock_sql.return_value = {"AAPL": [{"symbol": "AAPL", "short_interest": 40000}]}
-
-    result = get_short_interest_recent({"postgres": {"host": "localhost"}}, ["AAPL"])
-
-    mock_sql.assert_called_once()
-    assert "AAPL" in result
-
-
-@patch("bifrost_api.research.market_pg._sql_get_short_interest_recent")
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_short_interest_recent_fallback(mock_urlopen: MagicMock, mock_sql: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
-    mock_urlopen.side_effect = OSError("Connection refused")
-    mock_sql.return_value = {"AAPL": [{"symbol": "AAPL", "short_interest": 40000}]}
-
-    result = get_short_interest_recent({"postgres": {"host": "localhost"}}, ["AAPL"])
-
-    mock_sql.assert_called_once()
-    assert "AAPL" in result
-
-
-@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_short_volume_recent_plugin_mode(mock_urlopen: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
+def test_get_short_volume_recent_plugin_mode(mock_urlopen: MagicMock):
     payload = {
         "ok": True,
         "data": {"NVDA": [{"symbol": "NVDA", "trade_date": "2026-08-13", "short_volume": 12000}]},
@@ -651,27 +449,3 @@ def test_get_short_volume_recent_plugin_mode(mock_urlopen: MagicMock, monkeypatc
     assert "NVDA" in result
     assert result["NVDA"][0]["short_volume"] == 12000
     mock_urlopen.assert_called_once()
-
-
-@patch("bifrost_api.research.market_pg._sql_get_short_volume_recent")
-def test_get_short_volume_recent_sql_mode(mock_sql: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "sql")
-    mock_sql.return_value = {"NVDA": [{"symbol": "NVDA", "short_volume": 10000}]}
-
-    result = get_short_volume_recent({"postgres": {"host": "localhost"}}, ["NVDA"])
-
-    mock_sql.assert_called_once()
-    assert "NVDA" in result
-
-
-@patch("bifrost_api.research.market_pg._sql_get_short_volume_recent")
-@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_short_volume_recent_fallback(mock_urlopen: MagicMock, mock_sql: MagicMock, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MARKET_DATA_SOURCE", "plugin")
-    mock_urlopen.side_effect = TimeoutError("timeout")
-    mock_sql.return_value = {"NVDA": [{"symbol": "NVDA", "short_volume": 10000}]}
-
-    result = get_short_volume_recent({"postgres": {"host": "localhost"}}, ["NVDA"])
-
-    mock_sql.assert_called_once()
-    assert "NVDA" in result
