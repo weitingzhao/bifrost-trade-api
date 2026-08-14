@@ -126,11 +126,11 @@ READINESS_DATA_CATALOG: Dict[str, Any] = {
     "raw_sources": [
         {
             "id": "tickers",
-            "object": "public.tickers",
-            "role": "Massive reference universe (All Tickers).",
-            "typical_ingest": "Celery kind feed_stocks_tickers_reference_universe",
+            "object": "public.v_us_equity_universe",
+            "role": "US equity universe synced from Plugin GET /market/reference/universe.",
+            "typical_ingest": "Plugin API universe_sync (Golden Source)",
             "data_points": [
-                "ticker",
+                "symbol",
                 "name",
                 "market",
                 "locale",
@@ -138,10 +138,9 @@ READINESS_DATA_CATALOG: Dict[str, Any] = {
                 "instrument_type",
                 "active",
                 "delisted_utc",
-                "cik",
-                "composite_figi",
-                "share_class_figi",
-                "last_updated_utc",
+                "list_date",
+                "sector",
+                "industry",
             ],
         },
         {
@@ -204,8 +203,8 @@ READINESS_DATA_CATALOG: Dict[str, Any] = {
         {
             "id": "v_us_equity_universe",
             "object": "public.v_us_equity_universe",
-            "role": "Filtered US equity candidate list from tickers + overview.",
-            "depends_on": ["tickers", "ticker_overview"],
+            "role": "Plugin-synced US common-stock universe (Golden Source).",
+            "depends_on": ["tickers"],
             "data_points": [
                 "tickers_id",
                 "symbol",
@@ -765,10 +764,10 @@ def _pg_rel_exists(cur: Any, rel: str) -> bool:
 
 
 def _fetch_fundamentals_symbol_counts_by_instrument_type(cur: Any) -> Optional[List[Dict[str, Any]]]:
-    """Distinct symbols per ``tickers.instrument_type`` via Plugin API + local tickers table.
+    """Distinct symbols per instrument_type via Plugin API + v_us_equity_universe.
 
     The Plugin provides total counts per report_type; instrument_type breakdown
-    uses local ``public.tickers`` for the universe dimension.
+    uses the Plugin-synced universe table.
     """
     from bifrost_api.research.market_data_client import fetch_readiness_financials_by_instrument_type
 
@@ -777,10 +776,8 @@ def _fetch_fundamentals_symbol_counts_by_instrument_type(cur: Any) -> Optional[L
         cur.execute(
             """
             SELECT DISTINCT COALESCE(NULLIF(instrument_type, ''), '(unknown)') AS code
-            FROM public.tickers
-            WHERE active = true
-              AND lower(coalesce(locale, '')) = 'us'
-              AND lower(coalesce(market, '')) = 'stocks'
+            FROM public.v_us_equity_universe
+            WHERE COALESCE(active, true)
             """
         )
         for r in cur.fetchall() or []:
@@ -831,14 +828,13 @@ def fetch_sepa_readiness_summary(status_config: dict) -> Dict[str, Any]:
             cur.execute("SELECT count(*)::bigint AS n FROM public.v_us_equity_universe")
             out["universe_count"] = int((cur.fetchone() or {}).get("n") or 0)
 
-            # Tickers table counts and last-sync timestamp (Step 1 check)
+            # Universe counts + last Plugin sync (Step 1). Keys kept for Trade UI.
             cur.execute(
                 """
                 SELECT
-                    count(*)::bigint AS active_count,
-                    max(updated_at)::text AS last_synced_at
-                FROM public.tickers
-                WHERE active = true AND locale = 'us' AND market = 'stocks'
+                    count(*) FILTER (WHERE COALESCE(active, true))::bigint AS active_count,
+                    max(synced_at)::text AS last_synced_at
+                FROM public.us_equity_universe
                 """
             )
             tr = cur.fetchone() or {}
@@ -890,42 +886,33 @@ def fetch_sepa_readiness_summary(status_config: dict) -> Dict[str, Any]:
                 out["stock_unified_snapshot_row_count"] = None
                 out["stock_unified_snapshot_last_fetched_at"] = None
 
-            # Step 2 breakdown: cache_stock_snapshot rows grouped by tickers.instrument_type,
-            # joined to ticker_types (asset_class='stocks', locale='us') for human-readable label.
-            # Includes a coverage column (universe_ticker_count) so users can spot which types
-            # are under-snapshotted vs. their baseline universe footprint.
+            # Step 2 breakdown: cache_stock_snapshot grouped by universe instrument_type.
             try:
                 cur.execute(
                     """
                     WITH snap_by_type AS (
                         SELECT
-                            COALESCE(NULLIF(t.instrument_type, ''), '(unknown)') AS code,
+                            COALESCE(NULLIF(u.instrument_type, ''), '(unknown)') AS code,
                             count(*)::bigint AS snapshot_row_count
                         FROM public.cache_stock_snapshot c
-                        JOIN public.tickers t ON upper(trim(t.ticker)) = c.symbol
-                        GROUP BY COALESCE(NULLIF(t.instrument_type, ''), '(unknown)')
+                        JOIN public.v_us_equity_universe u ON u.symbol = c.symbol
+                        GROUP BY COALESCE(NULLIF(u.instrument_type, ''), '(unknown)')
                     ),
                     uni_by_type AS (
                         SELECT
                             COALESCE(NULLIF(instrument_type, ''), '(unknown)') AS code,
                             count(*)::bigint AS universe_ticker_count
-                        FROM public.tickers
-                        WHERE active = true
-                          AND lower(coalesce(locale, '')) = 'us'
-                          AND lower(coalesce(market, '')) = 'stocks'
+                        FROM public.v_us_equity_universe
+                        WHERE COALESCE(active, true)
                         GROUP BY COALESCE(NULLIF(instrument_type, ''), '(unknown)')
                     )
                     SELECT
                         s.code,
-                        tt.description,
+                        s.code AS description,
                         s.snapshot_row_count,
                         COALESCE(u.universe_ticker_count, 0)::bigint AS universe_ticker_count
                     FROM snap_by_type s
                     LEFT JOIN uni_by_type u ON u.code = s.code
-                    LEFT JOIN public.ticker_types tt
-                        ON tt.code = s.code
-                       AND tt.asset_class = 'stocks'
-                       AND tt.locale = 'us'
                     ORDER BY s.snapshot_row_count DESC, s.code
                     """
                 )
