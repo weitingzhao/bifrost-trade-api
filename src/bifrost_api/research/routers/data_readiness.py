@@ -111,6 +111,10 @@ def post_sepa_backfill_fundamentals(
     except Exception as e:
         return {"ok": False, "error": f"DB connect failed: {e}"}
 
+    from bifrost_api.research.sepa.readiness_snapshot import _sync_plugin_materialized_tables
+
+    _sync_plugin_materialized_tables(conn)
+
     only_missing = bool(body.get("only_missing", True))
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -201,6 +205,10 @@ def post_sepa_backfill_technical(
         conn = psycopg2.connect(**params)
     except Exception as e:
         return {"ok": False, "error": f"DB connect failed: {e}"}
+
+    from bifrost_api.research.sepa.readiness_snapshot import _sync_plugin_materialized_tables
+
+    _sync_plugin_materialized_tables(conn)
 
     only_missing = bool(body.get("only_missing", True))
     try:
@@ -1348,61 +1356,37 @@ def get_symbol_fundamental_raw_data(
     except Exception as e:
         return {"ok": False, "error": str(e)}
     try:
+        from bifrost_api.research.sepa.financials_data import (
+            _INCOME_FIELDS,
+            unpack_financial_data,
+        )
+        from bifrost_api.research.market_data_client import fetch_sepa_income_rows
+
+        income = fetch_sepa_income_rows(sym)
+
+        quarterly = []
+        for r in (income.get("quarterly") or [])[-10:]:
+            flat = unpack_financial_data(r.get("data"), _INCOME_FIELDS)
+            quarterly.append({
+                "fiscal_year": r.get("fiscal_year"),
+                "fiscal_quarter": r.get("fiscal_quarter"),
+                "eps": flat.get("basic_earnings_per_share"),
+                "revenues": flat.get("revenue"),
+            })
+        quarterly.reverse()
+
+        annual = []
+        for r in (income.get("annual") or [])[-5:]:
+            flat = unpack_financial_data(r.get("data"), _INCOME_FIELDS)
+            annual.append({
+                "fiscal_year": r.get("fiscal_year"),
+                "eps": flat.get("basic_earnings_per_share"),
+                "revenues": flat.get("revenue"),
+            })
+        annual.reverse()
+
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SET statement_timeout = 8000")
-
-            from bifrost_api.research.sepa.financials_data import (
-                REPORT_INCOME,
-                _INCOME_FIELDS,
-                unpack_financial_data,
-            )
-
-            # Last 10 quarterly rows (EPS + revenues)
-            cur.execute(
-                """
-                SELECT fiscal_year, fiscal_quarter, data
-                FROM market.stock_financials
-                WHERE symbol = %(sym)s
-                  AND report_type = %(rtype)s
-                  AND lower(period_type) = 'quarterly'
-                ORDER BY fiscal_year DESC NULLS LAST, fiscal_quarter DESC NULLS LAST
-                LIMIT 10
-                """,
-                {"sym": sym, "rtype": REPORT_INCOME},
-            )
-            quarterly = []
-            for r in cur.fetchall() or []:
-                flat = unpack_financial_data(r.get("data"), _INCOME_FIELDS)
-                quarterly.append({
-                    "fiscal_year": r.get("fiscal_year"),
-                    "fiscal_quarter": r.get("fiscal_quarter"),
-                    "eps": flat.get("basic_earnings_per_share"),
-                    "revenues": flat.get("revenue"),
-                })
-
-            # Last 5 annual rows (EPS + revenues)
-            cur.execute(
-                """
-                SELECT fiscal_year, data
-                FROM market.stock_financials
-                WHERE symbol = %(sym)s
-                  AND report_type = %(rtype)s
-                  AND lower(period_type) = 'annual'
-                ORDER BY fiscal_year DESC NULLS LAST
-                LIMIT 5
-                """,
-                {"sym": sym, "rtype": REPORT_INCOME},
-            )
-            annual = []
-            for r in cur.fetchall() or []:
-                flat = unpack_financial_data(r.get("data"), _INCOME_FIELDS)
-                annual.append({
-                    "fiscal_year": r.get("fiscal_year"),
-                    "eps": flat.get("basic_earnings_per_share"),
-                    "revenues": flat.get("revenue"),
-                })
-
-            # Computed metrics stored inside fundamental_eval jsonb
             cur.execute(
                 """
                 SELECT fundamental_eval
@@ -1457,170 +1441,104 @@ def get_symbol_statements(
     symbol: str = "",
 ) -> Dict[str, Any]:
     """Return latest balance sheet, cash flow, ratios, short interest, and short volume rows for a symbol."""
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-
     sym = (symbol or "").strip().upper()
     if not sym:
         return {"ok": False, "error": "symbol is required"}
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 10
     try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SET statement_timeout = 8000")
+        from bifrost_api.research.sepa.financials_data import (
+            REPORT_BALANCE,
+            REPORT_CASH_FLOW,
+            REPORT_RATIOS,
+            REPORT_SHORT_INTEREST,
+            REPORT_SHORT_VOLUME,
+            _BALANCE_FIELDS,
+            _CASH_FLOW_FIELDS,
+            _RATIOS_FIELDS,
+            _SHORT_INTEREST_FIELDS,
+            _SHORT_VOLUME_FIELDS,
+            unpack_financial_data,
+        )
+        from bifrost_api.research.market_data_client import fetch_sepa_financials
 
-            from bifrost_api.research.sepa.financials_data import (
-                REPORT_BALANCE,
-                REPORT_CASH_FLOW,
-                REPORT_RATIOS,
-                REPORT_SHORT_INTEREST,
-                REPORT_SHORT_VOLUME,
-                _BALANCE_FIELDS,
-                _CASH_FLOW_FIELDS,
-                _RATIOS_FIELDS,
-                _SHORT_INTEREST_FIELDS,
-                _SHORT_VOLUME_FIELDS,
-                unpack_financial_data,
-            )
+        def _fetch_rows(rtype: str, period: str | None, limit: int) -> list:
+            data = fetch_sepa_financials([sym], rtype, period_type=period, limit=limit)
+            rows = data.get(sym, [])
+            rows.sort(key=lambda r: r.get("period_date") or "", reverse=True)
+            return rows
 
-            # Balance sheets — last 6 quarterly rows, key fields
-            cur.execute(
-                """
-                SELECT period_date AS period_end, fiscal_year, fiscal_quarter, data
-                FROM market.stock_financials
-                WHERE symbol = %(sym)s
-                  AND report_type = %(rtype)s
-                  AND lower(period_type) = 'quarterly'
-                ORDER BY period_date DESC
-                LIMIT 6
-                """,
-                {"sym": sym, "rtype": REPORT_BALANCE},
-            )
-            balance_sheets = []
-            for r in cur.fetchall() or []:
-                flat = unpack_financial_data(r.get("data"), _BALANCE_FIELDS)
-                balance_sheets.append({
-                    "period_end": r.get("period_end"),
-                    "fiscal_year": r.get("fiscal_year"),
-                    "fiscal_quarter": r.get("fiscal_quarter"),
-                    **{k: flat.get(k) for k in (
-                        "cash_and_equivalents", "total_current_assets", "total_current_liabilities",
-                        "total_assets", "total_liabilities", "total_equity",
-                        "receivables", "inventories", "debt_current",
-                        "long_term_debt_and_capital_lease_obligations",
-                        "property_plant_equipment_net", "retained_earnings_deficit",
-                    )},
-                })
+        raw_balance = _fetch_rows(REPORT_BALANCE, "quarterly", 6)
+        balance_sheets = []
+        for r in raw_balance:
+            flat = unpack_financial_data(r.get("data"), _BALANCE_FIELDS)
+            balance_sheets.append({
+                "period_end": r.get("period_date"),
+                "fiscal_year": r.get("fiscal_year"),
+                "fiscal_quarter": r.get("fiscal_quarter"),
+                **{k: flat.get(k) for k in (
+                    "cash_and_equivalents", "total_current_assets", "total_current_liabilities",
+                    "total_assets", "total_liabilities", "total_equity",
+                    "receivables", "inventories", "debt_current",
+                    "long_term_debt_and_capital_lease_obligations",
+                    "property_plant_equipment_net", "retained_earnings_deficit",
+                )},
+            })
 
-            # Cash flows — last 6 quarterly rows, key fields
-            cur.execute(
-                """
-                SELECT period_date AS period_end, fiscal_year, fiscal_quarter, data
-                FROM market.stock_financials
-                WHERE symbol = %(sym)s
-                  AND report_type = %(rtype)s
-                  AND lower(period_type) = 'quarterly'
-                ORDER BY period_date DESC
-                LIMIT 6
-                """,
-                {"sym": sym, "rtype": REPORT_CASH_FLOW},
-            )
-            cash_flows = []
-            for r in cur.fetchall() or []:
-                flat = unpack_financial_data(r.get("data"), _CASH_FLOW_FIELDS)
-                cash_flows.append({
-                    "period_end": r.get("period_end"),
-                    "fiscal_year": r.get("fiscal_year"),
-                    "fiscal_quarter": r.get("fiscal_quarter"),
-                    **{k: flat.get(k) for k in (
-                        "net_income", "net_cash_from_operating_activities",
-                        "net_cash_from_investing_activities", "net_cash_from_financing_activities",
-                        "depreciation_depletion_and_amortization",
-                        "purchase_of_property_plant_and_equipment",
-                        "change_in_cash_and_equivalents",
-                    )},
-                })
+        raw_cf = _fetch_rows(REPORT_CASH_FLOW, "quarterly", 6)
+        cash_flows = []
+        for r in raw_cf:
+            flat = unpack_financial_data(r.get("data"), _CASH_FLOW_FIELDS)
+            cash_flows.append({
+                "period_end": r.get("period_date"),
+                "fiscal_year": r.get("fiscal_year"),
+                "fiscal_quarter": r.get("fiscal_quarter"),
+                **{k: flat.get(k) for k in (
+                    "net_income", "net_cash_from_operating_activities",
+                    "net_cash_from_investing_activities", "net_cash_from_financing_activities",
+                    "depreciation_depletion_and_amortization",
+                    "purchase_of_property_plant_and_equipment",
+                    "change_in_cash_and_equivalents",
+                )},
+            })
 
-            # Ratios — last 8 rows by date
-            cur.execute(
-                """
-                SELECT period_date AS date, data
-                FROM market.stock_financials
-                WHERE symbol = %(sym)s AND report_type = %(rtype)s
-                ORDER BY period_date DESC
-                LIMIT 8
-                """,
-                {"sym": sym, "rtype": REPORT_RATIOS},
-            )
-            ratios = []
-            for r in cur.fetchall() or []:
-                flat = unpack_financial_data(r.get("data"), _RATIOS_FIELDS)
-                ratios.append({
-                    "date": r.get("date"),
-                    **{k: flat.get(k) for k in (
-                        "price_to_earnings", "price_to_sales", "price_to_book",
-                        "price_to_free_cash_flow", "debt_to_equity",
-                        "return_on_equity", "return_on_assets",
-                        "market_cap", "free_cash_flow", "earnings_per_share",
-                        "average_volume", "dividend_yield",
-                    )},
-                })
+        raw_ratios = _fetch_rows(REPORT_RATIOS, None, 8)
+        ratios = []
+        for r in raw_ratios:
+            flat = unpack_financial_data(r.get("data"), _RATIOS_FIELDS)
+            ratios.append({
+                "date": r.get("period_date"),
+                **{k: flat.get(k) for k in (
+                    "price_to_earnings", "price_to_sales", "price_to_book",
+                    "price_to_free_cash_flow", "debt_to_equity",
+                    "return_on_equity", "return_on_assets",
+                    "market_cap", "free_cash_flow", "earnings_per_share",
+                    "average_volume", "dividend_yield",
+                )},
+            })
 
-            # Short interest — last 8 settlement dates
-            cur.execute(
-                """
-                SELECT period_date AS settlement_date, data
-                FROM market.stock_financials
-                WHERE symbol = %(sym)s AND report_type = %(rtype)s
-                ORDER BY period_date DESC
-                LIMIT 8
-                """,
-                {"sym": sym, "rtype": REPORT_SHORT_INTEREST},
-            )
-            short_interest = []
-            for r in cur.fetchall() or []:
-                flat = unpack_financial_data(r.get("data"), _SHORT_INTEREST_FIELDS)
-                short_interest.append({
-                    "settlement_date": r.get("settlement_date"),
-                    "short_interest": flat.get("short_interest"),
-                    "avg_daily_volume": flat.get("avg_daily_volume"),
-                    "days_to_cover": flat.get("days_to_cover"),
-                })
+        raw_si = _fetch_rows(REPORT_SHORT_INTEREST, None, 8)
+        short_interest = []
+        for r in raw_si:
+            flat = unpack_financial_data(r.get("data"), _SHORT_INTEREST_FIELDS)
+            short_interest.append({
+                "settlement_date": r.get("period_date"),
+                "short_interest": flat.get("short_interest"),
+                "avg_daily_volume": flat.get("avg_daily_volume"),
+                "days_to_cover": flat.get("days_to_cover"),
+            })
 
-            # Short volume — last 12 trade dates
-            cur.execute(
-                """
-                SELECT period_date AS trade_date, data
-                FROM market.stock_financials
-                WHERE symbol = %(sym)s AND report_type = %(rtype)s
-                ORDER BY period_date DESC
-                LIMIT 12
-                """,
-                {"sym": sym, "rtype": REPORT_SHORT_VOLUME},
-            )
-            short_volume = []
-            for r in cur.fetchall() or []:
-                flat = unpack_financial_data(r.get("data"), _SHORT_VOLUME_FIELDS)
-                short_volume.append({
-                    "trade_date": r.get("trade_date"),
-                    "short_volume": flat.get("short_volume"),
-                    "short_volume_ratio": flat.get("short_volume_ratio"),
-                    "total_volume": flat.get("total_volume"),
-                })
+        raw_sv = _fetch_rows(REPORT_SHORT_VOLUME, None, 12)
+        short_volume = []
+        for r in raw_sv:
+            flat = unpack_financial_data(r.get("data"), _SHORT_VOLUME_FIELDS)
+            short_volume.append({
+                "trade_date": r.get("period_date"),
+                "short_volume": flat.get("short_volume"),
+                "short_volume_ratio": flat.get("short_volume_ratio"),
+                "total_volume": flat.get("total_volume"),
+            })
 
     except Exception as e:
         return {"ok": False, "error": str(e)}
-    finally:
-        conn.close()
 
     def _serialize(rows: list) -> list:
         import datetime
@@ -1650,88 +1568,74 @@ def get_symbol_statements(
 
 @router.get("/research/data/ticker-overview/{symbol}")
 def get_ticker_overview(symbol: str, request: Request) -> Dict[str, Any]:
-    """Return market.ticker (+ related peers when available) for a single symbol."""
+    """Return ticker detail (+ related peers when available) for a single symbol via Plugin API."""
     import datetime
 
     import psycopg2
     from psycopg2.extras import RealDictCursor
 
+    from bifrost_api.research.market_data_client import fetch_ticker_detail
     from bifrost_core.persistence.postgres.connection import _get_conn_params
 
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-
     sym = symbol.strip().upper()
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 10
-    try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        return {"ok": False, "error": f"DB connect failed: {e}"}
 
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SET statement_timeout = 10000")
-            cur.execute(
-                """
-                SELECT
-                    t.symbol AS ticker,
-                    t.name,
-                    t.primary_exchange,
-                    t.instrument_type,
-                    t.active,
-                    t.currency AS currency_name,
-                    t.cik,
-                    t.sector,
-                    t.industry,
-                    NULL::text AS sic_description,
-                    t.market_cap,
-                    t.total_employees,
-                    t.description,
-                    t.homepage_url,
-                    NULL::text AS address_city,
-                    NULL::text AS address_state,
-                    t.list_date,
-                    t.primary_exchange AS exchange,
-                    NULL::double precision AS share_class_shares_outstanding,
-                    NULL::double precision AS weighted_shares_outstanding
-                FROM market.ticker t
-                WHERE t.symbol = %s
-                """,
-                (sym,),
-            )
-            row = cur.fetchone()
-            if not row:
-                return {"ok": True, "found": False, "symbol": sym}
+    ticker = fetch_ticker_detail(sym)
+    if not ticker:
+        return {"ok": True, "found": False, "symbol": sym}
 
-            related: list = []
-            cur.execute(
-                """
-                SELECT rt.to_symbol
-                FROM public.ticker_related_tickers rt
-                WHERE rt.from_symbol = %s
-                ORDER BY rt.rank ASC
-                LIMIT 12
-                """,
-                (sym,),
-            )
-            related = [r["to_symbol"] for r in cur.fetchall()]
+    db = _db_config(request)
+    related: list = []
+    if db:
+        params = _get_conn_params(db)
+        params["connect_timeout"] = 10
+        try:
+            conn = psycopg2.connect(**params)
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SET statement_timeout = 10000")
+                cur.execute(
+                    """
+                    SELECT rt.to_symbol
+                    FROM public.ticker_related_tickers rt
+                    WHERE rt.from_symbol = %s
+                    ORDER BY rt.rank ASC
+                    LIMIT 12
+                    """,
+                    (sym,),
+                )
+                related = [r["to_symbol"] for r in cur.fetchall()]
+            conn.close()
+        except Exception:
+            pass
 
-        data: Dict[str, Any] = {}
-        for k, v in dict(row).items():
-            if isinstance(v, (datetime.date, datetime.datetime)):
-                data[k] = str(v)
-            elif v is not None and not isinstance(v, (str, int, float, bool)):
-                data[k] = str(v)
-            else:
-                data[k] = v
+    data: Dict[str, Any] = {
+        "ticker": ticker.get("symbol", sym),
+        "name": ticker.get("name"),
+        "primary_exchange": ticker.get("primary_exchange"),
+        "instrument_type": ticker.get("instrument_type"),
+        "active": ticker.get("active"),
+        "currency_name": ticker.get("currency"),
+        "cik": ticker.get("cik"),
+        "sector": ticker.get("sector"),
+        "industry": ticker.get("industry"),
+        "sic_description": None,
+        "market_cap": ticker.get("market_cap"),
+        "total_employees": ticker.get("total_employees"),
+        "description": ticker.get("description"),
+        "homepage_url": ticker.get("homepage_url"),
+        "address_city": None,
+        "address_state": None,
+        "list_date": ticker.get("list_date"),
+        "exchange": ticker.get("primary_exchange"),
+        "share_class_shares_outstanding": None,
+        "weighted_shares_outstanding": None,
+    }
+    for k, v in data.items():
+        if isinstance(v, (datetime.date, datetime.datetime)):
+            data[k] = str(v)
+        elif v is not None and not isinstance(v, (str, int, float, bool)):
+            data[k] = str(v)
 
-        return {"ok": True, "found": True, "symbol": sym, **data, "related_tickers": related}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    finally:
-        conn.close()
+    return {"ok": True, "found": True, "symbol": sym, **data, "related_tickers": related}
 
 
 # ── Tier 2–4 new endpoints ────────────────────────────────────────────────────

@@ -298,6 +298,19 @@ def _load_universe_symbols(status_config: dict) -> List[str]:
     params["connect_timeout"] = 15
     conn = psycopg2.connect(**params)
     try:
+        try:
+            from bifrost_core.persistence.postgres.universe_sync import (
+                sync_universe_from_plugin,
+            )
+
+            sync_universe_from_plugin(conn)
+            conn.commit()
+        except Exception as e:
+            logger.warning("universe sync before snapshot refresh failed: %s", e)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         with conn.cursor() as cur:
             cur.execute(
                 """

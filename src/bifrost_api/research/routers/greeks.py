@@ -12,7 +12,7 @@ Near-ATM 21-35 DTE straddle error is acceptable for monitoring purposes.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Query, Request
@@ -163,66 +163,66 @@ def _fetch_greeks_rows(
     right: Optional[str],
     limit: int,
 ) -> List[Dict[str, Any]]:
-    """Query option_day JOIN stock_day, compute IV + greeks for each row."""
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
+    """Query option_daily via Plugin API JOIN stock_day, compute IV + greeks for each row."""
+    from bifrost_api.research.market_data_client import fetch_option_daily, fetch_stock_bars_daily
 
-    params = _get_conn_params(db)
-    conn = psycopg2.connect(**params)
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            where_extra = ""
-            bind: List[Any] = [symbol.upper(), trade_date, symbol.upper(), trade_date]
+    sym = symbol.upper()
 
-            if expiry:
-                where_extra += " AND od.expiry = %s"
-                bind.append(expiry)
-            if right:
-                where_extra += " AND UPPER(od.option_right) = %s"
-                bind.append(right.upper())
+    # Fetch option daily data from Plugin
+    resp = fetch_option_daily(sym, expiry=expiry, days=365, limit=min(limit, 5000))
+    if not resp.get("ok"):
+        return []
 
-            bind.append(limit)
+    # Filter rows matching trade_date
+    target_rows = [
+        row for row in (resp.get("rows") or [])
+        if str(row.get("bar_date", ""))[:10] == trade_date
+    ]
 
-            sql = f"""
-                SELECT
-                    od.expiry,
-                    od.strike,
-                    od.option_right,
-                    od.close          AS market_price,
-                    od.bar_date       AS bar_time,
-                    sd.close          AS stock_price
-                FROM market.option_daily od
-                JOIN market.stock_daily sd
-                  ON sd.symbol = %s
-                 AND sd.bar_date = %s::date
-                 AND sd.close > 0
-                WHERE od.underlying = %s
-                  AND od.bar_date = %s::date
-                  AND od.close > 0
-                  AND od.expiry IS NOT NULL
-                  AND od.strike > 0
-                {where_extra}
-                ORDER BY od.expiry, od.option_right, od.strike
-                LIMIT %s
-            """
-            cur.execute(sql, tuple(bind))
-            raw = cur.fetchall()
-    finally:
-        conn.close()
+    if right:
+        right_upper = right.upper()
+        target_rows = [
+            row for row in target_rows
+            if str(row.get("option_right", "")).strip().upper() == right_upper
+        ]
+
+    target_rows = target_rows[:limit]
+    if not target_rows:
+        return []
+
+    # Fetch stock price for the trade_date from Plugin
+    stock_bars = fetch_stock_bars_daily([sym], days=400)
+    symbol_bars = stock_bars.get(sym, [])
+    stock_price: Optional[float] = None
+    for bar in symbol_bars:
+        bar_time = str(bar.get("bar_time", ""))[:10]
+        if bar_time == trade_date:
+            close = bar.get("close")
+            if close is not None and float(close) > 0:
+                stock_price = float(close)
+                break
+
+    if stock_price is None or stock_price <= 0:
+        return []
 
     rows: List[Dict[str, Any]] = []
-    for raw_row in raw:
-        expiry_str = str(raw_row["expiry"]).strip()
-        strike = float(raw_row["strike"])
-        opt_right = str(raw_row["option_right"]).strip().upper()
-        market_price = float(raw_row["market_price"])
-        stock_price = float(raw_row["stock_price"])
-        bar_time = raw_row["bar_time"]
+    for raw_row in target_rows:
+        expiry_str = str(raw_row.get("expiry") or "").strip()
+        strike = raw_row.get("strike")
+        opt_right = str(raw_row.get("option_right") or "").strip().upper()
+        market_price = raw_row.get("close")
 
-        # Parse expiry to compute T
+        if not expiry_str or not strike or not market_price:
+            continue
         try:
-            # expiry may be YYYY-MM-DD or YYYYMMDD
+            strike = float(strike)
+            market_price = float(market_price)
+        except (TypeError, ValueError):
+            continue
+        if strike <= 0 or market_price <= 0:
+            continue
+
+        try:
             if len(expiry_str) == 8 and expiry_str.isdigit():
                 exp_date = datetime.strptime(expiry_str, "%Y%m%d").date()
             elif len(expiry_str) >= 10:
@@ -232,7 +232,6 @@ def _fetch_greeks_rows(
         except ValueError:
             continue
 
-        # trade_date from parameter
         try:
             td = datetime.strptime(trade_date, "%Y-%m-%d").date()
         except ValueError:
@@ -279,34 +278,15 @@ def get_greeks_available_dates(
     symbol: str = Query(..., description="Ticker symbol (e.g. NVDA)"),
     limit: int = Query(90, ge=1, le=365),
 ) -> Dict[str, Any]:
-    """Return distinct trade dates available in option_day for the given symbol."""
-    import psycopg2
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    db = _db_config(request)
-    if db is None:
-        return {"ok": False, "symbol": symbol, "dates": [], "error": "no db config"}
+    """Return distinct trade dates available in option_daily for the given symbol."""
+    from bifrost_api.research.market_data_client import fetch_option_daily_available_dates
 
     sym = symbol.strip().upper()
     try:
-        params = _get_conn_params(db)
-        conn = psycopg2.connect(**params)
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT DISTINCT bar_date AS trade_date
-                    FROM market.option_daily
-                    WHERE underlying = %s
-                    ORDER BY 1 DESC
-                    LIMIT %s
-                    """,
-                    (sym, limit),
-                )
-                dates = [str(r[0]) for r in cur.fetchall()]
-        finally:
-            conn.close()
-        return {"ok": True, "symbol": sym, "dates": dates}
+        resp = fetch_option_daily_available_dates(sym, limit=limit)
+        if not resp.get("ok"):
+            return {"ok": False, "symbol": sym, "dates": [], "error": resp.get("error", "plugin error")}
+        return {"ok": True, "symbol": sym, "dates": resp.get("dates", [])}
     except Exception as exc:
         return {"ok": False, "symbol": sym, "dates": [], "error": str(exc)}
 

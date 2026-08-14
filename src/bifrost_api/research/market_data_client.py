@@ -40,6 +40,16 @@ def _get_json(path: str, params: dict[str, str] | None = None, timeout: int = 30
         return json.loads(resp.read())
 
 
+def _post_json(path: str, body: dict[str, Any], timeout: int = 30) -> dict[str, Any]:
+    """POST JSON to Plugin API."""
+    base = _plugin_base_url()
+    url = f"{base}{path}"
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read())
+
+
 def fetch_stock_bars_daily(symbols: List[str], days: int = 400) -> Dict[str, List[Dict[str, Any]]]:
     """GET /stocks/db/bars/daily -> {symbol: [bars]}"""
     data = _get_json("/stocks/db/bars/daily", {"symbols": ",".join(symbols), "days": str(days)})
@@ -139,6 +149,20 @@ def fetch_option_expirations(symbol: str) -> Optional[Tuple[List[str], Optional[
     return (exps, updated_at)
 
 
+# ─── Ticker reference endpoints ──────────────────────────────────────────────
+
+
+def fetch_ticker_detail(symbol: str) -> Optional[Dict[str, Any]]:
+    """GET /reference/ticker/{symbol} → ticker detail dict or None."""
+    try:
+        data = _get_json(f"/reference/ticker/{urllib.parse.quote(symbol.upper())}")
+        if data.get("ok") and data.get("data"):
+            return data["data"]
+        return None
+    except Exception:
+        return None
+
+
 # ─── Fundamentals endpoints ──────────────────────────────────────────────────
 
 
@@ -158,3 +182,299 @@ def fetch_short_volume(symbols: List[str], trade_days: int = 60) -> Dict[str, Li
         {"symbols": ",".join(symbols), "trade_days": str(trade_days)},
     )
     return data.get("data", {})
+
+
+# ─── PCR / Option Daily / Coverage endpoints (W2-P4) ─────────────────────────
+
+
+def fetch_pcr_aggregate(
+    symbol: str, pcr_type: str = "oi", lookback_days: int = 365
+) -> Dict[str, Any]:
+    """GET /options/analytics/pcr → full PCR aggregate response."""
+    return _get_json(
+        "/options/analytics/pcr",
+        {"symbol": symbol, "type": pcr_type, "lookback_days": str(lookback_days)},
+        timeout=45,
+    )
+
+
+def fetch_option_daily(
+    symbol: str,
+    expiry: Optional[str] = None,
+    days: int = 30,
+    limit: int = 2000,
+) -> Dict[str, Any]:
+    """GET /options/daily → {ok, symbol, rows, count}."""
+    params: Dict[str, str] = {"symbol": symbol, "days": str(days), "limit": str(limit)}
+    if expiry:
+        params["expiry"] = expiry
+    return _get_json("/options/daily", params, timeout=45)
+
+
+def fetch_option_daily_available_dates(symbol: str, limit: int = 90) -> Dict[str, Any]:
+    """GET /options/daily/available-dates → {ok, symbol, dates}."""
+    return _get_json("/options/daily/available-dates", {"symbol": symbol, "limit": str(limit)})
+
+
+def fetch_coverage_sepa_stats() -> Dict[str, Any]:
+    """GET /coverage/sepa-stats → {ok, tables}."""
+    return _get_json("/coverage/sepa-stats")
+
+
+def fetch_coverage_distributions(table: str, limit: int = 200) -> Dict[str, Any]:
+    """GET /coverage/distributions → {ok, table, distributions, count}."""
+    return _get_json("/coverage/distributions", {"table": table, "limit": str(limit)})
+
+
+# ─── Chain analytics endpoints ────────────────────────────────────────────────
+
+
+def fetch_chain_by_expiry(
+    symbol: str, fallback_date: Optional[str] = None
+) -> Dict[str, Any]:
+    """GET /options/analytics/chain-by-expiry → {ok, symbol, chain, basis}."""
+    params: Dict[str, str] = {"symbol": symbol}
+    if fallback_date:
+        params["fallback_date"] = fallback_date
+    return _get_json("/options/analytics/chain-by-expiry", params, timeout=45)
+
+
+# ─── Readiness data endpoints ────────────────────────────────────────────────
+
+
+def fetch_readiness_bar_aggregate(window_days: int = 420) -> Dict[str, Dict[str, Any]]:
+    """GET /readiness/bar-aggregate → {SYM: {bar_rows, first_bar_date, ...}}."""
+    resp = _get_json("/readiness/bar-aggregate", {"window_days": str(window_days)}, timeout=60)
+    return resp.get("symbols", {})
+
+
+def fetch_readiness_latest_bar(
+    lookback_days: int = 90,
+    symbols: Optional[List[str]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """GET /readiness/latest-bar-per-symbol → {SYM: {bar_date, close}}."""
+    params: Dict[str, str] = {"lookback_days": str(lookback_days)}
+    if symbols:
+        params["symbols"] = ",".join(symbols)
+    resp = _get_json("/readiness/latest-bar-per-symbol", params, timeout=60)
+    return resp.get("symbols", {})
+
+
+def fetch_readiness_latest_bar_full(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+    """GET /readiness/latest-bar-full-history → {SYM: {bar_date, close}}."""
+    if not symbols:
+        return {}
+    resp = _get_json(
+        "/readiness/latest-bar-full-history",
+        {"symbols": ",".join(symbols)},
+        timeout=60,
+    )
+    return resp.get("symbols", {})
+
+
+def fetch_readiness_financials_coverage() -> Dict[str, Any]:
+    """GET /readiness/financials-coverage-symbols → coverage sets."""
+    return _get_json("/readiness/financials-coverage-symbols", timeout=45)
+
+
+def fetch_readiness_financials_fill_rate(
+    universe_symbols: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """GET /readiness/financials-fill-rate → fill rate counts."""
+    params: Dict[str, str] = {}
+    if universe_symbols:
+        params["universe_symbols"] = ",".join(universe_symbols)
+    return _get_json("/readiness/financials-fill-rate", params, timeout=60)
+
+
+def fetch_readiness_date_coverage(
+    days_back: int = 420, min_symbols: int = 1000
+) -> Dict[str, Any]:
+    """GET /readiness/date-coverage → low coverage dates."""
+    return _get_json(
+        "/readiness/date-coverage",
+        {"days_back": str(days_back), "min_symbols": str(min_symbols)},
+        timeout=60,
+    )
+
+
+def fetch_readiness_financials_by_instrument_type() -> Dict[str, Any]:
+    """GET /readiness/financials-by-instrument-type → counts by report type."""
+    return _get_json("/readiness/financials-by-instrument-type", timeout=45)
+
+
+# ─── Write endpoints ─────────────────────────────────────────────────────────
+
+
+def post_replace_expirations(symbol: str, expirations: List[str]) -> dict[str, Any]:
+    """POST /options/expirations/replace → {"ok": true, "symbol": "...", "replaced": N}"""
+    return _post_json(
+        "/options/expirations/replace",
+        {"symbol": symbol, "expirations": expirations},
+    )
+
+
+# ─── SEPA fundamentals (Plugin) endpoints ────────────────────────────────────
+
+_SEPA_BATCH_SIZE = 100
+
+
+def fetch_sepa_financials(
+    symbols: List[str],
+    report_type: str,
+    *,
+    period_type: Optional[str] = None,
+    limit: int = 20,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """GET /stocks/fundamentals/sepa/financials → {symbol: [rows with raw data]}"""
+    if not symbols:
+        return {}
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for i in range(0, len(symbols), _SEPA_BATCH_SIZE):
+        batch = symbols[i : i + _SEPA_BATCH_SIZE]
+        params: Dict[str, str] = {
+            "symbols": ",".join(batch),
+            "report_type": report_type,
+            "limit": str(limit),
+        }
+        if period_type:
+            params["period_type"] = period_type
+        data = _get_json("/stocks/fundamentals/sepa/financials", params, timeout=45)
+        for sym, rows in (data.get("data") or {}).items():
+            out.setdefault(sym, []).extend(rows)
+    return out
+
+
+def fetch_sepa_income_rows(symbol: str) -> Dict[str, Any]:
+    """GET /stocks/fundamentals/sepa/income-rows → {quarterly: [...], annual: [...]}"""
+    data = _get_json("/stocks/fundamentals/sepa/income-rows", {"symbol": symbol})
+    return {
+        "quarterly": data.get("quarterly", []),
+        "annual": data.get("annual", []),
+    }
+
+
+def fetch_sepa_income_ext(symbols: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """GET /stocks/fundamentals/sepa/income-ext → {symbol: [rows with raw data]}"""
+    if not symbols:
+        return {}
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for i in range(0, len(symbols), _SEPA_BATCH_SIZE):
+        batch = symbols[i : i + _SEPA_BATCH_SIZE]
+        data = _get_json(
+            "/stocks/fundamentals/sepa/income-ext",
+            {"symbols": ",".join(batch)},
+            timeout=45,
+        )
+        for sym, rows in (data.get("data") or {}).items():
+            out.setdefault(sym, []).extend(rows)
+    return out
+
+
+def fetch_sepa_balance_sheet_ext(
+    symbols: List[str],
+    max_quarters: int = 6,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """GET /stocks/fundamentals/sepa/balance-sheet-ext → {symbol: [rows]}"""
+    if not symbols:
+        return {}
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for i in range(0, len(symbols), _SEPA_BATCH_SIZE):
+        batch = symbols[i : i + _SEPA_BATCH_SIZE]
+        data = _get_json(
+            "/stocks/fundamentals/sepa/balance-sheet-ext",
+            {"symbols": ",".join(batch), "max_quarters": str(max_quarters)},
+            timeout=45,
+        )
+        for sym, rows in (data.get("data") or {}).items():
+            out.setdefault(sym, []).extend(rows)
+    return out
+
+
+def fetch_sepa_cash_flow_ext(
+    symbols: List[str],
+    max_quarters: int = 6,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """GET /stocks/fundamentals/sepa/cash-flow-ext → {symbol: [rows]}"""
+    if not symbols:
+        return {}
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for i in range(0, len(symbols), _SEPA_BATCH_SIZE):
+        batch = symbols[i : i + _SEPA_BATCH_SIZE]
+        data = _get_json(
+            "/stocks/fundamentals/sepa/cash-flow-ext",
+            {"symbols": ",".join(batch), "max_quarters": str(max_quarters)},
+            timeout=45,
+        )
+        for sym, rows in (data.get("data") or {}).items():
+            out.setdefault(sym, []).extend(rows)
+    return out
+
+
+def fetch_sepa_ratios_latest(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+    """GET /stocks/fundamentals/sepa/ratios-latest → {symbol: {date, data}}"""
+    if not symbols:
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for i in range(0, len(symbols), _SEPA_BATCH_SIZE):
+        batch = symbols[i : i + _SEPA_BATCH_SIZE]
+        data = _get_json(
+            "/stocks/fundamentals/sepa/ratios-latest",
+            {"symbols": ",".join(batch)},
+            timeout=45,
+        )
+        out.update(data.get("data") or {})
+    return out
+
+
+def fetch_sepa_short_interest_latest(
+    symbols: List[str],
+    max_rows: int = 2,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """GET /stocks/fundamentals/sepa/short-interest-latest → {symbol: [rows]}"""
+    if not symbols:
+        return {}
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for i in range(0, len(symbols), _SEPA_BATCH_SIZE):
+        batch = symbols[i : i + _SEPA_BATCH_SIZE]
+        data = _get_json(
+            "/stocks/fundamentals/sepa/short-interest-latest",
+            {"symbols": ",".join(batch), "max_rows": str(max_rows)},
+            timeout=45,
+        )
+        for sym, rows in (data.get("data") or {}).items():
+            out.setdefault(sym, []).extend(rows)
+    return out
+
+
+def fetch_sepa_short_volume_recent(
+    symbols: List[str],
+    max_days: int = 10,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """GET /stocks/fundamentals/sepa/short-volume-recent → {symbol: [rows]}"""
+    if not symbols:
+        return {}
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for i in range(0, len(symbols), _SEPA_BATCH_SIZE):
+        batch = symbols[i : i + _SEPA_BATCH_SIZE]
+        data = _get_json(
+            "/stocks/fundamentals/sepa/short-volume-recent",
+            {"symbols": ",".join(batch), "max_days": str(max_days)},
+            timeout=45,
+        )
+        for sym, rows in (data.get("data") or {}).items():
+            out.setdefault(sym, []).extend(rows)
+    return out
+
+
+def fetch_sepa_gaps(
+    report_type: str,
+    limit: int = 2000,
+) -> Dict[str, Any]:
+    """GET /stocks/fundamentals/sepa/gaps → {count: N, symbols: [...]}"""
+    data = _get_json(
+        "/stocks/fundamentals/sepa/gaps",
+        {"report_type": report_type, "limit": str(limit)},
+        timeout=60,
+    )
+    return {"count": data.get("count", 0), "symbols": data.get("symbols", [])}

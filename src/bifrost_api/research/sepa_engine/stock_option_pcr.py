@@ -1,4 +1,9 @@
-"""Stock Inspector: put/call ratio trend + option chain rollup by expiry."""
+"""Stock Inspector: put/call ratio trend + option chain rollup by expiry.
+
+Delegates PCR aggregate data to Plugin Market Data API, then computes
+per-expiry chain stats locally from option_snapshot (chain layout still
+requires live snapshot joins not available via Plugin).
+"""
 
 from __future__ import annotations
 
@@ -76,79 +81,6 @@ def _safe_ratio(num: float, den: float) -> Optional[float]:
     return round(num / den, 3)
 
 
-def _snapshot_oi_trend_by_day(cur, sym: str, lb: int) -> Dict[str, Tuple[int, int]]:
-    """Daily put/call OI from chain snapshots when market.option_open_interest is sparse."""
-    try:
-        cur.execute(
-            """
-            WITH snap AS (
-              SELECT DISTINCT ON (oc.option_ticker, DATE(timezone('America/New_York', os.snapshot_ts)))
-                oc.option_right,
-                COALESCE(os.open_interest, 0)::bigint AS open_interest,
-                DATE(timezone('America/New_York', os.snapshot_ts)) AS trade_date
-              FROM market.option_contract oc
-              INNER JOIN market.option_snapshot os
-                ON os.option_ticker = oc.option_ticker
-              WHERE UPPER(TRIM(oc.underlying)) = %s
-                AND os.snapshot_ts >= (CURRENT_DATE - %s::integer)
-              ORDER BY oc.option_ticker,
-                       DATE(timezone('America/New_York', os.snapshot_ts)),
-                       os.snapshot_ts DESC
-            )
-            SELECT trade_date,
-                   SUM(CASE WHEN UPPER(TRIM(option_right)) IN ('P', 'PUT')
-                       THEN open_interest ELSE 0 END)::bigint AS put_oi,
-                   SUM(CASE WHEN UPPER(TRIM(option_right)) IN ('C', 'CALL')
-                       THEN open_interest ELSE 0 END)::bigint AS call_oi
-            FROM snap
-            GROUP BY trade_date
-            ORDER BY trade_date ASC
-            """,
-            (sym, lb),
-        )
-    except Exception as ex:
-        logger.debug("symbol option pcr snapshot OI trend skipped: %s", ex)
-        try:
-            cur.connection.rollback()
-        except Exception:
-            pass
-        return {}
-
-    out: Dict[str, Tuple[int, int]] = {}
-    for row in cur.fetchall() or []:
-        td_key = _serialize_date(row.get("trade_date"))
-        if not td_key:
-            continue
-        out[td_key] = (int(row.get("put_oi") or 0), int(row.get("call_oi") or 0))
-    return out
-
-
-def _merge_oi_trend_points(
-    daily_by_day: Dict[str, Tuple[int, int]],
-    snapshot_by_day: Dict[str, Tuple[int, int]],
-) -> List[Dict[str, Any]]:
-    """Prefer EOD market.option_open_interest; fill gaps from snapshot rollups."""
-    all_dates = sorted(set(daily_by_day) | set(snapshot_by_day))
-    trend: List[Dict[str, Any]] = []
-    for td_key in all_dates:
-        if td_key in daily_by_day:
-            put_oi, call_oi = daily_by_day[td_key]
-        else:
-            put_oi, call_oi = snapshot_by_day[td_key]
-        trend.append(
-            {
-                "trade_date": td_key,
-                "put_oi": put_oi,
-                "call_oi": call_oi,
-                "oi_ratio": _safe_ratio(float(put_oi), float(call_oi)),
-                "put_vol": None,
-                "call_vol": None,
-                "vol_ratio": None,
-            }
-        )
-    return trend
-
-
 def _serialize_date(v: Any) -> Optional[str]:
     if v is None:
         return None
@@ -160,23 +92,91 @@ def _serialize_date(v: Any) -> Optional[str]:
     return s[:10] if len(s) >= 10 else s or None
 
 
+def _fetch_pcr_trend_via_plugin(sym: str, lb: int) -> Tuple[List[Dict[str, Any]], Optional[date], str]:
+    """Fetch OI+volume trend from Plugin /options/analytics/pcr.
+
+    Returns (trend_list, as_of_date, oi_basis).
+    """
+    from bifrost_api.research.market_data_client import fetch_pcr_aggregate
+
+    trend: List[Dict[str, Any]] = []
+    as_of_date: Optional[date] = None
+    oi_basis = "plugin_api"
+
+    # OI PCR
+    try:
+        oi_resp = fetch_pcr_aggregate(sym, pcr_type="oi", lookback_days=lb)
+    except Exception as exc:
+        logger.debug("Plugin PCR oi call failed: %s", exc)
+        oi_resp = {"ok": False}
+
+    oi_by_day: Dict[str, Tuple[int, int]] = {}
+    if oi_resp.get("ok"):
+        for pt in oi_resp.get("trend") or []:
+            td_key = pt.get("trade_date")
+            if not td_key:
+                continue
+            put_val = int(pt.get("put_value") or 0)
+            call_val = int(pt.get("call_value") or 0)
+            oi_by_day[td_key] = (put_val, call_val)
+            try:
+                d = date.fromisoformat(td_key[:10])
+                if as_of_date is None or d > as_of_date:
+                    as_of_date = d
+            except ValueError:
+                pass
+
+    # Volume PCR
+    try:
+        vol_resp = fetch_pcr_aggregate(sym, pcr_type="volume", lookback_days=lb)
+    except Exception as exc:
+        logger.debug("Plugin PCR volume call failed: %s", exc)
+        vol_resp = {"ok": False}
+
+    vol_by_day: Dict[str, Tuple[int, int]] = {}
+    if vol_resp.get("ok"):
+        for pt in vol_resp.get("trend") or []:
+            td_key = pt.get("trade_date")
+            if not td_key:
+                continue
+            put_val = int(pt.get("put_value") or 0)
+            call_val = int(pt.get("call_value") or 0)
+            vol_by_day[td_key] = (put_val, call_val)
+            try:
+                d = date.fromisoformat(td_key[:10])
+                if as_of_date is None or d > as_of_date:
+                    as_of_date = d
+            except ValueError:
+                pass
+
+    # Merge OI + volume into trend points
+    all_dates = sorted(set(oi_by_day) | set(vol_by_day))
+    for td_key in all_dates:
+        put_oi, call_oi = oi_by_day.get(td_key, (0, 0))
+        put_vol, call_vol = vol_by_day.get(td_key, (0, 0))
+        trend.append({
+            "trade_date": td_key,
+            "put_oi": put_oi,
+            "call_oi": call_oi,
+            "oi_ratio": _safe_ratio(float(put_oi), float(call_oi)),
+            "put_vol": put_vol if vol_by_day else None,
+            "call_vol": call_vol if vol_by_day else None,
+            "vol_ratio": _safe_ratio(float(put_vol), float(call_vol)) if vol_by_day else None,
+        })
+
+    return trend, as_of_date, oi_basis
+
+
 def fetch_symbol_option_pcr(
     status_config: dict,
     symbol: str,
     *,
     lookback_days: int = 365,
 ) -> Dict[str, Any]:
-    """Aggregate OI/volume ratios and per-expiry chain stats for Stock Inspector."""
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
+    """Aggregate OI/volume ratios and per-expiry chain stats for Stock Inspector.
 
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    if not status_config or (
-        status_config.get("sink") != "postgres" and not status_config.get("postgres")
-    ):
-        return {"ok": False, "error": "PostgreSQL not configured"}
-
+    All data fetched from Plugin API — no direct market.* SQL.
+    """
     sym = (symbol or "").strip().upper()
     if not sym:
         return {"ok": False, "error": "symbol is required"}
@@ -184,308 +184,107 @@ def fetch_symbol_option_pcr(
     lb = max(30, min(int(lookback_days), 400))
     today = date.today()
 
+    # Fetch PCR trend from Plugin API
+    trend, as_of_date, oi_basis = _fetch_pcr_trend_via_plugin(sym, lb)
+
+    chain_rows: List[Dict[str, Any]] = []
+    chain_basis: Optional[str] = None
+
     try:
-        params = _get_conn_params(status_config)
-        conn = psycopg2.connect(**params)
-        try:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SET statement_timeout = 30000")
+        from bifrost_api.research.market_data_client import fetch_chain_by_expiry
 
-                trend: List[Dict[str, Any]] = []
-                as_of_date: Optional[date] = None
-                oi_basis = "market.option_open_interest"
-                daily_oi_by_day: Dict[str, Tuple[int, int]] = {}
+        fallback_str = as_of_date.isoformat() if as_of_date else None
+        resp = fetch_chain_by_expiry(sym, fallback_date=fallback_str)
+        raw_chain = resp.get("chain") or []
+        chain_basis = resp.get("basis")
 
-                cur.execute(
-                    """
-                    SELECT trade_date::date AS trade_date,
-                           SUM(CASE WHEN UPPER(TRIM(option_right)) IN ('P', 'PUT')
-                               THEN COALESCE(open_interest, 0) ELSE 0 END)::bigint AS put_oi,
-                           SUM(CASE WHEN UPPER(TRIM(option_right)) IN ('C', 'CALL')
-                               THEN COALESCE(open_interest, 0) ELSE 0 END)::bigint AS call_oi
-                    FROM market.option_open_interest
-                    WHERE underlying = %s
-                      AND trade_date >= (
-                        SELECT COALESCE(MAX(trade_date), CURRENT_DATE) - %s::integer
-                        FROM market.option_open_interest
-                        WHERE underlying = %s
-                      )
-                    GROUP BY trade_date
-                    ORDER BY trade_date ASC
-                    """,
-                    (sym, lb, sym),
-                )
-                for row in cur.fetchall() or []:
-                    td = row.get("trade_date")
-                    if td is None:
-                        continue
-                    td_key = _serialize_date(td)
-                    if not td_key:
-                        continue
-                    put_oi = int(row.get("put_oi") or 0)
-                    call_oi = int(row.get("call_oi") or 0)
-                    daily_oi_by_day[td_key] = (put_oi, call_oi)
-                    if as_of_date is None or (isinstance(td, date) and td > as_of_date):
-                        as_of_date = td if isinstance(td, date) else as_of_date
+        snapshot_as_of: Optional[date] = None
+        max_put_oi = max_put_vol = max_call_oi = max_call_vol = max_total_oi = max_total_vol = 1
+        for r in raw_chain:
+            max_put_oi = max(max_put_oi, int(r.get("put_oi") or 0))
+            max_call_oi = max(max_call_oi, int(r.get("call_oi") or 0))
+            max_put_vol = max(max_put_vol, int(r.get("put_vol") or 0))
+            max_call_vol = max(max_call_vol, int(r.get("call_vol") or 0))
+            tot_oi = int(r.get("put_oi") or 0) + int(r.get("call_oi") or 0)
+            tot_vol = int(r.get("put_vol") or 0) + int(r.get("call_vol") or 0)
+            max_total_oi = max(max_total_oi, tot_oi)
+            max_total_vol = max(max_total_vol, tot_vol)
 
-                snapshot_oi_by_day = _snapshot_oi_trend_by_day(cur, sym, lb)
-                if snapshot_oi_by_day:
-                    if daily_oi_by_day and len(snapshot_oi_by_day) > len(daily_oi_by_day):
-                        oi_basis = "market.option_open_interest+option_snapshots"
-                    elif not daily_oi_by_day:
-                        oi_basis = "option_snapshots"
-                    for td_key, (_, _) in snapshot_oi_by_day.items():
-                        try:
-                            td_d = date.fromisoformat(td_key[:10])
-                            if as_of_date is None or td_d > as_of_date:
-                                as_of_date = td_d
-                        except ValueError:
-                            pass
-
-                trend = _merge_oi_trend_points(daily_oi_by_day, snapshot_oi_by_day)
-
-                vol_by_day: Dict[str, Tuple[int, int]] = {}
+        parsed_chain: List[Dict[str, Any]] = []
+        for r in raw_chain:
+            exp = r.get("expiry")
+            exp_d = _parse_expiry_date(exp)
+            if exp_d is None:
+                continue
+            dte = (exp_d - today).days
+            put_oi = int(r.get("put_oi") or 0)
+            call_oi = int(r.get("call_oi") or 0)
+            put_vol = int(r.get("put_vol") or 0)
+            call_vol = int(r.get("call_vol") or 0)
+            total_oi = put_oi + call_oi
+            total_vol = put_vol + call_vol
+            snap_day = r.get("snap_day")
+            if snap_day:
                 try:
-                    cur.execute(
-                        """
-                        WITH snap AS (
-                          SELECT DISTINCT ON (oc.option_ticker, DATE(timezone('America/New_York', os.snapshot_ts)))
-                            oc.option_right,
-                            COALESCE(os.day_volume, 0)::bigint AS day_volume,
-                            DATE(timezone('America/New_York', os.snapshot_ts)) AS trade_date
-                          FROM market.option_contract oc
-                          INNER JOIN market.option_snapshot os
-                            ON os.option_ticker = oc.option_ticker
-                          WHERE UPPER(TRIM(oc.underlying)) = %s
-                            AND os.snapshot_ts >= (CURRENT_DATE - %s::integer)
-                          ORDER BY oc.option_ticker,
-                                   DATE(timezone('America/New_York', os.snapshot_ts)),
-                                   os.snapshot_ts DESC
-                        )
-                        SELECT trade_date,
-                               SUM(CASE WHEN UPPER(TRIM(option_right)) IN ('P', 'PUT')
-                                   THEN day_volume ELSE 0 END)::bigint AS put_vol,
-                               SUM(CASE WHEN UPPER(TRIM(option_right)) IN ('C', 'CALL')
-                                   THEN day_volume ELSE 0 END)::bigint AS call_vol
-                        FROM snap
-                        GROUP BY trade_date
-                        ORDER BY trade_date ASC
-                        """,
-                        (sym, lb),
-                    )
-                except Exception as ex:
-                    logger.debug("symbol option pcr vol trend skipped: %s", ex)
-                    try:
-                        cur.connection.rollback()
-                    except Exception:
-                        pass
-                    cur.execute("SELECT 1 WHERE FALSE")
+                    sd = date.fromisoformat(str(snap_day)[:10])
+                    if snapshot_as_of is None or sd > snapshot_as_of:
+                        snapshot_as_of = sd
+                except (ValueError, TypeError):
+                    pass
+            parsed_chain.append({
+                "expiry": _serialize_date(exp) or str(exp or ""),
+                "expiry_date": exp_d,
+                "expiration_label": _format_expiry_label(exp) + _expiry_suffix(exp, today),
+                "dte": dte,
+                "put_vol": put_vol,
+                "call_vol": call_vol,
+                "total_vol": total_vol,
+                "pc_vol": _safe_ratio(float(put_vol), float(call_vol)),
+                "put_oi": put_oi,
+                "call_oi": call_oi,
+                "total_oi": total_oi,
+                "pc_oi": _safe_ratio(float(put_oi), float(call_oi)),
+            })
 
-                for row in cur.fetchall() or []:
-                    td_key = _serialize_date(row.get("trade_date"))
-                    if not td_key:
-                        continue
-                    put_v = int(row.get("put_vol") or 0)
-                    call_v = int(row.get("call_vol") or 0)
-                    vol_by_day[td_key] = (put_v, call_v)
+        parsed_chain = [
+            row for row in parsed_chain
+            if row["total_oi"] > 0 or row["total_vol"] > 0 or row["dte"] >= -14
+        ]
+        parsed_chain.sort(key=lambda row: row["expiry_date"])
 
-                if vol_by_day:
-                    trend_by_date = {t["trade_date"]: t for t in trend if t.get("trade_date")}
-                    for td_key, (put_v, call_v) in vol_by_day.items():
-                        if td_key in trend_by_date:
-                            pt = trend_by_date[td_key]
-                            pt["put_vol"] = put_v
-                            pt["call_vol"] = call_v
-                            pt["vol_ratio"] = _safe_ratio(float(put_v), float(call_v))
-                        else:
-                            trend.append(
-                                {
-                                    "trade_date": td_key,
-                                    "put_oi": 0,
-                                    "call_oi": 0,
-                                    "oi_ratio": None,
-                                    "put_vol": put_v,
-                                    "call_vol": call_v,
-                                    "vol_ratio": _safe_ratio(float(put_v), float(call_v)),
-                                }
-                            )
-                    trend.sort(key=lambda x: x.get("trade_date") or "")
+        for r in parsed_chain:
+            put_vol = r["put_vol"]
+            call_vol = r["call_vol"]
+            put_oi = r["put_oi"]
+            call_oi = r["call_oi"]
+            total_oi = r["total_oi"]
+            total_vol = r["total_vol"]
+            chain_rows.append({
+                "expiry": r["expiry"],
+                "expiration_label": r["expiration_label"],
+                "dte": r["dte"],
+                "put_vol": put_vol,
+                "call_vol": call_vol,
+                "total_vol": total_vol,
+                "pc_vol": r["pc_vol"],
+                "put_oi": put_oi,
+                "call_oi": call_oi,
+                "total_oi": total_oi,
+                "pc_oi": r["pc_oi"],
+                "bar_put_vol_pct": round(put_vol / max_put_vol * 100, 1) if max_put_vol else 0,
+                "bar_call_vol_pct": round(call_vol / max_call_vol * 100, 1) if max_call_vol else 0,
+                "bar_total_vol_pct": round(total_vol / max_total_vol * 100, 1) if max_total_vol else 0,
+                "bar_put_oi_pct": round(put_oi / max_put_oi * 100, 1) if max_put_oi else 0,
+                "bar_call_oi_pct": round(call_oi / max_call_oi * 100, 1) if max_call_oi else 0,
+                "bar_total_oi_pct": round(total_oi / max_total_oi * 100, 1) if max_total_oi else 0,
+            })
 
-                chain_rows: List[Dict[str, Any]] = []
-                snapshot_as_of: Optional[date] = None
-                chain_basis: Optional[str] = "option_snapshots_latest"
+        if snapshot_as_of and (as_of_date is None or snapshot_as_of > as_of_date):
+            as_of_date = snapshot_as_of
+            oi_basis = chain_basis or oi_basis
 
-                try:
-                    cur.execute(
-                        """
-                        SELECT 1 FROM information_schema.views
-                        WHERE table_schema = 'market' AND table_name = 'v_option_chain_latest'
-                        LIMIT 1
-                        """
-                    )
-                    use_mv = bool(cur.fetchone())
-                except Exception:
-                    use_mv = False
-
-                chain_sql_mv = """
-                    SELECT oc.expiry,
-                           MAX(DATE(timezone('America/New_York', os.snapshot_ts))) AS snap_day,
-                           SUM(CASE WHEN UPPER(TRIM(oc.option_right)) IN ('P', 'PUT')
-                               THEN COALESCE(os.open_interest, 0) ELSE 0 END)::bigint AS put_oi,
-                           SUM(CASE WHEN UPPER(TRIM(oc.option_right)) IN ('C', 'CALL')
-                               THEN COALESCE(os.open_interest, 0) ELSE 0 END)::bigint AS call_oi,
-                           SUM(CASE WHEN UPPER(TRIM(oc.option_right)) IN ('P', 'PUT')
-                               THEN COALESCE(os.day_volume, 0) ELSE 0 END)::bigint AS put_vol,
-                           SUM(CASE WHEN UPPER(TRIM(oc.option_right)) IN ('C', 'CALL')
-                               THEN COALESCE(os.day_volume, 0) ELSE 0 END)::bigint AS call_vol
-                    FROM market.option_contract oc
-                    LEFT JOIN market.v_option_chain_latest os
-                      ON os.option_ticker = oc.option_ticker
-                    WHERE UPPER(TRIM(oc.underlying)) = %s
-                    GROUP BY oc.expiry
-                    ORDER BY oc.expiry ASC
-                """
-                chain_sql_snap = """
-                    SELECT oc.expiry,
-                           MAX(DATE(timezone('America/New_York', os.snapshot_ts))) AS snap_day,
-                           SUM(CASE WHEN UPPER(TRIM(oc.option_right)) IN ('P', 'PUT')
-                               THEN COALESCE(os.open_interest, 0) ELSE 0 END)::bigint AS put_oi,
-                           SUM(CASE WHEN UPPER(TRIM(oc.option_right)) IN ('C', 'CALL')
-                               THEN COALESCE(os.open_interest, 0) ELSE 0 END)::bigint AS call_oi,
-                           SUM(CASE WHEN UPPER(TRIM(oc.option_right)) IN ('P', 'PUT')
-                               THEN COALESCE(os.day_volume, 0) ELSE 0 END)::bigint AS put_vol,
-                           SUM(CASE WHEN UPPER(TRIM(oc.option_right)) IN ('C', 'CALL')
-                               THEN COALESCE(os.day_volume, 0) ELSE 0 END)::bigint AS call_vol
-                    FROM market.option_contract oc
-                    LEFT JOIN LATERAL (
-                      SELECT open_interest, day_volume, snapshot_ts
-                      FROM market.option_snapshot s
-                      WHERE s.option_ticker = oc.option_ticker
-                      ORDER BY s.snapshot_ts DESC
-                      LIMIT 1
-                    ) os ON TRUE
-                    WHERE UPPER(TRIM(oc.underlying)) = %s
-                    GROUP BY oc.expiry
-                    ORDER BY oc.expiry ASC
-                """
-                if use_mv:
-                    cur.execute(chain_sql_mv, (sym,))
-                else:
-                    chain_basis = "option_snapshots"
-                    cur.execute(chain_sql_snap, (sym,))
-
-                raw_chain = cur.fetchall() or []
-                if not raw_chain and as_of_date is not None:
-                    chain_basis = "market.option_open_interest"
-                    cur.execute(
-                        """
-                        SELECT expiry,
-                               SUM(CASE WHEN UPPER(TRIM(option_right)) IN ('P', 'PUT')
-                                   THEN COALESCE(open_interest, 0) ELSE 0 END)::bigint AS put_oi,
-                               SUM(CASE WHEN UPPER(TRIM(option_right)) IN ('C', 'CALL')
-                                   THEN COALESCE(open_interest, 0) ELSE 0 END)::bigint AS call_oi
-                        FROM market.option_open_interest
-                        WHERE underlying = %s AND trade_date = %s
-                        GROUP BY expiry
-                        ORDER BY expiry ASC
-                        """,
-                        (sym, as_of_date),
-                    )
-                    raw_chain = [
-                        {**dict(r), "put_vol": 0, "call_vol": 0, "snap_day": as_of_date}
-                        for r in (cur.fetchall() or [])
-                    ]
-
-                max_put_oi = max_put_vol = max_call_oi = max_call_vol = max_total_oi = max_total_vol = 1
-                for r in raw_chain:
-                    max_put_oi = max(max_put_oi, int(r.get("put_oi") or 0))
-                    max_call_oi = max(max_call_oi, int(r.get("call_oi") or 0))
-                    max_put_vol = max(max_put_vol, int(r.get("put_vol") or 0))
-                    max_call_vol = max(max_call_vol, int(r.get("call_vol") or 0))
-                    tot_oi = int(r.get("put_oi") or 0) + int(r.get("call_oi") or 0)
-                    tot_vol = int(r.get("put_vol") or 0) + int(r.get("call_vol") or 0)
-                    max_total_oi = max(max_total_oi, tot_oi)
-                    max_total_vol = max(max_total_vol, tot_vol)
-
-                parsed_chain: List[Dict[str, Any]] = []
-                for r in raw_chain:
-                    exp = r.get("expiry")
-                    exp_d = _parse_expiry_date(exp)
-                    if exp_d is None:
-                        continue
-                    dte = (exp_d - today).days
-                    put_oi = int(r.get("put_oi") or 0)
-                    call_oi = int(r.get("call_oi") or 0)
-                    put_vol = int(r.get("put_vol") or 0)
-                    call_vol = int(r.get("call_vol") or 0)
-                    total_oi = put_oi + call_oi
-                    total_vol = put_vol + call_vol
-                    snap_day = r.get("snap_day")
-                    if snap_day and (snapshot_as_of is None or snap_day > snapshot_as_of):
-                        snapshot_as_of = snap_day if isinstance(snap_day, date) else snapshot_as_of
-                    parsed_chain.append(
-                        {
-                            "expiry": _serialize_date(exp) or str(exp or ""),
-                            "expiry_date": exp_d,
-                            "expiration_label": _format_expiry_label(exp) + _expiry_suffix(exp, today),
-                            "dte": dte,
-                            "put_vol": put_vol,
-                            "call_vol": call_vol,
-                            "total_vol": total_vol,
-                            "pc_vol": _safe_ratio(float(put_vol), float(call_vol)),
-                            "put_oi": put_oi,
-                            "call_oi": call_oi,
-                            "total_oi": total_oi,
-                            "pc_oi": _safe_ratio(float(put_oi), float(call_oi)),
-                        }
-                    )
-
-                # Same scope as mockup: all listed expiries with activity, incl. recently expired (DTE < 0).
-                parsed_chain = [
-                    row
-                    for row in parsed_chain
-                    if row["total_oi"] > 0 or row["total_vol"] > 0 or row["dte"] >= -14
-                ]
-                parsed_chain.sort(key=lambda row: row["expiry_date"])
-
-                for r in parsed_chain:
-                    put_vol = r["put_vol"]
-                    call_vol = r["call_vol"]
-                    put_oi = r["put_oi"]
-                    call_oi = r["call_oi"]
-                    total_oi = r["total_oi"]
-                    total_vol = r["total_vol"]
-                    chain_rows.append(
-                        {
-                            "expiry": r["expiry"],
-                            "expiration_label": r["expiration_label"],
-                            "dte": r["dte"],
-                            "put_vol": put_vol,
-                            "call_vol": call_vol,
-                            "total_vol": total_vol,
-                            "pc_vol": r["pc_vol"],
-                            "put_oi": put_oi,
-                            "call_oi": call_oi,
-                            "total_oi": total_oi,
-                            "pc_oi": r["pc_oi"],
-                            "bar_put_vol_pct": round(put_vol / max_put_vol * 100, 1) if max_put_vol else 0,
-                            "bar_call_vol_pct": round(call_vol / max_call_vol * 100, 1) if max_call_vol else 0,
-                            "bar_total_vol_pct": round(total_vol / max_total_vol * 100, 1) if max_total_vol else 0,
-                            "bar_put_oi_pct": round(put_oi / max_put_oi * 100, 1) if max_put_oi else 0,
-                            "bar_call_oi_pct": round(call_oi / max_call_oi * 100, 1) if max_call_oi else 0,
-                            "bar_total_oi_pct": round(total_oi / max_total_oi * 100, 1) if max_total_oi else 0,
-                        }
-                    )
-
-                if snapshot_as_of and (as_of_date is None or snapshot_as_of > as_of_date):
-                    as_of_date = snapshot_as_of
-                    oi_basis = chain_basis
-
-        finally:
-            conn.close()
     except Exception as e:
-        logger.warning("fetch_symbol_option_pcr failed: %s", e)
-        return {"ok": False, "error": str(e)}
+        logger.warning("fetch_symbol_option_pcr chain query failed: %s", e)
 
     if as_of_date is None and trend:
         last_td = trend[-1].get("trade_date")

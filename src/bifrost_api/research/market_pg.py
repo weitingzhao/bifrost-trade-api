@@ -15,7 +15,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import psycopg2
-from psycopg2 import ProgrammingError
 from psycopg2.extras import RealDictCursor
 
 from bifrost_core.persistence.postgres.connection import _get_conn_params
@@ -524,44 +523,22 @@ def replace_option_expiration_cache(
     expirations: List[str],
     source: str = "massive",
 ) -> None:
-    """Replace full expiration list for a symbol in market.option_expiration.
+    """Replace full expiration list for a symbol via Plugin API.
 
-    ``source`` is accepted for API compatibility but ignored (no source column).
+    ``status_config`` and ``source`` are accepted for API compatibility but
+    ignored — the write is delegated to the market-data plugin HTTP endpoint.
     """
-    _ = source
+    _ = (status_config, source)
     sym = (symbol or "").strip().upper()
-    if not sym or not status_config:
+    if not sym:
         return
     if not expirations:
         return
+    iso_dates = [d for d in (_expiry_to_date_param(str(raw)) for raw in expirations) if d]
+    if not iso_dates:
+        return
     try:
-        params = _get_conn_params(status_config)
-        conn = psycopg2.connect(**params)
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "DELETE FROM market.option_expiration WHERE underlying = %s",
-                    (sym,),
-                )
-                for raw in expirations:
-                    exp_d = _expiry_to_date_param(str(raw))
-                    if not exp_d:
-                        continue
-                    cur.execute(
-                        """
-                        INSERT INTO market.option_expiration (underlying, expiry, updated_at)
-                        VALUES (%s, %s::date, now())
-                        ON CONFLICT (underlying, expiry) DO UPDATE SET updated_at = now()
-                        """,
-                        (sym, exp_d),
-                    )
-            conn.commit()
-        finally:
-            conn.close()
-    except ProgrammingError as e:
-        if getattr(e, "pgcode", None) == "42P01":
-            return
-        logger.warning("replace_option_expiration_cache failed: %s", e)
+        market_data_client.post_replace_expirations(sym, iso_dates)
     except Exception as e:
         logger.warning("replace_option_expiration_cache failed: %s", e)
 
