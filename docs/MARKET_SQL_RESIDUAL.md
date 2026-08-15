@@ -48,6 +48,14 @@ All `market.*` direct SQL has been migrated to Plugin API HTTP calls across thre
 | `bifrost_prod` | `market`, `market_analytics`, `data_ops` schemas DROPPED | 2026-08-14 |
 | `bifrost_dev` | `market`, `market_analytics`, `data_ops` schemas DROPPED | 2026-08-14 |
 
+### PLUGIN_URL hygiene (market-data-gs-closeout P4)
+
+`MARKET_DATA_PLUGIN_URL` is set on Trade writers/readers that call Plugin: `api-monitor`, `api-market`, `api-research`, `daemon`, `celery-worker`, `celery-worker-stocks-ib`.
+
+**Skip (no market.* SQL / Plugin client):** `api-docs`, `api-ops`, `api-trading`, `api-strategy`, `api-portfolio`, `api-massive`. Documented in `k8s/base/apis/manifest.yaml`. Celery `*-massive` stay replicas 0.
+
+Write-path operator token (P6): Trade writers send `Authorization: Bearer $MARKET_DATA_WRITE_TOKEN` when that env (or `PLATFORM_OPERATOR_TOKEN`) is set. Plugin enforces only when the token is armed in `market-data-secrets` / Trade secrets.
+
 ### DDL legacy views (remediated 2026-08-14)
 
 `v_us_equity_universe` and `v_sepa_symbol_price_readiness` are now **thin views** over Plugin-synced tables `public.us_equity_universe` and `public.sepa_symbol_price_readiness` (see `universe_sync.py`). The old `to_regclass('market.*')` guards are gone.

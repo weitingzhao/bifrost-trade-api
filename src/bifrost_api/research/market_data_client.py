@@ -41,11 +41,19 @@ def _get_json(path: str, params: dict[str, str] | None = None, timeout: int = 30
 
 
 def _post_json(path: str, body: dict[str, Any], timeout: int = 30) -> dict[str, Any]:
-    """POST JSON to Plugin API."""
+    """POST JSON to Plugin API (sends operator token when MARKET_DATA_WRITE_TOKEN is set)."""
     base = _plugin_base_url()
     url = f"{base}{path}"
     data = json.dumps(body).encode()
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    token = (
+        os.environ.get("MARKET_DATA_WRITE_TOKEN", "").strip()
+        or os.environ.get("PLUGIN_OPERATOR_TOKEN", "").strip()
+        or os.environ.get("PLATFORM_OPERATOR_TOKEN", "").strip()
+    )
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read())
 

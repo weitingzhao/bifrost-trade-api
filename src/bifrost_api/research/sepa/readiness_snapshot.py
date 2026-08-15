@@ -147,7 +147,7 @@ READINESS_DATA_CATALOG: Dict[str, Any] = {
             "id": "ticker_overview",
             "object": "public.ticker_overview",
             "role": "Per-ticker detail joined to tickers (sector, list_date, …).",
-            "typical_ingest": "Celery kind feed_stocks_tickers_overview",
+            "typical_ingest": "Plugin ticker ingest (POST /market/reference/ticker/upsert-overview)",
             "data_points": [
                 "tickers_id (FK)",
                 "sector",
@@ -164,7 +164,7 @@ READINESS_DATA_CATALOG: Dict[str, Any] = {
             "id": "stock_day",
             "object": "market.stock_daily",
             "role": "Daily OHLCV bars; SEPA Phase1/CRS read source=massive.",
-            "typical_ingest": "Celery kind feed_stocks_aggregate (and related)",
+            "typical_ingest": "Plugin ingest kind stock_daily_grouped (Polygon grouped daily → market.stock_daily)",
             "data_points": [
                 "symbol",
                 "bar_time",
