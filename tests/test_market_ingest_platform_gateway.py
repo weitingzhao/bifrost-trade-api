@@ -79,21 +79,49 @@ def test_platform_gateway_uses_ib_redis_not_live_redis() -> None:
 def test_polygon_ws_policy_off_when_ws_disabled() -> None:
     cfg = {"massive": {"tier": "developer", "features": {"ws_enabled": False}}}
     assert massive_ws_policy_disabled(cfg) is True
-    for sid in ("polygon_ws", "massive_ws"):
-        out = derive_ingest_display_state(
-            service_id=sid,
-            process_active="inactive",
-            config=cfg,
-            redis_url="redis://live/0",
-            ib_redis_url=None,
-            meta_key="bifrost:health:ws_massive_option",
-            runtime_externally_managed=False,
-            platform_gateway_managed=False,
-            ops_control_profile="stg",
-            runtime_kind="kubernetes",
-        )
-        assert out["runtime_status"] == "policy-off"
-        assert "REST-only" in out["display_active"]
+    out = derive_ingest_display_state(
+        service_id="polygon_ws",
+        process_active="inactive",
+        config=cfg,
+        redis_url="redis://live/0",
+        ib_redis_url=None,
+        meta_key="bifrost:health:ws_massive_option",
+        runtime_externally_managed=False,
+        platform_gateway_managed=False,
+        ops_control_profile="stg",
+        runtime_kind="kubernetes",
+    )
+    assert out["runtime_status"] == "policy-off"
+    assert "REST-only" in out["display_active"]
+
+
+def test_yaml_massive_ws_id_normalizes_to_polygon_ws() -> None:
+    from bifrost_api.ops.market_ingest_config import (
+        canonical_ingest_service_id,
+        is_polygon_ws_service_id,
+        market_ingest_services_from_config,
+    )
+
+    assert canonical_ingest_service_id("massive_ws") == "polygon_ws"
+    assert is_polygon_ws_service_id("massive_ws") is True
+    assert is_polygon_ws_service_id("polygon_ws") is True
+    rows = market_ingest_services_from_config(
+        {
+            "ops": {
+                "market_ingest_services": [
+                    {
+                        "id": "massive_ws",
+                        "label": "Legacy YAML id",
+                        "systemd_unit": "bifrost-massive-ws.service",
+                        "redis_meta_key": "bifrost:health:ws_massive_option",
+                    },
+                ],
+            },
+        },
+    )
+    ids = [r["id"] for r in rows]
+    assert "polygon_ws" in ids
+    assert "massive_ws" not in ids
 
 
 def test_default_services_use_official_polygon_ws_id() -> None:

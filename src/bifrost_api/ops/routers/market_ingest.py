@@ -51,7 +51,6 @@ _RECENT_CONTROL_WRITE_GRACE_SEC = 120.0
 
 _STG_K8S_SOCKET_INGEST_IDS = frozenset({
     "polygon_ws",
-    "massive_ws",  # dual-accept legacy id
     "ib_ingestor",
     "ib_operator",
     "ib_account_agent",

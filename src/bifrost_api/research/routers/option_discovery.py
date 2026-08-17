@@ -42,7 +42,7 @@ MAX_OPTION_SNAPSHOT_CONTRACTS_EXTENDED = 60  # when frontend sends many strikes 
 
 
 def _mark_from_snapshot_row(row: Dict[str, Any]) -> Optional[float]:
-    """Option mark from Massive chain day aggregate (day_close). NBBO/last are not persisted at current tier."""
+    """Option mark from Polygon chain day aggregate (day_close). NBBO/last are not persisted at current tier."""
     day_close = row.get("day_close")
     if day_close is not None:
         try:
@@ -181,22 +181,23 @@ async def get_option_expirations(
     symbol: str = Query(..., description="Underlying symbol (e.g. NVDA)"),
     provider: str = Query(
         "auto",
-        description="massive: REST only; ib: IB only; auto: Massive if key + data, else IB",
+        description="massive: Polygon/Plugin REST only (legacy provider id); ib: IB only; "
+        "auto: Polygon if key + data, else IB",
     ),
     debug: bool = Query(
         False,
-        description="If true and provider uses Massive REST, include redacted request URLs, "
+        description="If true and provider uses Polygon REST, include redacted request URLs, "
         "per-page JSON responses, and a sample of contract objects (no DB writes).",
     ),
     expiration: Optional[str] = Query(
         None,
-        description="When set with Massive provider, restrict contracts to this single expiration "
-        "(YYYY-MM-DD or YYYYMMDD). Reduces pagination and returns strikes for that expiry only. "
-        "Ignored when provider=ib.",
+        description="When set with provider=massive (Polygon), restrict contracts to this single "
+        "expiration (YYYY-MM-DD or YYYYMMDD). Reduces pagination and returns strikes for that "
+        "expiry only. Ignored when provider=ib.",
     ),
 ) -> Any:
-    """R-OD1: Expirations and strikes from IB and/or Massive REST (PostgreSQL cache first)."""
-    from bifrost_api.research.polygon_http import get_expiration_cache_settings, get_massive_settings
+    """R-OD1: Expirations and strikes from IB and/or Polygon REST (PostgreSQL cache first)."""
+    from bifrost_api.research.polygon_http import get_expiration_cache_settings, get_polygon_settings
     from bifrost_api.research.market_pg import (
         get_option_expiration_cache_snapshot,
         get_option_expirations_from_contracts_db,
@@ -225,7 +226,7 @@ async def get_option_expirations(
         return _option_expirations_cache_response(out)
 
     db = _db_config(request)
-    ms = get_massive_settings(config)
+    ms = get_polygon_settings(config)
     ecfg = get_expiration_cache_settings(config)
     ttl_sec = _ttl_sec_expiration_cache(config)
 
@@ -309,7 +310,7 @@ async def get_option_expirations(
     if prov == "massive":
         return await _massive_db_first_flow()
 
-    # auto: Massive-first (DB + REST) when configured and data present, else IB
+    # auto: Polygon-first (DB + REST) when configured and data present, else IB
     if ms["api_key"]:
         resp = await _massive_db_first_flow()
         try:
@@ -338,7 +339,7 @@ def get_option_snapshots_pg(
     ),
     source: str = Query("massive", description="Snapshot source column: massive | ib"),
 ) -> Any:
-    """Latest option_snapshots rows from PostgreSQL (Massive sync or IB sink)."""
+    """Latest option_snapshots rows from PostgreSQL (Polygon/Plugin sync or IB sink)."""
     from bifrost_api.research.polygon_http import contract_key_from_parts
     from bifrost_api.research.market_pg import get_option_snapshots_latest
 
@@ -465,7 +466,7 @@ def get_option_snapshots_pg(
     if not out_rows and keys:
         out["warning"] = (
             "No rows in option_snapshots for the requested contract keys. "
-            "Run Load quotes again after a successful Massive chain snapshot, or verify expiry/strikes match the chain."
+            "Run Load quotes again after a successful Polygon chain snapshot, or verify expiry/strikes match the chain."
         )
     try:
         import redis
@@ -726,12 +727,12 @@ def get_research_option_trades(
     symbol: str = Query(...),
     limit: int = Query(100, ge=1, le=500),
 ) -> Any:
-    from bifrost_api.research.polygon_http import get_massive_settings
+    from bifrost_api.research.polygon_http import get_polygon_settings
     from bifrost_api.research.market_pg import get_option_trades
 
     reader = getattr(request.app.state, "reader", None)
     cfg = reader._config if reader else {}
-    ms = get_massive_settings(cfg)
+    ms = get_polygon_settings(cfg)
     if not ms["trades_enabled"]:
         return JSONResponse(
             status_code=403,

@@ -1,6 +1,7 @@
-"""Redis keys for Massive reference-data cache (page/API hot reads).
+"""Redis keys for Polygon reference-data cache (page/API hot reads).
 
-Namespace mirrors IB ingestor style: data under ``massive:ingestor:cache:*``;
+Namespace mirrors IB ingestor style: data under ``massive:ingestor:cache:*``
+(Redis prefix ``massive:`` is a permanent wire contract);
 do not mix with ``massive:channel`` / ``massive:meta:*`` (realtime).
 """
 

@@ -164,20 +164,17 @@ def _hash_looks_connected(m: Dict[str, str], sid: str) -> bool:
     return False
 
 
-_PLUGIN_MANAGED_IDS = frozenset({"polygon_ws", "massive_ws"})
-
-
 def clear_ingest_health_after_stop(redis_url: str, meta_key: str, service_id: str) -> None:
     """HSET disconnected snapshot on the ingest health hash (does not delete the key).
 
-    Plugin-managed services (polygon_ws / legacy massive_ws) are not cleared by Trade Ops —
+    Plugin-managed services (polygon_ws) are not cleared by Trade Ops —
     the Plugin process owns the health hash lifecycle on redis-massive.
     """
     key = (meta_key or "").strip()
     if not key:
         return
     sid = (service_id or "").strip()
-    if sid in _PLUGIN_MANAGED_IDS:
+    if is_polygon_ws_service_id(sid):
         logger.info(
             "clear_ingest_health_after_stop: skipping %s — Plugin-managed service", sid
         )

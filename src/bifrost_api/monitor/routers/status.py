@@ -151,9 +151,8 @@ def _status_error_payload() -> Dict[str, Any]:
         ),
         "market_data": {"quotes_redis_reader_ok": False},
         "socket": {
-            # Owner gate before dropping socket.massive (Wave C dual-write).
+            # legacy socket.massive removed — official key only.
             "polygon_ws": None,
-            "massive": None,
             "ib_ingestor": None,
             "ib_account_agent": None,
             "ib_operator": None,
@@ -264,10 +263,8 @@ def _assemble_status_v3(
         ),
         "market_data": {"quotes_redis_reader_ok": quotes_redis_reader_ok},
         "socket": {
-            # Official key; same payload as massive during Wave C dual-write.
+            # Official key only (legacy socket.massive removed).
             "polygon_ws": massive,
-            # Owner gate before dropping socket.massive.
-            "massive": massive,
             "ib_ingestor": ib_ingestor,
             "ib_account_agent": ib_account_agent,
             "ib_operator": monitor_ib_status,
@@ -519,7 +516,7 @@ def get_status(request: Request) -> Dict[str, Any]:
                 detect_ib_transport,
                 is_platform_ib_gateway_health,
             )
-            from bifrost_api.research.polygon_http import get_massive_settings
+            from bifrost_api.research.polygon_http import get_polygon_settings
             from bifrost_core.monitor.redis_url import ib_redis_url_from_config, redis_url_from_config
             import redis as redis_mod
 
@@ -527,14 +524,15 @@ def get_status(request: Request) -> Dict[str, Any]:
             _probe_stale_mult = float(_ib_eff_status.get("ib_probe_stale_multiplier") or 2.5)
             _status_now = time.time()
 
-            _ms = get_massive_settings(reader._config)
+            _ms = get_polygon_settings(reader._config)
+            # Internal builder for socket.polygon_ws (Trade Celery Massive queue retired P7).
             massive_info: Dict[str, Any] = {
                 "configured": bool(_ms.get("api_key")),
                 "tier": _ms.get("tier"),
                 "pending_jobs": 0,
                 "last_snapshot_age_s": None,
                 "retired": True,
-                "note": "Massive job queue retired — use market-data plugin",
+                "note": "Trade Massive job queue retired — use market-data plugin",
             }
             _rurl = redis_url_from_config(reader._config)
             _ib_rurl = ib_redis_url_from_config(reader._config)

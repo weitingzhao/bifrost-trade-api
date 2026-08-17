@@ -6,8 +6,9 @@ Ops lease + ``engine_ops_active``, same exclusivity rules as Socket rows in
 ``bifrost:health:daemon_account_sync`` by default for the same Ops lease fields on that hash.
 YAML may omit ``redis_meta_key`` for either id and the default meta key is applied.
 
-Wave B: official Polygon WS ingest id is ``polygon_ws``; legacy ``massive_ws`` is dual-accepted
-and normalized to ``polygon_ws`` in lists returned to the FE.
+Official Polygon WS ingest id is ``polygon_ws``. YAML may still list ``massive_ws``;
+``canonical_ingest_service_id`` normalizes it once — comparison / returned ids never treat
+``massive_ws`` as a separate legal id.
 """
 
 from __future__ import annotations
@@ -33,8 +34,8 @@ from bifrost_core.core.redis_health_keys import (
 _LEGACY_IB_INGESTER_META_HEALTH = "ib:ingester:meta:health"
 _LEGACY_IB_OPERATOR_META_HEALTH = "ib:operator:meta:health"
 
-# Official id + legacy dual-accept (Wave B, ≥1 release).
-POLYGON_WS_SERVICE_IDS = frozenset({"polygon_ws", "massive_ws"})
+# Official id only (YAML ``massive_ws`` is normalized via canonical_ingest_service_id).
+POLYGON_WS_SERVICE_IDS = frozenset({"polygon_ws"})
 CANONICAL_POLYGON_WS_ID = "polygon_ws"
 
 # Ingest processes that publish quotes / WS health (Socket Services page). When YAML lists only
@@ -50,12 +51,12 @@ _DAEMON_ONLY_IDS = frozenset({"trading_engine", "account_sync_daemon"})
 
 
 def is_polygon_ws_service_id(service_id: str) -> bool:
-    """True for official ``polygon_ws`` or legacy ``massive_ws``."""
-    return (service_id or "").strip() in POLYGON_WS_SERVICE_IDS
+    """True for official ``polygon_ws`` (after YAML normalize)."""
+    return canonical_ingest_service_id(service_id) == CANONICAL_POLYGON_WS_ID
 
 
 def canonical_ingest_service_id(service_id: str) -> str:
-    """Normalize dual-accepted / legacy ids to the official form returned to FE."""
+    """Normalize legacy YAML / request ids to the official form returned to FE."""
     sid = (service_id or "").strip()
     if sid == "massive_ws":
         return CANONICAL_POLYGON_WS_ID
@@ -180,7 +181,7 @@ def market_ingest_services_from_config(config: dict) -> List[Dict[str, str]]:
 
 
 def market_ingest_service_by_id(config: dict, service_id: str) -> Optional[Dict[str, str]]:
-    """Lookup by official or dual-accepted legacy id (``polygon_ws`` / ``massive_ws``)."""
+    """Lookup by official id (``massive_ws`` request ids normalize to ``polygon_ws``)."""
     sid = canonical_ingest_service_id(service_id)
     for row in market_ingest_services_from_config(config):
         if row["id"] == sid:

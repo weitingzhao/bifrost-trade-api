@@ -1,7 +1,8 @@
-"""Polygon/Massive utility helpers local to research.
+"""Polygon utility helpers local to research.
 
 Live ingest lives in bifrost-platform-plugin-market-data.
-MassiveClient removed — all callers now use Plugin HTTP or DB cache.
+Callers use Plugin HTTP or DB cache. YAML still uses the legacy ``massive:`` block
+(api_key / tier / features) — see ``get_polygon_settings``.
 """
 
 from __future__ import annotations
@@ -81,8 +82,12 @@ def _daily_full_backfill_years_from_config(m: Dict[str, Any], tier: str) -> floa
     return 5.0 if tier == "starter" else 20.0
 
 
-def get_massive_settings(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Return api_key, rest_base, tier, trades_enabled, daily_full_backfill_years."""
+def get_polygon_settings(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Read Polygon/Plugin settings from the legacy YAML ``massive:`` block.
+
+    Returns api_key, rest_base, tier, trades_enabled, daily_full_backfill_years.
+    Wire/env still accept MASSIVE_API_KEY / POLYGON_API_KEY; config key remains ``massive``.
+    """
     m = config.get("massive") or {}
     api_key = (
         os.environ.get("MASSIVE_API_KEY")
