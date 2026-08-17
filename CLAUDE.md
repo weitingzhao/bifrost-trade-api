@@ -6,7 +6,16 @@
 
 ## 职责范围
 
-本 repo 包含 9 个独立的 FastAPI 服务，每个服务对应一个业务域：
+本 repo 包含 Phase B 后为 **4 个进程 Pod**（HTTP 路径前缀仍保留 `/api/{domain}/`）：
+
+| 进程 | 端口 | 吸收域 |
+|------|------|--------|
+| monitor (operations) | 8765 | monitor + ops + docs |
+| account | 8769 | trading + portfolio + strategy |
+| market | 8772 | market |
+| research | 8773 | research |
+
+历史 9 域表（路径别名仍可用）：
 
 | 域 | 模块 | 端口 | 主要职责 |
 |----|------|------|----------|

@@ -3,7 +3,9 @@
 Usage:
     python scripts/run_server.py <domain>
 
-Domains: monitor | docs | ops | trading | strategy | portfolio | market | research
+Domains: monitor | docs | ops | account | strategy | market | research
+
+Aliases (Phase B): trading | portfolio → account
 """
 
 from __future__ import annotations
@@ -21,21 +23,26 @@ DOMAIN_RUNNERS: dict[str, Callable[[dict, str | None], None]] = {
     "monitor": lambda cfg, path: __import__(
         "bifrost_api.monitor.app", fromlist=["run_server"]
     ).run_server(cfg, resolved_config_path=path),
+    # Phase B: docs absorbed into monitor (alias for scripts / local)
     "docs": lambda cfg, path: __import__(
-        "bifrost_api.docs_api.app", fromlist=["run_docs_server"]
-    ).run_docs_server(cfg, resolved_config_path=path),
+        "bifrost_api.monitor.app", fromlist=["run_server"]
+    ).run_server(cfg, resolved_config_path=path),
     "ops": lambda cfg, path: __import__(
-        "bifrost_api.ops.app", fromlist=["run_ops_server"]
-    ).run_ops_server(cfg, resolved_config_path=path),
+        "bifrost_api.monitor.app", fromlist=["run_server"]
+    ).run_server(cfg, resolved_config_path=path),
+    "account": lambda cfg, path: __import__(
+        "bifrost_api.account.app", fromlist=["run_account_server"]
+    ).run_account_server(cfg, resolved_config_path=path),
+    # Phase B aliases — same process as account
     "trading": lambda cfg, path: __import__(
-        "bifrost_api.trading.app", fromlist=["run_trading_server"]
-    ).run_trading_server(cfg, resolved_config_path=path),
-    "strategy": lambda cfg, path: __import__(
-        "bifrost_api.strategy.app", fromlist=["run_strategy_server"]
-    ).run_strategy_server(cfg, resolved_config_path=path),
+        "bifrost_api.account.app", fromlist=["run_account_server"]
+    ).run_account_server(cfg, resolved_config_path=path),
     "portfolio": lambda cfg, path: __import__(
-        "bifrost_api.portfolio.app", fromlist=["run_portfolio_server"]
-    ).run_portfolio_server(cfg, resolved_config_path=path),
+        "bifrost_api.account.app", fromlist=["run_account_server"]
+    ).run_account_server(cfg, resolved_config_path=path),
+    "strategy": lambda cfg, path: __import__(
+        "bifrost_api.account.app", fromlist=["run_account_server"]
+    ).run_account_server(cfg, resolved_config_path=path),
     "market": lambda cfg, path: __import__(
         "bifrost_api.market.app", fromlist=["run_market_server"]
     ).run_market_server(cfg, resolved_config_path=path),

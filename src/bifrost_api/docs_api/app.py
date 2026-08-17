@@ -213,6 +213,37 @@ def create_docs_app(
     return app
 
 
+def attach_docs_routes(
+    host_app: FastAPI,
+    *,
+    config: dict,
+    resolved_config_path: Optional[str] = None,
+    main_openapi_url: Optional[str] = None,
+    research_openapi_url: Optional[str] = None,
+) -> None:
+    """Mount docs OpenAPI aggregate routes onto an existing app (Phase B: monitor).
+
+    Does not register root ``/health`` (host app already has one). Registers
+    ``/research/docs/*`` and root ``/openapi.json`` / ``/docs`` / ``/redoc``.
+    """
+    docs_app = create_docs_app(
+        main_openapi_url
+        or os.environ.get("BIFROST_DOCS_MAIN_OPENAPI")
+        or f"http://127.0.0.1:{int((config.get('server') or {}).get('monitor_port', 8765))}/openapi.json",
+        research_openapi_url
+        or os.environ.get("BIFROST_DOCS_RESEARCH_OPENAPI")
+        or f"http://127.0.0.1:{int((config.get('server') or {}).get('research_port', 8773))}/openapi.json",
+        config=config,
+        resolved_config_path=resolved_config_path,
+    )
+    for route in docs_app.routes:
+        path = getattr(route, "path", None)
+        # Keep monitor's own OpenAPI UI; only absorb the /research/docs/* aggregate.
+        if path in ("/health", "/openapi.json", "/docs", "/redoc"):
+            continue
+        host_app.router.routes.append(route)
+
+
 def run_docs_server(
     config: dict,
     resolved_config_path: Optional[str] = None,

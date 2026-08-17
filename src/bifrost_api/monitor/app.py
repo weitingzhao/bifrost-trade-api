@@ -123,6 +123,13 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Phase B Wave B4: Ops Private Network Access header (merged ops control plane).
+    try:
+        from bifrost_api.ops.app import AccessControlAllowPrivateNetworkMiddleware
+
+        app.add_middleware(AccessControlAllowPrivateNetworkMiddleware)
+    except Exception:
+        logger.exception("Failed to add Ops Private Network middleware")
     # Strategy Trading Daemon console (run_engine.py → bifrost:console:{dev|prod}:daemon_trading + legacy); reader thread + queues
     app.state.daemon_log_queues: list = []
     app.state.daemon_log_lock = threading.Lock()
@@ -278,7 +285,6 @@ def create_app(
         messages_router,
         status_router,
     )
-    from bifrost_api.portfolio.routers.config import router as portfolio_position_categories_router
 
     app.include_router(core_router)
     app.include_router(logs_router)
@@ -286,8 +292,32 @@ def create_app(
     app.include_router(status_router)
     app.include_router(daemon_router)
     app.include_router(config_router)
-    # Same StatusReader + DB as Portfolio API: dev often runs Monitor only (run_server.py); Vite proxies here.
-    app.include_router(portfolio_position_categories_router)
+    # Phase B: position-categories live on account-service (merged portfolio).
+
+    # Phase B Wave B3: Docs OpenAPI aggregate absorbed into monitor.
+    try:
+        from bifrost_api.docs_api.app import attach_docs_routes
+
+        attach_docs_routes(
+            app,
+            config=merged_config or reader._config,
+            resolved_config_path=resolved_config_path,
+        )
+    except Exception:
+        logger.exception("Failed to attach docs routes onto monitor")
+
+    # Phase B Wave B4: Ops control plane absorbed into monitor (Gate PASS).
+    try:
+        from bifrost_api.ops.app import wire_ops_control_plane
+
+        wire_ops_control_plane(
+            app,
+            merged_config or reader._config,
+            resolved_config_path=resolved_config_path,
+            register_root_health=False,
+        )
+    except Exception:
+        logger.exception("Failed to wire Ops control plane onto monitor")
 
     # backend/monitor/app.py -> repo root (not backend/)
     _root = Path(__file__).resolve().parent.parent.parent

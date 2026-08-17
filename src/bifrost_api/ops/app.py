@@ -56,36 +56,22 @@ def _allowed_units_from_config(config: dict) -> List[str]:
     return list(DEFAULT_ALLOWED_UNITS)
 
 
-def create_ops_app(
+def wire_ops_control_plane(
+    app: FastAPI,
     config: dict,
     resolved_config_path: Optional[str] = None,
-) -> FastAPI:
-    """Build the Ops control plane FastAPI app."""
-
+    *,
+    register_root_health: bool = True,
+) -> None:
+    """Wire Celery/K8s ops control plane onto ``app`` (standalone ops or merged monitor)."""
     from bifrost_core.core.redis_url import effective_redis_dict, format_redis_url
 
     broker_url = format_redis_url(effective_redis_dict(config, default_db=1))
 
     _raw_srv = config.get("server")
     if not isinstance(_raw_srv, dict):
-        raise ValueError("create_ops_app requires config['server'] from read_config() merged YAML.")
+        raise ValueError("wire_ops_control_plane requires config['server'] from read_config() merged YAML.")
     config["server"] = normalize_server_config(dict(_raw_srv))
-
-    app = FastAPI(
-        title="Bifrost Ops API",
-        description="Unified control plane: Celery worker status, scaling, audit.",
-        docs_url="/ops/docs",
-        redoc_url="/ops/redoc",
-        openapi_url="/ops/openapi.json",
-    )
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    app.add_middleware(AccessControlAllowPrivateNetworkMiddleware)
 
     _profile = (
         config_profile_from_resolved_path(resolved_config_path)
@@ -97,16 +83,14 @@ def create_ops_app(
 
         ops_cfg = config.get("ops") if isinstance(config.get("ops"), dict) else {}
         _profile = normalize_control_profile(ops_cfg.get("control_profile"))
-    app.state.bifrost_config_profile = _profile
+    # Prefer existing monitor profile if already set
+    if getattr(app.state, "bifrost_config_profile", None) is None:
+        app.state.bifrost_config_profile = _profile
 
     allowed_units = _allowed_units_from_config(config)
 
-    # ── Wire services ─────────────────────────────────────────────────────────
-
     from bifrost_worker.celery.celery_app import app as celery_app
 
-    # ``src.workers.celery_app`` resolves broker at import time; ensure Ops ``read_config`` URL wins
-    # so ``control.inspect`` hits the same Redis as workers and Flower.
     _prev_broker = celery_app.conf.get("broker_url")
     if _prev_broker != broker_url:
         logger.info(
@@ -155,14 +139,10 @@ def create_ops_app(
     app.state.audit_log: list = []
     app.state.ops_project_root = None
 
-    # ── Auth ──────────────────────────────────────────────────────────────────
-
     from bifrost_api.ops.auth import AuthConfig, OpsAuth
 
     auth_config = AuthConfig.from_config(config)
     app.state.ops_auth = OpsAuth(auth_config)
-
-    # ── Audit store ───────────────────────────────────────────────────────────
 
     from bifrost_api.ops.services.audit_store import AuditStore
 
@@ -171,18 +151,18 @@ def create_ops_app(
 
     has_postgres = bool(config.get("postgres") or os.environ.get("PGHOST"))
     use_db_control = has_postgres
-    app.state.control_via_db = config if use_db_control else None
-    app.state.status_cfg_for_read = config if has_postgres else None
+    if getattr(app.state, "control_via_db", None) is None:
+        app.state.control_via_db = config if use_db_control else None
+    if getattr(app.state, "status_cfg_for_read", None) is None:
+        app.state.status_cfg_for_read = config if has_postgres else None
 
     app.state.broker_url = broker_url
     app.state.redis_host = effective_redis_dict(config, default_db=1)["host"]
 
-    # Celery worker console SSE (Redis Stream per worker nodename; same as former bifrost-server /api/celery/logs/stream)
     app.state.celery_log_queues: list = []
     app.state.celery_log_lock = threading.Lock()
     app.state._celery_log_loop: Any = None
 
-    # ── Worker profiles (typed scaling) ────────────────────────────────────
     from bifrost_api.ops.worker_profiles import WorkerProfileRegistry
 
     app.state.worker_profile_registry = WorkerProfileRegistry.from_config(config)
@@ -192,8 +172,6 @@ def create_ops_app(
             for key, profile in app.state.worker_profile_registry.profiles.items()
         })
 
-    # ── Router ────────────────────────────────────────────────────────────────
-
     from bifrost_api.ops.routers.workers import router as ops_router
     from bifrost_api.ops.routers.job_queues import router as job_queues_router
     from bifrost_api.ops.routers.market_ingest import router as market_ingest_router
@@ -201,8 +179,6 @@ def create_ops_app(
     app.include_router(job_queues_router)
     app.include_router(market_ingest_router)
     app.include_router(ops_router)
-
-    # ── Health ────────────────────────────────────────────────────────────────
 
     def _health_payload_sync() -> Dict[str, Any]:
         out: Dict[str, Any] = {
@@ -240,25 +216,57 @@ def create_ops_app(
                 out["k8s_workloads"] = {}
         return out
 
-    @app.get("/health")
-    async def ops_health_root() -> Dict[str, Any]:
-        return await _health_payload_async()
+    if register_root_health:
+
+        @app.get("/health")
+        async def ops_health_root() -> Dict[str, Any]:
+            return await _health_payload_async()
 
     @app.get("/ops/health")
     async def ops_health_prefixed() -> Dict[str, Any]:
         return await _health_payload_async()
 
     @app.on_event("startup")
-    async def startup_event() -> None:
+    async def ops_startup_event() -> None:
         logger.info(
-            "Ops API started — allowed units: %s, broker: %s",
+            "Ops control plane started — allowed units: %s, broker: %s",
             allowed_units,
             broker_url.split("@")[-1] if "@" in broker_url else broker_url,
         )
 
     @app.on_event("shutdown")
-    async def shutdown_event() -> None:
-        logger.info("Ops API shutting down")
+    async def ops_shutdown_event() -> None:
+        logger.info("Ops control plane shutting down")
+
+
+def create_ops_app(
+    config: dict,
+    resolved_config_path: Optional[str] = None,
+) -> FastAPI:
+    """Build the Ops control plane FastAPI app."""
+
+    app = FastAPI(
+        title="Bifrost Ops API",
+        description="Unified control plane: Celery worker status, scaling, audit.",
+        docs_url="/ops/docs",
+        redoc_url="/ops/redoc",
+        openapi_url="/ops/openapi.json",
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app.add_middleware(AccessControlAllowPrivateNetworkMiddleware)
+
+    wire_ops_control_plane(
+        app,
+        config,
+        resolved_config_path=resolved_config_path,
+        register_root_health=True,
+    )
 
     instrument_app(app, "api-ops")
     return app
