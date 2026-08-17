@@ -195,7 +195,7 @@ def _scan_csp(
 
     all_exps_raw = get_option_expirations_from_contracts_db(db, sym)
     if not all_exps_raw:
-        return None, "No snapshot data — run Massive sync first"
+        return None, "No snapshot data — run Market Data Plugin sync first"
 
     all_exps = [_norm_expiry_key(e) for e in all_exps_raw]
     all_exps = [e for e in all_exps if len(e) == 8 and e.isdigit()]
@@ -235,7 +235,7 @@ def _scan_csp(
 
     rows = get_option_snapshots_latest(db, all_keys, source=src)
     if not rows:
-        return None, "No snapshot data — run Massive sync first"
+        return None, "No snapshot data — run Market Data Plugin sync first"
 
     # IV percentile history
     iv_history = _get_iv_history_series(db, sym, all_exps, src)

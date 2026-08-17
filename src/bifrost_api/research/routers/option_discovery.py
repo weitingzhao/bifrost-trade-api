@@ -695,9 +695,6 @@ def get_option_contract_relative_value(
     }
 
 
-# /research/massive/* endpoints moved to servers/routers/massive_routes.py
-
-
 @router.get("/research/option-oi")
 def get_research_option_oi(
     request: Request,

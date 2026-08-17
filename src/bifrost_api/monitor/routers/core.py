@@ -82,7 +82,6 @@ def get_health(request: Request) -> Dict[str, Any]:
     if fe_prod:
         out["frontend_prod_path"] = fe_prod
     out["monitor_port"] = int(request.app.state.bifrost_server_listen_port)
-    out["massive_port"] = int(request.app.state.bifrost_massive_port)
     out["docs_port"] = int(request.app.state.bifrost_docs_port)
     out["ops_port"] = int(request.app.state.bifrost_ops_port)
     out["trading_port"] = int(request.app.state.bifrost_trading_port)

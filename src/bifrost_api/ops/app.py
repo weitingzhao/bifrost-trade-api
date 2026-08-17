@@ -1,6 +1,6 @@
 """Bifrost Ops API — unified control plane for Celery workers.
 
-Independent FastAPI service (same pattern as backend.massive).
+Independent FastAPI service (same pattern as other bifrost_api domain apps).
 Reads config from the shared YAML config system.
 """
 

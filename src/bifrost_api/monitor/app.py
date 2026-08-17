@@ -34,7 +34,7 @@ _UTILIZED_SERVICE_ORDER = (
     "server",
     "main",
     "api",
-    "massive",
+    # "massive" retired (P7) — api-massive removed; keep out of default order
     "docs",
     "ops",
     "trading",
@@ -56,7 +56,7 @@ def _order_utilized_rows(rows: List[Dict[str, str]]) -> List[Dict[str, str]]:
 
 
 def _utilized_services_from_config(merged_config: Optional[dict]) -> List[Dict[str, str]]:
-    """Parse ``utilized.services`` from YAML into [{"service": "massive", "env": "dev"}, ...].
+    """Parse ``utilized.services`` from YAML into [{"service": "ops", "env": "dev"}, ...].
 
     Accepts either a mapping (each key = service name, value = ``dev`` or ``prod``) or a legacy
     list of ``{service: env}`` one-key dicts / ``name:env`` strings.
@@ -243,7 +243,7 @@ def create_app(
     if not isinstance(_scfg, dict):
         raise ValueError("create_app (monitor) requires merged_config['server'] from read_config().")
     app.state.bifrost_server_listen_port = int(_scfg["monitor_port"])
-    app.state.bifrost_massive_port = int(_scfg["massive_port"])
+    # massive_port remains in YAML schema (legacy) but is not exposed on /health
     app.state.bifrost_docs_port = int(_scfg["docs_port"])
     app.state.bifrost_ops_port = int(_scfg["ops_port"])
     app.state.bifrost_trading_port = int(_scfg["trading_port"])

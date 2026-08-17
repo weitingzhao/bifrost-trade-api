@@ -507,12 +507,12 @@ class WorkerStateService:
             logger.debug("broker_queue_depth(%s): %s", queue_name, e)
         return 0
 
-    def _pg_status_counts(self) -> Tuple[Optional[Dict[str, int]], Optional[Dict[str, int]]]:
-        """Return (bars_status_counts, massive_status_counts) or Nones if DB unavailable."""
+    def _pg_status_counts(self) -> Optional[Dict[str, int]]:
+        """Return bars_status_counts from job_bars_backfill, or None if DB unavailable."""
         pg = self._config.get("postgres") or {}
         host = str(pg.get("host") or "").strip()
         if not host:
-            return None, None
+            return None
         try:
             import psycopg2
 
@@ -530,7 +530,6 @@ class WorkerStateService:
             )
             try:
                 bars_counts: Dict[str, int] = {"pending": 0, "running": 0, "done": 0, "failed": 0}
-                massive_counts: Dict[str, int] = {"pending": 0, "running": 0, "done": 0, "failed": 0}
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT status, COUNT(*)::bigint FROM job_bars_backfill GROUP BY status"
@@ -539,26 +538,12 @@ class WorkerStateService:
                         st = str(row[0] or "").strip().lower()
                         if st in bars_counts:
                             bars_counts[st] = int(row[1])
-                    try:
-                        cur.execute(
-                            "SELECT status, COUNT(*)::bigint FROM job_massive_backfill GROUP BY status"
-                        )
-                        for row in cur.fetchall() or []:
-                            st = str(row[0] or "").strip().lower()
-                            if st in massive_counts:
-                                massive_counts[st] = int(row[1])
-                    except Exception:
-                        # P9: table dropped; Massive jobs live in data_ops.job_ingest
-                        try:
-                            conn.rollback()
-                        except Exception:
-                            pass
-                return bars_counts, massive_counts
+                return bars_counts
             finally:
                 conn.close()
         except Exception as e:
             logger.debug("queue summary PG counts failed: %s", e)
-            return None, None
+            return None
 
     def _queues_from_worker_profiles(self) -> set[str]:
         try:
@@ -621,7 +606,7 @@ class WorkerStateService:
         ``ops.worker_profiles`` and Redis LIST keys discovered via SCAN (custom
         Celery queues not listed in config still show up when present on the broker).
         """
-        bars_db, massive_db = self._pg_status_counts()
+        bars_db = self._pg_status_counts()
         profile_queues = self._queues_from_worker_profiles()
         supported = self._canonical_celery_queues()
         canonical = set(supported)
@@ -666,16 +651,6 @@ class WorkerStateService:
                     "running_celery": (bars_db.get("running") if bars_db else None),
                     "done_db": (bars_db.get("done") if bars_db else None),
                     "failed_db": (bars_db.get("failed") if bars_db else None),
-                }
-            elif q in supported:
-                row = {
-                    "name": q,
-                    "display_name": display_name,
-                    "pending_broker": pending_broker,
-                    "running_celery": (massive_db.get("running") if massive_db else None),
-                    "done_db": (massive_db.get("done") if massive_db else None),
-                    "failed_db": (massive_db.get("failed") if massive_db else None),
-                    "db_totals_shared": True,
                 }
             else:
                 row = {
