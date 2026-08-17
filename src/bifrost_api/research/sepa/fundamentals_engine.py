@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -276,33 +275,40 @@ def evaluate_fundamentals(
 
 
 def fetch_and_evaluate_fundamentals_batch(
-    client: Any,
     symbols: List[str],
     *,
     cfg: Optional[FundamentalsConfig] = None,
-    throttle_sec: float = 0.2,
+    status_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    """Evaluate fundamentals for a batch of symbols via Plugin HTTP (market_data_client)."""
+    from bifrost_api.research.sepa.financials_data import fetch_income_rows_for_sepa_from_pg
+
     conf = cfg or FundamentalsConfig()
     results: List[Dict[str, Any]] = []
     warnings: Dict[str, str] = {}
     syms = sorted({str(s or "").strip().upper() for s in symbols if str(s or "").strip()})
 
-    for idx, sym in enumerate(syms):
+    for sym in syms:
         try:
-            qres = client.fetch_stock_income_statements(sym, timeframe="quarterly", limit=12, sort="filing_date.desc")
-            ares = client.fetch_stock_income_statements(sym, timeframe="annual", limit=5, sort="filing_date.desc")
-            qrows = qres.get("results") if isinstance(qres, dict) else None
-            arows = ares.get("results") if isinstance(ares, dict) else None
-            if not isinstance(qrows, list):
-                qrows = []
-            if not isinstance(arows, list):
-                arows = []
+            pair = fetch_income_rows_for_sepa_from_pg(status_config or {}, sym)
+            if pair is None:
+                results.append(
+                    {
+                        "symbol": sym,
+                        "fundamental_pass": False,
+                        "insufficient_data": True,
+                        "not_comparable": False,
+                        "conditions": [],
+                        "pass_count": 0,
+                        "fail_count": 0,
+                        "metrics": {},
+                        "issues": ["insufficient_data"],
+                    }
+                )
+                continue
+            qrows, arows = pair
             eval_out = evaluate_fundamentals(qrows, arows, cfg=conf)
             eval_out["symbol"] = sym
-            if qres.get("error"):
-                warnings[sym] = str(qres.get("error"))
-            elif ares.get("error"):
-                warnings[sym] = str(ares.get("error"))
             results.append(eval_out)
         except Exception as exc:
             warnings[sym] = str(exc)
@@ -319,8 +325,6 @@ def fetch_and_evaluate_fundamentals_batch(
                     "issues": ["evaluation_failed"],
                 }
             )
-        if idx < len(syms) - 1 and throttle_sec > 0:
-            time.sleep(throttle_sec)
 
     total = len(results)
     passed = sum(1 for r in results if r.get("fundamental_pass"))

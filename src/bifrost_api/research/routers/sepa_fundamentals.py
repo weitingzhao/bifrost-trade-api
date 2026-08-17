@@ -11,8 +11,6 @@ from bifrost_api.research.sepa.fundamentals_engine import (
     FundamentalsConfig,
     fetch_and_evaluate_fundamentals_batch,
 )
-from bifrost_api.research.polygon_http import MassiveClient
-from bifrost_api.research.polygon_http import get_massive_settings
 
 router = APIRouter(tags=["research"])
 
@@ -24,26 +22,18 @@ class SepaFundamentalsRequest(BaseModel):
     rev_q2q_threshold: float = 0.25
     eps_3y_threshold: float = 0.15
     rev_3y_threshold: float = 0.15
-    throttle_sec: float = 0.2
 
 
 @router.post("/research/screening/sepa/fundamentals")
 def run_sepa_fundamentals(body: SepaFundamentalsRequest, request: Request) -> Dict[str, Any]:
-    reader = getattr(request.app.state, "reader", None)
-    cfg = reader._config if reader else {}
-    ms = get_massive_settings(cfg)
-    if not ms.get("api_key"):
-        return {"ok": False, "error": "Massive API key not configured", "results": [], "summary": {}}
-
     symbols = sorted({str(s or "").strip().upper() for s in body.symbols if str(s or "").strip()})
     if not symbols:
         return {"ok": False, "error": "symbols is required", "results": [], "summary": {}}
     if len(symbols) > 200:
         return {"ok": False, "error": "Too many symbols (max 200 per request).", "results": [], "summary": {}}
 
-    client = MassiveClient(api_key=ms["api_key"])
+    db = request.app.state.control_via_db or getattr(request.app.state, "status_cfg_for_read", None)
     out = fetch_and_evaluate_fundamentals_batch(
-        client,
         symbols,
         cfg=FundamentalsConfig(
             eps_q2q_threshold=float(body.eps_q2q_threshold),
@@ -51,7 +41,7 @@ def run_sepa_fundamentals(body: SepaFundamentalsRequest, request: Request) -> Di
             eps_3y_threshold=float(body.eps_3y_threshold),
             rev_3y_threshold=float(body.rev_3y_threshold),
         ),
-        throttle_sec=max(0.0, float(body.throttle_sec)),
+        status_config=db,
     )
 
     return {

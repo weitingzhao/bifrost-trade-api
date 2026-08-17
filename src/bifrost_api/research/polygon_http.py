@@ -1,30 +1,15 @@
-"""Polygon/Massive HTTP helpers local to research (Wave 7-C).
+"""Polygon/Massive utility helpers local to research.
 
-Recovered from bifrost-worker data/massive vendor after package deletion.
 Live ingest lives in bifrost-platform-plugin-market-data.
+MassiveClient removed — all callers now use Plugin HTTP or DB cache.
 """
 
 from __future__ import annotations
 
-import json
 import os
 from typing import Any, Dict, Optional
 
 DEFAULT_REST_BASE = "https://api.polygon.io"
-
-_RETIRED_MSG = "Massive client retired; use market-data plugin"
-
-
-def _as_error_str(err: Any) -> str:
-    """Polygon/Massive sometimes returns error as a string, object, or list."""
-    if isinstance(err, str):
-        return err
-    if err is None:
-        return "Unknown error"
-    try:
-        return json.dumps(err, default=str)
-    except (TypeError, ValueError):
-        return str(err)
 
 
 def _norm_expiry(s: str) -> str:
@@ -81,30 +66,6 @@ def contract_key_from_reference_result(
         return None
     ort = _right_from_contract_type(str(row.get("contract_type") or "call"))
     return contract_key_from_parts(u, ed, strike, ort)
-
-
-class MassiveClient:
-    """Retired HTTP client stub — methods refuse live Polygon calls."""
-
-    def __init__(self, api_key: str, rest_base: str = DEFAULT_REST_BASE) -> None:
-        self._api_key = (api_key or "").strip()
-        self._base = (rest_base or DEFAULT_REST_BASE).rstrip("/")
-
-    @property
-    def configured(self) -> bool:
-        return bool(self._api_key)
-
-    def _retired(self, *_args: Any, **_kwargs: Any) -> Dict[str, Any]:
-        return {"error": _RETIRED_MSG, "ok": False, "reason": "massive_retired"}
-
-    def __getattr__(self, name: str) -> Any:
-        if name.startswith("_"):
-            raise AttributeError(name)
-
-        def _method(*_args: Any, **_kwargs: Any) -> Dict[str, Any]:
-            return self._retired()
-
-        return _method
 
 
 def _daily_full_backfill_years_from_config(m: Dict[str, Any], tier: str) -> float:

@@ -4,8 +4,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-MASSIVE_LOG_STREAM_KEY = "bifrost:massive_console"
-MASSIVE_WS_LOG_STREAM_KEY = "bifrost:console:ws_massive_option"
 IB_OPERATOR_LOG_STREAM_KEY = "bifrost:console:ws_ib_operator"
 IB_INGESTOR_LOG_STREAM_KEY = "bifrost:console:ws_ib_ingestor"
 IB_ACCOUNT_AGENT_LOG_STREAM_KEY = "bifrost:console:ws_ib_account_agent"

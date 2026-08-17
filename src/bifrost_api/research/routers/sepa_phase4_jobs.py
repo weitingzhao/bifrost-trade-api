@@ -15,8 +15,6 @@ from bifrost_api.research.sepa.phase4_engine import (
     list_phase4_jobs,
     run_sepa_phase4_job,
 )
-from bifrost_api.research.polygon_http import MassiveClient
-from bifrost_api.research.polygon_http import get_massive_settings
 
 router = APIRouter(tags=["research"])
 
@@ -54,10 +52,6 @@ def submit_sepa_phase4_job(body: SepaPhase4SubmitRequest, request: Request) -> D
 
     reader = getattr(request.app.state, "reader", None)
     merged_config = reader._config if reader else {}
-    ms = get_massive_settings(merged_config)
-    if not ms.get("api_key"):
-        return {"ok": False, "error": "Massive API key not configured"}
-    client = MassiveClient(api_key=ms["api_key"], base_url=ms["rest_base"])
 
     payload = {
         "source": body.source,
@@ -82,7 +76,6 @@ def submit_sepa_phase4_job(body: SepaPhase4SubmitRequest, request: Request) -> D
             "symbols": symbols,
             "status_config": db,
             "merged_config": merged_config,
-            "massive_client": client,
             "cfg": cfg,
         },
         daemon=True,

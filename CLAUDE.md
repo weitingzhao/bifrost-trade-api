@@ -20,7 +20,7 @@
 | 域 | 模块 | 端口 | 主要职责 |
 |----|------|------|----------|
 | monitor | `bifrost_api.monitor` | 8765 | Daemon 状态、控制命令、心跳 |
-| massive | `bifrost_api.massive` | 8766 | Polygon 数据查询、期权链 |
+| ~~massive~~ | ~~`bifrost_api.massive`~~ | ~~8766~~ | ~~Polygon 数据查询、期权链~~ — **retired (P7)**: 由 Market Data Plugin `:8790` 替代 |
 | docs | `bifrost_api.docs_api` | 8767 | OpenAPI schema、API 覆盖率 |
 | ops | `bifrost_api.ops` | 8768 | Celery 队列管理、Worker 健康 |
 | trading | `bifrost_api.trading` | 8769 | 订单、持仓、交易历史 |

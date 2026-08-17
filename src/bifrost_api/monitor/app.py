@@ -5,18 +5,14 @@ When ``frontend/dist`` exists (``npm run build``), GET ``/`` serves the SPA and 
 Monitoring runs on a separate host from the Strategy Trading Daemon (RE-5). Start of the daemon is only on the trading machine (run_engine.py); no subprocess/start on this server.
 """
 
-import json
 import logging
-import os
 import threading
-from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import asyncio
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from bifrost_core.config.startup import (
@@ -27,11 +23,8 @@ from bifrost_core.config.startup import (
     portfolio_api_console_stream_key,
     trading_api_console_stream_key,
 )
-from bifrost_socket.ib.connector.flex_client import fetch_cash_transactions, fetch_trades
 from bifrost_core.ib_operator.client import IbOperatorClient
 from bifrost_core.monitor.reader import StatusReader
-from bifrost_socket.ib.connector.flex_client import parse_trades_xml
-from bifrost_core.monitor.self_check import derive_daemon_self_check
 from bifrost_core.observability.prometheus import instrument_app
 
 logger = logging.getLogger(__name__)
@@ -141,18 +134,6 @@ def create_app(
     app.state.monitor_log_lock = threading.Lock()
     app.state._monitor_log_thread: Optional[threading.Thread] = None
     app.state._monitor_log_loop: Optional[asyncio.AbstractEventLoop] = None
-
-    # Massive API console log stream (run_server_massive.py → bifrost:massive_console)
-    app.state.massive_log_queues: list = []
-    app.state.massive_log_lock = threading.Lock()
-    app.state._massive_log_thread: Optional[threading.Thread] = None
-    app.state._massive_log_loop: Optional[asyncio.AbstractEventLoop] = None
-
-    # Massive WS ingest log stream (scripts/systemd/run_massive_ws.py → bifrost:console:ws_massive_option)
-    app.state.massive_ws_log_queues: list = []
-    app.state.massive_ws_log_lock = threading.Lock()
-    app.state._massive_ws_log_thread: Optional[threading.Thread] = None
-    app.state._massive_ws_log_loop: Optional[asyncio.AbstractEventLoop] = None
 
     # IB Operator log stream (scripts/systemd/run_ib_operator.py → bifrost:console:ws_ib_operator)
     app.state.ib_operator_log_queues: list = []

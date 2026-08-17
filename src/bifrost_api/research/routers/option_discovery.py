@@ -1,19 +1,15 @@
 """Research: Option Discovery and related endpoints (R-OD1)."""
 
-import asyncio
 import hashlib
 import json
 import math
-import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Body, Query, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import APIRouter, Body, Query, Request
+from fastapi.responses import JSONResponse
 
 from bifrost_api.research.iv_atm import (
-    OPTION_SNAPSHOT_STRIKES_AROUND_ATM,
     assemble_volatility_cone_points,
     atm_iv_from_expiry_items,
     build_cone_key_maps,
@@ -182,7 +178,6 @@ async def _option_expirations_ib(request: Request, symbol: str) -> Dict[str, Any
 @router.get("/research/option-expirations")
 async def get_option_expirations(
     request: Request,
-    background_tasks: BackgroundTasks,
     symbol: str = Query(..., description="Underlying symbol (e.g. NVDA)"),
     provider: str = Query(
         "auto",
@@ -206,7 +201,6 @@ async def get_option_expirations(
         get_option_expiration_cache_snapshot,
         get_option_expirations_from_contracts_db,
         get_strikes_for_expiry_from_contracts_db,
-        refresh_expirations_from_massive_api,
     )
 
     symbol = (symbol or "").strip()
@@ -235,37 +229,14 @@ async def get_option_expirations(
     ecfg = get_expiration_cache_settings(config)
     ttl_sec = _ttl_sec_expiration_cache(config)
 
-    async def _massive_response_from_rest_result(result: Dict[str, Any]) -> JSONResponse:
-        result.pop("contract_rows", None)
-        expirations = result.get("expirations") or []
-        strikes_raw: List[float] = result.get("strikes") or []
-        strikes = _filter_option_strikes(strikes_raw, last_price)
-        out: Dict[str, Any] = {
-            "symbol": symbol,
-            "expirations": expirations,
-            "strikes": strikes,
-            "provider": "massive",
-            "expiration_backend": "rest",
-        }
-        if last_price is not None:
-            out["last_price"] = last_price
-        err = result.get("error")
-        if err:
-            out["error"] = err
-        md = result.get("massive_debug")
-        if debug and isinstance(md, dict):
-            out["massive_debug"] = md
-        return _option_expirations_cache_response(out, {"X-Expiration-Cache": "miss"})
-
     async def _massive_db_first_flow() -> JSONResponse:
-        """PostgreSQL cache / contracts first; then Massive REST with persist.
+        """PostgreSQL cache / contracts first; IB fallback when DB empty.
 
         P8: market.option_contract (plugin) can satisfy Discovery without a Trade-side
-        Polygon API key. Key is required only when falling through to REST refresh.
+        Polygon API key. REST refresh retired — DB-only or IB.
         """
         exp_q = (expiration or "").strip()
 
-        # Single-expiry: strikes from option_contracts or REST refresh.
         if exp_q:
             if db:
                 strikes_db = get_strikes_for_expiry_from_contracts_db(db, symbol, exp_q)
@@ -282,26 +253,15 @@ async def get_option_expirations(
                     if last_price is not None:
                         body["last_price"] = last_price
                     return _option_expirations_cache_response(body, {"X-Expiration-Cache": "hit"})
-            if not ms["api_key"]:
-                return JSONResponse(
-                    content={
-                        "symbol": symbol,
-                        "expirations": [],
-                        "strikes": [],
-                        "error": "Massive API key not configured",
-                        "provider": "massive",
-                    }
-                )
-            result = await asyncio.to_thread(
-                refresh_expirations_from_massive_api,
-                db,
-                config,
-                symbol,
-                exp_q,
-                debug,
-                debug,
+            return JSONResponse(
+                content={
+                    "symbol": symbol,
+                    "expirations": [],
+                    "strikes": [],
+                    "error": "plugin_ingest_pending",
+                    "provider": "massive",
+                }
             )
-            return await _massive_response_from_rest_result(result)
 
         # Full expiration list
         if db and ecfg["enabled"]:
@@ -309,43 +269,18 @@ async def get_option_expirations(
             if snap:
                 exps, max_u = snap
                 if exps:
-                    if _expiration_cache_is_fresh(max_u, ttl_sec):
-                        body_f = {
-                            "symbol": symbol,
-                            "expirations": exps,
-                            "strikes": [],
-                            "provider": "massive",
-                            "expiration_backend": "cache",
-                        }
-                        if last_price is not None:
-                            body_f["last_price"] = last_price
-                        return _option_expirations_cache_response(body_f, {"X-Expiration-Cache": "fresh"})
-                    if ecfg["stale_while_revalidate"] and ms["api_key"]:
-                        db_cfg = db
-                        cfg_c = config
-
-                        def _bg_refresh() -> None:
-                            refresh_expirations_from_massive_api(
-                                db_cfg, cfg_c, symbol, None, False
-                            )
-
-                        background_tasks.add_task(_bg_refresh)
-                        body_s = {
-                            "symbol": symbol,
-                            "expirations": exps,
-                            "strikes": [],
-                            "provider": "massive",
-                            "expiration_backend": "cache_stale",
-                        }
-                        if last_price is not None:
-                            body_s["last_price"] = last_price
-                        return _option_expirations_cache_response(
-                            body_s,
-                            {
-                                "X-Expiration-Cache": "stale",
-                                "Cache-Control": "private, max-age=60",
-                            },
-                        )
+                    fresh = _expiration_cache_is_fresh(max_u, ttl_sec)
+                    body_f = {
+                        "symbol": symbol,
+                        "expirations": exps,
+                        "strikes": [],
+                        "provider": "massive",
+                        "expiration_backend": "cache" if fresh else "cache_stale",
+                    }
+                    if last_price is not None:
+                        body_f["last_price"] = last_price
+                    header = "fresh" if fresh else "stale"
+                    return _option_expirations_cache_response(body_f, {"X-Expiration-Cache": header})
 
         if db:
             ex_contracts = get_option_expirations_from_contracts_db(db, symbol)
@@ -361,27 +296,15 @@ async def get_option_expirations(
                     body_c["last_price"] = last_price
                 return _option_expirations_cache_response(body_c, {"X-Expiration-Cache": "hit"})
 
-        if not ms["api_key"]:
-            return JSONResponse(
-                content={
-                    "symbol": symbol,
-                    "expirations": [],
-                    "strikes": [],
-                    "error": "Massive API key not configured",
-                    "provider": "massive",
-                }
-            )
-
-        result = await asyncio.to_thread(
-            refresh_expirations_from_massive_api,
-            db,
-            config,
-            symbol,
-            None,
-            debug,
-            debug,
+        return JSONResponse(
+            content={
+                "symbol": symbol,
+                "expirations": [],
+                "strikes": [],
+                "error": "plugin_ingest_pending",
+                "provider": "massive",
+            }
         )
-        return await _massive_response_from_rest_result(result)
 
     if prov == "massive":
         return await _massive_db_first_flow()
@@ -1018,7 +941,7 @@ def get_iv_volatility_cone(
     lookback_days: int = Query(90, ge=1, le=90, description="Calendar days of history (max 90)"),
 ) -> Dict[str, Any]:
     """ATM IV percentile bands per expiration from historical option_snapshots (IV volatility cone)."""
-    from datetime import date, datetime
+    from datetime import datetime
 
     from bifrost_api.research.market_pg import (
         get_option_snapshots_eod_per_day,

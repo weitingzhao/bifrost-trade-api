@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 import threading
 import time
 import uuid
@@ -35,8 +34,6 @@ from bifrost_api.research.reference_cache_keys import (
 )
 
 PHASE4_VERSION = "sepa_phase4_v1"
-_RATE_LOCK = threading.Lock()
-_LAST_CALL_TS = 0.0
 _PROGRESS_LOCK = threading.Lock()
 _LAST_PROGRESS_WRITE_TS: Dict[str, float] = {}
 
@@ -167,64 +164,10 @@ def _update_progress(
     _update_job(status_config, job_id, progress={"current": current, "total": total, "stage": stage, "pct": pct})
 
 
-def _throttle(rate_limit_rps: float) -> None:
-    global _LAST_CALL_TS
-    if rate_limit_rps <= 0:
-        return
-    gap = 1.0 / float(rate_limit_rps)
-    with _RATE_LOCK:
-        now = time.monotonic()
-        wait = gap - (now - _LAST_CALL_TS)
-        if wait > 0:
-            time.sleep(wait)
-            now = time.monotonic()
-        _LAST_CALL_TS = now
-
-
-def _fetch_income_with_retry(
-    client: Any,
-    symbol: str,
-    *,
-    timeframe: str,
-    max_retries: int,
-    retry_base_sec: float,
-    rate_limit_rps: float,
-) -> Dict[str, Any]:
-    last_error: Optional[str] = None
-    for attempt in range(max(1, max_retries)):
-        _throttle(rate_limit_rps)
-        try:
-            res = client.fetch_stock_income_statements(
-                symbol,
-                timeframe=timeframe,
-                limit=12 if timeframe == "quarterly" else 5,
-                sort="filing_date.desc",
-            )
-            if not isinstance(res, dict):
-                return {"results": [], "error": "invalid_response"}
-            if res.get("error"):
-                err = str(res.get("error"))
-                last_error = err
-                lowered = err.lower()
-                if ("429" in lowered or "timeout" in lowered or "503" in lowered or "502" in lowered) and (
-                    attempt + 1 < max_retries
-                ):
-                    backoff = (retry_base_sec * (2**attempt)) + random.uniform(0, retry_base_sec / 2.0)
-                    time.sleep(backoff)
-                    continue
-            return res
-        except Exception as exc:
-            last_error = str(exc)
-            if attempt + 1 < max_retries:
-                backoff = (retry_base_sec * (2**attempt)) + random.uniform(0, retry_base_sec / 2.0)
-                time.sleep(backoff)
-                continue
-    return {"results": [], "error": last_error or "unknown_error"}
 
 
 def _fetch_eval_one(
     symbol: str,
-    client: Any,
     status_config: dict,
     cfg: FundamentalsConfig,
     p4cfg: Phase4JobConfig,
@@ -272,7 +215,7 @@ def _fetch_eval_one(
         qrows, arows = pg_pair
         evaluated = evaluate_fundamentals(qrows, arows, cfg=cfg)
         evaluated["symbol"] = symbol
-        evaluated["cache_hit"] = "postgres_income_table"
+        evaluated["cache_hit"] = "plugin_income_table"
         eval_payload = {
             "evaluation": evaluated,
             "quarterly_rows": qrows,
@@ -296,55 +239,18 @@ def _fetch_eval_one(
                 pass
         return evaluated
 
-    qres = _fetch_income_with_retry(
-        client,
-        symbol,
-        timeframe="quarterly",
-        max_retries=p4cfg.max_retries,
-        retry_base_sec=p4cfg.retry_base_sec,
-        rate_limit_rps=p4cfg.rate_limit_rps,
-    )
-    ares = _fetch_income_with_retry(
-        client,
-        symbol,
-        timeframe="annual",
-        max_retries=p4cfg.max_retries,
-        retry_base_sec=p4cfg.retry_base_sec,
-        rate_limit_rps=p4cfg.rate_limit_rps,
-    )
-    qrows = qres.get("results") if isinstance(qres, dict) else []
-    arows = ares.get("results") if isinstance(ares, dict) else []
-    if not isinstance(qrows, list):
-        qrows = []
-    if not isinstance(arows, list):
-        arows = []
-    evaluated = evaluate_fundamentals(qrows, arows, cfg=cfg)
-    evaluated["symbol"] = symbol
-    evaluated["cache_hit"] = None
-    eval_payload = {
-        "evaluation": evaluated,
-        "quarterly_rows": qrows,
-        "annual_rows": arows,
-        "error": qres.get("error") or ares.get("error"),
-        "saved_at": _utc_now(),
+    return {
+        "symbol": symbol,
+        "fundamental_pass": False,
+        "insufficient_data": True,
+        "not_comparable": False,
+        "conditions": [],
+        "pass_count": 0,
+        "fail_count": 0,
+        "metrics": {},
+        "issues": ["insufficient_data"],
+        "cache_hit": None,
     }
-    upsert_sepa_fundamentals_cache(
-        status_config,
-        symbol,
-        eval_payload,
-        rule_version=FUNDAMENTALS_RULE_VERSION,
-        ttl_sec=p4cfg.cache_ttl_sec,
-    )
-    if redis_client:
-        try:
-            import json
-
-            redis_client.setex(cache_key, int(p4cfg.cache_ttl_sec), json.dumps(eval_payload))
-        except Exception:
-            pass
-    if qres.get("error") or ares.get("error"):
-        evaluated.setdefault("issues", []).append("api_error")
-    return evaluated
 
 
 def run_sepa_phase4_job(
@@ -353,7 +259,6 @@ def run_sepa_phase4_job(
     symbols: List[str],
     status_config: dict,
     merged_config: dict,
-    massive_client: Any,
     cfg: Optional[Phase4JobConfig] = None,
 ) -> None:
     p4cfg = cfg or Phase4JobConfig()
@@ -405,7 +310,6 @@ def run_sepa_phase4_job(
                     ex.submit(
                         _fetch_eval_one,
                         sym,
-                        massive_client,
                         status_config,
                         fund_cfg,
                         p4cfg,
@@ -437,7 +341,7 @@ def run_sepa_phase4_job(
                     _update_progress(status_config, job_id, stage="phase3_fundamentals", current=done, total=len(candidates))
         else:
             for idx, sym in enumerate(candidates):
-                row = _fetch_eval_one(sym, massive_client, status_config, fund_cfg, p4cfg, redis_client)
+                row = _fetch_eval_one(sym, status_config, fund_cfg, p4cfg, redis_client)
                 fund_rows.append(row)
                 _update_progress(status_config, job_id, stage="phase3_fundamentals", current=idx + 1, total=len(candidates))
 

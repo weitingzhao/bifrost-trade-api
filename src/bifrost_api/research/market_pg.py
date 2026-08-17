@@ -739,31 +739,3 @@ def get_report_option_atm_iv_daily(
     return []
 
 
-def refresh_expirations_from_massive_api(
-    status_config: dict,
-    config: dict,
-    symbol: str,
-    *,
-    expiration_date: Optional[str] = None,
-    include_debug: bool = False,
-) -> Dict[str, Any]:
-    """Live Polygon refresh retired — use market-data plugin ingest."""
-    _ = (status_config, config, expiration_date, include_debug)
-    sym = (symbol or "").strip().upper()
-    return {
-        "ok": False,
-        "symbol": sym,
-        "expirations": [],
-        "strikes": [],
-        "error": "Massive REST refresh retired — use market-data plugin; DB cache still served when present",
-        "reason": "massive_retired",
-    }
-
-
-def upsert_option_contracts_from_reference_rows(
-    status_config: dict,
-    underlying: str,
-    contract_rows: List[Dict[str, Any]],
-) -> int:
-    _ = (status_config, underlying, contract_rows)
-    return 0

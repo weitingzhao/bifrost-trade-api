@@ -1,7 +1,4 @@
-"""Aggregate Celery self-description: task routes, canonical broker queues.
-
-Massive ``run_massive_job`` matrix retired (Wave 7-C) — use market-data plugin.
-"""
+"""Aggregate Celery self-description: task routes, canonical broker queues."""
 
 from __future__ import annotations
 
@@ -35,7 +32,7 @@ def build_celery_capabilities_payload(
     beat_running: bool | None = None,
     consuming_queues: List[str] | None = None,
 ) -> Dict[str, Any]:
-    """Return registered tasks + canonical queue names (Massive matrix empty)."""
+    """Return registered tasks + canonical queue names."""
     cfg = _config_for_capabilities()
     for msg in ops_celery_config_validation_errors(cfg):
         logger.warning("ops celery config: %s", msg)
@@ -62,12 +59,9 @@ def build_celery_capabilities_payload(
         "registered_tasks": registered,
         "count": len(registered),
         "canonical_broker_queues": list(load_canonical_broker_queue_names(cfg)),
-        "run_massive_job_matrix": [],
         "beat_tasks": [],
         "broker_queue_labels": broker_queue_labels,
         "beat_running": beat_running,
         "consuming_queues": list(consuming_queues or []),
-        "massive_retired": True,
-        "massive_note": "Massive Celery queues retired — use market-data plugin",
     }
     return out
