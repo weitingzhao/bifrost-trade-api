@@ -65,7 +65,13 @@ def _assert_config_shape(body: dict) -> None:
     assert "feeds" not in body
     assert "ib_status" not in body["monitor"]
     sk = body["socket"]
-    assert set(sk.keys()) >= {"massive", "ib_ingestor", "ib_account_agent", "ib_operator"}
+    assert set(sk.keys()) >= {
+        "polygon_ws",
+        "massive",
+        "ib_ingestor",
+        "ib_account_agent",
+        "ib_operator",
+    }
     assert "ib_status" not in sk
 
 
@@ -145,6 +151,8 @@ def test_assemble_status_v8_config_shape() -> None:
     assert body["socket"]["ib_operator"]["host"]["connected"] is True
     assert body["socket"]["ib_operator"]["host"]["client_id"] == 100
     assert body["socket"]["massive"]["configured"] is False
+    assert body["socket"]["polygon_ws"]["configured"] is False
+    assert body["socket"]["polygon_ws"] is body["socket"]["massive"]
 
 
 def test_build_ib_socket_status_unified_host_slot_fields() -> None:

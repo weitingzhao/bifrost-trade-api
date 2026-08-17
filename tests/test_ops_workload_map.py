@@ -14,6 +14,15 @@ def test_deployment_for_unit_maps_celery_template_instance():
     assert deployment_for_unit("bifrost-celery-worker@stocks_massive-1.service") == "celery-worker"
 
 
+def test_deployment_for_unit_maps_polygon_ws_and_retired_aliases():
+    assert deployment_for_unit("polygon-ws-ingestor") == "polygon-ws-ingestor"
+    assert deployment_for_unit("polygon-ws-ingestor.service") == "polygon-ws-ingestor"
+    assert deployment_for_unit("bifrost-massive-ws") == "polygon-ws-ingestor"
+    assert deployment_for_unit("bifrost-massive-ws.service") == "polygon-ws-ingestor"
+    assert deployment_for_unit("massive-ws") == "polygon-ws-ingestor"
+    assert deployment_for_unit("massive-ws.service") == "polygon-ws-ingestor"
+
+
 def test_deployment_for_unit_unknown():
     assert deployment_for_unit("not-a-unit") is None
     assert deployment_for_unit("") is None

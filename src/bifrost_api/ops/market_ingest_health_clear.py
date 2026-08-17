@@ -16,6 +16,7 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
+from bifrost_api.ops.market_ingest_config import is_polygon_ws_service_id
 from bifrost_core.core.message_center import publish_ib_service_stopped_messages
 from bifrost_core.core.redis_health_keys import (
     ENGINE_OPS_ACTIVE_REDIS_FIELD,
@@ -142,7 +143,7 @@ def ingest_redis_health_looks_live(redis_url: str, meta_key: str, service_id: st
 
 
 def _hash_looks_connected(m: Dict[str, str], sid: str) -> bool:
-    if sid == "massive_ws":
+    if is_polygon_ws_service_id(sid):
         return redis_hash_field_truthy(m, "connected")
     if sid in ("ib_ingestor", "ib_market"):
         return redis_hash_field_truthy(m, "connected")
@@ -163,14 +164,14 @@ def _hash_looks_connected(m: Dict[str, str], sid: str) -> bool:
     return False
 
 
-_PLUGIN_MANAGED_IDS = frozenset({"massive_ws"})
+_PLUGIN_MANAGED_IDS = frozenset({"polygon_ws", "massive_ws"})
 
 
 def clear_ingest_health_after_stop(redis_url: str, meta_key: str, service_id: str) -> None:
     """HSET disconnected snapshot on the ingest health hash (does not delete the key).
 
-    Plugin-managed services (massive_ws) are not cleared by Trade Ops — the Plugin
-    process owns the health hash lifecycle on redis-massive.
+    Plugin-managed services (polygon_ws / legacy massive_ws) are not cleared by Trade Ops —
+    the Plugin process owns the health hash lifecycle on redis-massive.
     """
     key = (meta_key or "").strip()
     if not key:

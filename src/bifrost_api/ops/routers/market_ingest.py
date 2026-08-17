@@ -12,7 +12,11 @@ from fastapi import APIRouter, BackgroundTasks, Body, Request
 from fastapi.responses import JSONResponse
 
 from bifrost_api.ops.ib_operator_rpc import ib_operator_disconnect_all_sync
-from bifrost_api.ops.market_ingest_config import market_ingest_service_by_id, market_ingest_services_from_config
+from bifrost_api.ops.market_ingest_config import (
+    is_polygon_ws_service_id,
+    market_ingest_service_by_id,
+    market_ingest_services_from_config,
+)
 from bifrost_api.ops.market_ingest_control_env import (
     clear_control_env,
     meta_redis_url_from_ops_config,
@@ -46,7 +50,8 @@ _ENSURE_START_START_TIMEOUT_SEC = 45
 _RECENT_CONTROL_WRITE_GRACE_SEC = 120.0
 
 _STG_K8S_SOCKET_INGEST_IDS = frozenset({
-    "massive_ws",
+    "polygon_ws",
+    "massive_ws",  # dual-accept legacy id
     "ib_ingestor",
     "ib_operator",
     "ib_account_agent",
@@ -71,7 +76,7 @@ def _stg_k8s_control_reject_message(service_id: str) -> str:
     return (
         "STG socket ingest runs in K8s Deployments, not Ops subprocess on this host. "
         "Restart with kubectl rollout restart deployment/<name> -n bifrost-stg "
-        "(e.g. massive-ws)."
+        "(e.g. polygon-ws-ingestor; retired alias massive-ws)."
     )
 
 
@@ -233,7 +238,7 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
         redis_control_host: Optional[str] = None
         redis_control_updated_at: Optional[float] = None
         row_sid = (row.get("id") or "").strip()
-        svc_rurl = massive_rurl if row_sid == "massive_ws" and massive_rurl else rurl
+        svc_rurl = massive_rurl if is_polygon_ws_service_id(row_sid) and massive_rurl else rurl
         if svc_rurl:
             # Dev/Prod HOST is stored on the service health hash so Prod can use the same
             # Redis node it already updates (bifrost:health:*), avoiding bifrost:ops:lease:*.
@@ -414,7 +419,7 @@ async def market_ingest_control(
     meta_key = (svc.get("redis_meta_key") or "").strip()
     rurl = meta_redis_url_from_ops_config(cfg)
     massive_rurl = massive_redis_url_from_config(cfg)
-    svc_rurl = massive_rurl if sid == "massive_ws" and massive_rurl else rurl
+    svc_rurl = massive_rurl if is_polygon_ws_service_id(sid) and massive_rurl else rurl
     # Dev/Prod HOST lives in each service health hash. Linux Prod has proven writes to
     # bifrost:health:* work, while bifrost:ops:lease:* may be unavailable/filtered.
     lease_key = meta_key
@@ -560,7 +565,7 @@ async def market_ingest_control(
                         "ib_operator reset: disconnect_all RPC failed (%s); continuing with restart",
                         rpc_err,
                     )
-            # massive_ws / ib_ingestor / ib_operator: ordered release + restart via systemd.
+            # polygon_ws / ib_ingestor / ib_operator: ordered release + restart via systemd.
             result = await exc._systemctl("restart", unit)  # noqa: SLF001
             if extra:
                 result = {**result, **extra} if isinstance(result, dict) else {"result": result, **extra}
@@ -675,7 +680,7 @@ async def market_ingest_clear_conflict_leases(request: Request) -> Any:
         if not meta_key:
             continue
         lk = meta_key
-        row_rurl = massive_rurl if row_sid == "massive_ws" and massive_rurl else rurl
+        row_rurl = massive_rurl if is_polygon_ws_service_id(row_sid) and massive_rurl else rurl
         try:
             await asyncio.to_thread(clear_control_env, row_rurl, lk)
             cleared.append(row_sid)

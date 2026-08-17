@@ -226,7 +226,7 @@ class KubernetesExecutor:
         """Resolve a workload to (kind, object).
 
         W5 trade-k8s-native: IB socket services migrated Deployment → StatefulSet.
-        Prefer a Deployment (back-compat: celery + massive-ws); fall back to a
+        Prefer a Deployment (back-compat: celery + polygon-ws-ingestor / retired massive-ws); fall back to a
         StatefulSet on 404 so api-ops controls both kinds with one code path.
         """
         from kubernetes.client.rest import ApiException
@@ -442,7 +442,7 @@ class KubernetesExecutor:
         workload: str,
         unit: str,
     ) -> Dict[str, Any]:
-        # W5: workload may be a Deployment (celery/massive-ws) or a StatefulSet (IB edge).
+        # W5: workload may be a Deployment (celery/polygon-ws) or a StatefulSet (IB edge).
         spec_rep, _ready, kind = await self._workload_ready_replicas(workload)
         is_daemon = workload == _DAEMON_DEPLOYMENT
 

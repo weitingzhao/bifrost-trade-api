@@ -26,7 +26,7 @@ from bifrost_core.core.redis_health_keys import (
     hgetall_ib_account_agent_health,
     redis_hash_field_truthy,
     hgetall_ib_ingestor_health,
-    hgetall_massive_ws_status,
+    hgetall_polygon_ws_status,
 )
 from bifrost_core.monitor.redis_url import massive_redis_url_from_config
 
@@ -151,6 +151,8 @@ def _status_error_payload() -> Dict[str, Any]:
         ),
         "market_data": {"quotes_redis_reader_ok": False},
         "socket": {
+            # Owner gate before dropping socket.massive (Wave C dual-write).
+            "polygon_ws": None,
             "massive": None,
             "ib_ingestor": None,
             "ib_account_agent": None,
@@ -262,6 +264,9 @@ def _assemble_status_v3(
         ),
         "market_data": {"quotes_redis_reader_ok": quotes_redis_reader_ok},
         "socket": {
+            # Official key; same payload as massive during Wave C dual-write.
+            "polygon_ws": massive,
+            # Owner gate before dropping socket.massive.
             "massive": massive,
             "ib_ingestor": ib_ingestor,
             "ib_account_agent": ib_account_agent,
@@ -546,7 +551,7 @@ def get_status(request: Request) -> Dict[str, Any]:
                     _massive_r = None
             if _rurl:
                 _r = redis_mod.from_url(_rurl, decode_responses=True)
-                _mh = hgetall_massive_ws_status(_r, r_massive=_massive_r)
+                _mh = hgetall_polygon_ws_status(_r, r_massive=_massive_r)
                 if _mh:
                     _now = time.time()
                     massive_info["ws_connected"] = redis_hash_field_truthy(_mh, "connected")

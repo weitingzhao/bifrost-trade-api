@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
+from bifrost_api.ops.market_ingest_config import is_polygon_ws_service_id
 from bifrost_api.ops.market_ingest_health_clear import (
     ingest_health_is_platform_gateway,
     ingest_redis_health_looks_live,
@@ -11,7 +12,7 @@ from bifrost_api.ops.market_ingest_health_clear import (
 )
 
 _PLATFORM_IB_INGEST_IDS = frozenset({"ib_ingestor", "ib_operator", "ib_account_agent"})
-_PLUGIN_MANAGED_INGEST_IDS = frozenset({"massive_ws"})
+_PLUGIN_MANAGED_INGEST_IDS = frozenset({"polygon_ws", "massive_ws"})
 
 
 def _process_counts_as_running(active: str) -> bool:
@@ -20,13 +21,20 @@ def _process_counts_as_running(active: str) -> bool:
 
 
 def massive_ws_policy_disabled(config: dict) -> bool:
-    """True when Polygon WS ingest is intentionally off (REST-only / Starter tier)."""
+    """True when Polygon WS ingest is intentionally off (REST-only / Starter tier).
+
+    Reads YAML ``massive:`` block (key name unchanged — Wave B does not rename config).
+    """
     massive = config.get("massive") or {}
     feats = massive.get("features") or {}
     tier = str(massive.get("tier") or "starter").strip().lower()
     if "ws_enabled" in feats:
         return not bool(feats["ws_enabled"])
     return tier == "starter"
+
+
+# Preferred alias (Wave B); keep ``massive_ws_policy_disabled`` for callers/tests.
+polygon_ws_policy_disabled = massive_ws_policy_disabled
 
 
 def derive_ingest_display_state(
@@ -47,7 +55,7 @@ def derive_ingest_display_state(
     mk = (meta_key or "").strip()
     health_url = ib_redis_url or redis_url
 
-    if sid == "massive_ws" and massive_ws_policy_disabled(config):
+    if is_polygon_ws_service_id(sid) and massive_ws_policy_disabled(config):
         return {
             "runtime_status": "policy-off",
             "display_active": "ws-disabled (REST-only)",
