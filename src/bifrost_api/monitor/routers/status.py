@@ -28,6 +28,7 @@ from bifrost_core.core.redis_health_keys import (
     hgetall_ib_ingestor_health,
     hgetall_massive_ws_status,
 )
+from bifrost_core.monitor.redis_url import massive_redis_url_from_config
 
 logger = logging.getLogger(__name__)
 
@@ -502,6 +503,8 @@ def get_status(request: Request) -> Dict[str, Any]:
         _r: Any = None
         _ib_rurl: Optional[str] = None
         _ib_r: Any = None
+        _massive_rurl: Optional[str] = None
+        _massive_r: Any = None
         try:
             from bifrost_core.config.startup import get_effective_ib_config
             from bifrost_core.monitor.integrations.ib_socket_status import build_ib_socket_status
@@ -530,9 +533,20 @@ def get_status(request: Request) -> Dict[str, Any]:
             }
             _rurl = redis_url_from_config(reader._config)
             _ib_rurl = ib_redis_url_from_config(reader._config)
+            _massive_rurl = massive_redis_url_from_config(reader._config)
+            if _massive_rurl and _massive_rurl != _rurl:
+                try:
+                    _massive_r = redis_mod.from_url(
+                        _massive_rurl,
+                        decode_responses=True,
+                        socket_connect_timeout=2,
+                        socket_timeout=2,
+                    )
+                except Exception:
+                    _massive_r = None
             if _rurl:
                 _r = redis_mod.from_url(_rurl, decode_responses=True)
-                _mh = hgetall_massive_ws_status(_r)
+                _mh = hgetall_massive_ws_status(_r, r_massive=_massive_r)
                 if _mh:
                     _now = time.time()
                     massive_info["ws_connected"] = redis_hash_field_truthy(_mh, "connected")

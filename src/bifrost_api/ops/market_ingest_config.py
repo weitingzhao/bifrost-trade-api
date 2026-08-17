@@ -62,7 +62,7 @@ def _ensure_socket_feed_rows_for_daemon_only_yaml(out: List[Dict[str, str]]) -> 
 DEFAULT_MARKET_INGEST_SERVICES: List[Dict[str, str]] = [
     {
         "id": "massive_ws",
-        "label": "Massive Options WS ingest",
+        "label": "Polygon Options WS (Plugin · redis-massive)",
         "systemd_unit": "bifrost-massive-ws.service",
         "redis_meta_key": BIFROST_HEALTH_MASSIVE_WS,
     },

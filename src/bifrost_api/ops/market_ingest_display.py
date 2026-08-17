@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 from bifrost_api.ops.market_ingest_health_clear import (
     ingest_health_is_platform_gateway,
@@ -11,6 +11,7 @@ from bifrost_api.ops.market_ingest_health_clear import (
 )
 
 _PLATFORM_IB_INGEST_IDS = frozenset({"ib_ingestor", "ib_operator", "ib_account_agent"})
+_PLUGIN_MANAGED_INGEST_IDS = frozenset({"massive_ws"})
 
 
 def _process_counts_as_running(active: str) -> bool:
@@ -50,6 +51,25 @@ def derive_ingest_display_state(
         return {
             "runtime_status": "policy-off",
             "display_active": "ws-disabled (REST-only)",
+        }
+
+    if sid in _PLUGIN_MANAGED_INGEST_IDS:
+        if health_url and mk:
+            is_live = ingest_redis_health_looks_live(health_url, mk, sid)
+            writer_recent = ingest_redis_health_writer_recent(health_url, mk)
+            if is_live:
+                return {
+                    "runtime_status": "active",
+                    "display_active": "managed@plugin-market-data (redis-massive)",
+                }
+            if writer_recent:
+                return {
+                    "runtime_status": "degraded",
+                    "display_active": "managed@plugin-market-data (starting)",
+                }
+        return {
+            "runtime_status": "inactive",
+            "display_active": "managed@plugin-market-data (offline)",
         }
 
     if sid == "trading_engine" and not _process_counts_as_running(process_active):

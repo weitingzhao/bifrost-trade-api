@@ -163,12 +163,24 @@ def _hash_looks_connected(m: Dict[str, str], sid: str) -> bool:
     return False
 
 
+_PLUGIN_MANAGED_IDS = frozenset({"massive_ws"})
+
+
 def clear_ingest_health_after_stop(redis_url: str, meta_key: str, service_id: str) -> None:
-    """HSET disconnected snapshot on the ingest health hash (does not delete the key)."""
+    """HSET disconnected snapshot on the ingest health hash (does not delete the key).
+
+    Plugin-managed services (massive_ws) are not cleared by Trade Ops — the Plugin
+    process owns the health hash lifecycle on redis-massive.
+    """
     key = (meta_key or "").strip()
     if not key:
         return
     sid = (service_id or "").strip()
+    if sid in _PLUGIN_MANAGED_IDS:
+        logger.info(
+            "clear_ingest_health_after_stop: skipping %s — Plugin-managed service", sid
+        )
+        return
     now = time.time()
     r = _conn(redis_url)
     try:
@@ -178,18 +190,7 @@ def clear_ingest_health_after_stop(redis_url: str, meta_key: str, service_id: st
             "ib_account_agent",
             "ib_operator",
         ) else {}
-        if sid == "massive_ws":
-            r.hset(
-                key,
-                mapping={
-                    "connected": "0",
-                    "last_msg_ts": str(now),
-                    "reconnects": "0",
-                    "msg_count": "0",
-                    "updated_at": str(now),
-                },
-            )
-        elif sid in ("ib_ingestor", "ib_market"):
+        if sid in ("ib_ingestor", "ib_market"):
             r.hset(
                 key,
                 mapping={
