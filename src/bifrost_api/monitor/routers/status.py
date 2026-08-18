@@ -16,8 +16,6 @@ from bifrost_core.monitor.reader.reference_indices_merge import (
 from bifrost_core.monitor.reader.ib_config_public import (
     ib_client_for_api,
     ib_client_public_defaults,
-    ib_flex_for_status_api,
-    ib_flex_public_defaults,
 )
 from bifrost_core.monitor.self_check import derive_daemon_self_check, derive_health_roll_up
 from bifrost_core.core.realtime.redis_keys import SUBSCRIBE_CHANNEL_DEFAULT
@@ -108,7 +106,6 @@ def _strategy_status_block(
 def _status_error_payload() -> Dict[str, Any]:
     """Minimal schema v8 body when status read fails (200 + blocked)."""
     ib_c = ib_client_public_defaults()
-    flex_b = ib_flex_public_defaults()
     return {
         "status_schema_version": STATUS_SCHEMA_VERSION,
         "health": {
@@ -138,7 +135,6 @@ def _status_error_payload() -> Dict[str, Any]:
         },
         "config": {
             "ib_client": ib_c,
-            "ib_flex": flex_b,
             "redis": {"subscribe_channel": SUBSCRIBE_CHANNEL_DEFAULT},
         },
         "strategy": _strategy_status_block(
@@ -185,7 +181,6 @@ def _assemble_status_v3(
     accounts: Any,
     accounts_fetched_at: Any,
     ib_config: Dict[str, Any],
-    flex_config: Any,
     redis_subscribe_channel: str,
     open_orders: Any,
     active_structure_id: Any,
@@ -250,7 +245,6 @@ def _assemble_status_v3(
         },
         "config": {
             "ib_client": ib_client_for_api(ib_config),
-            "ib_flex": ib_flex_for_status_api(ib_config, flex_config),
             "redis": {"subscribe_channel": redis_subscribe_channel},
         },
         "strategy": _strategy_status_block(
@@ -363,7 +357,6 @@ def get_status(request: Request) -> Dict[str, Any]:
             accounts = []
         accounts_fetched_at = reader.get_accounts_fetched_at()
         ib_config = reader.get_ib_config() or {}
-        flex_config = reader.get_flex_config()
         open_orders = reader.get_open_orders()
 
         active_strategy_structure_id = reader.get_active_strategy_structure_id()
@@ -751,7 +744,6 @@ def get_status(request: Request) -> Dict[str, Any]:
             accounts=accounts,
             accounts_fetched_at=accounts_fetched_at,
             ib_config=ib_config,
-            flex_config=flex_config,
             redis_subscribe_channel=redis_subscribe_channel,
             open_orders=open_orders,
             active_structure_id=active_strategy_structure_id,

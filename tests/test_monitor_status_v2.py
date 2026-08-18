@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import time
-
 from bifrost_core.monitor.integrations.ib_socket_status import build_ib_socket_status
 
 from bifrost_api.monitor.routers.status import (
@@ -27,10 +25,11 @@ _IB_CFG = {
 def _assert_config_shape(body: dict) -> None:
     assert body["status_schema_version"] == STATUS_SCHEMA_VERSION == 9
     cfg = body["config"]
-    assert set(cfg.keys()) >= {"ib_client", "ib_flex", "redis"}
+    assert set(cfg.keys()) >= {"ib_client", "redis"}
     assert "subscribe_channel" in cfg["redis"]
     assert isinstance(cfg["redis"]["subscribe_channel"], str)
     assert "ib_config" not in cfg
+    assert "ib_flex" not in cfg
     assert "flex" not in cfg
     assert "flex_config" not in cfg
 
@@ -47,12 +46,6 @@ def _assert_config_shape(body: dict) -> None:
     assert "client_id" not in ic
     assert "connect_timeout_sec" not in ic
     assert "trading_account_id" not in ic["account"]
-
-    fl = cfg["ib_flex"]
-    assert "default_range_days" in fl
-    assert "init_range_days" in fl
-    assert "host_token" in fl
-    assert "rows" in fl
 
     assert "strategy_active" not in body
     st = body["strategy"]
@@ -107,10 +100,7 @@ def test_assemble_status_v8_config_shape() -> None:
             "ib_host_account_id": "U1",
             "stream_host_account_id": "U2",
             "stream_secondary_account_id": None,
-            "flex_default_range_days": 30,
-            "flex_init_range_days": 360,
         },
-        flex_config={"host_token": "t", "secondary_token": None, "rows": []},
         redis_subscribe_channel="ib:ingester:channel",
         open_orders=[],
         active_structure_id=None,
@@ -145,8 +135,7 @@ def test_assemble_status_v8_config_shape() -> None:
     assert ic["account"]["trading"] == "U1"
     assert ic["account"]["event_host"] == "U2"
     assert body["config"]["redis"]["subscribe_channel"] == "ib:ingester:channel"
-    assert body["config"]["ib_flex"]["default_range_days"] == 30
-    assert body["config"]["ib_flex"]["host_token"] == "t"
+    assert "ib_flex" not in body["config"]
     assert body["socket"]["ib_operator"]["connected"] is True
     assert body["socket"]["ib_operator"]["host"]["connected"] is True
     assert body["socket"]["ib_operator"]["host"]["client_id"] == 100
