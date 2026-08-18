@@ -1,14 +1,13 @@
-"""Config: IB, Flex, active-strategy (position-categories also mounted on Monitor for same DB when Portfolio process is off)."""
+"""Config: IB, active-strategy (Flex config write lives in Flex Query Plugin)."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from bifrost_core.monitor.reader import (
-    write_flex_config,
     write_ib_config,
 )
 from bifrost_core.monitor.reader.ib_config_public import ib_client_for_api
@@ -27,29 +26,6 @@ class IbConfigBody(BaseModel):
     ib_host_account_id: Optional[str] = None
     stream_host_account_id: Optional[str] = None
     stream_secondary_account_id: Optional[str] = None
-
-
-class FlexAccountItem(BaseModel):
-    """One Flex row: query_host_id (Host IB), query_secondary_id (Second IB, optional)."""
-    query_host_id: str
-    query_secondary_id: Optional[str] = None
-    query_label: Optional[str] = None
-    purpose: Optional[str] = "cash_transactions"
-
-    class Config:
-        extra = "ignore"
-
-
-class FlexConfigBody(BaseModel):
-    """POST /config/flex body: host_token, secondary_token, accounts, flex_default_range_days, flex_init_range_days."""
-    host_token: Optional[str] = None
-    secondary_token: Optional[str] = None
-    accounts: List[FlexAccountItem] = []
-    flex_default_range_days: Optional[int] = None
-    flex_init_range_days: Optional[int] = None
-
-    class Config:
-        extra = "ignore"
 
 
 class ActiveStrategyBody(BaseModel):
@@ -100,38 +76,6 @@ def post_config_ib(request: Request, body: IbConfigBody = Body(...)) -> JSONResp
         out: Dict[str, Any] = {"ok": True, **ib_client_for_api(merged)}
         return JSONResponse(status_code=200, content=out)
     return JSONResponse(status_code=500, content={"error": "failed to write settings"})
-
-
-@router.post("/config/flex")
-def post_config_flex(request: Request, body: FlexConfigBody = Body(...)) -> JSONResponse:
-    """Update settings (ib_flex_host_token, ib_flex_secondary_token) and settings_ib_flex rows."""
-    control_via_db = request.app.state.control_via_db
-    if not control_via_db:
-        return JSONResponse(status_code=503, content={"error": "control via DB not available (postgres required)"})
-    accounts = []
-    for a in body.accounts or []:
-        qh = (a.query_host_id or "").strip()
-        if not qh:
-            continue
-        accounts.append({
-            "query_host_id": qh,
-            "query_secondary_id": (a.query_secondary_id or "").strip() or None,
-            "query_label": (a.query_label or "").strip() or None,
-            "purpose": (a.purpose or "cash_transactions").strip() or "cash_transactions",
-        })
-    if write_flex_config(control_via_db, body.host_token, body.secondary_token, accounts, body.flex_default_range_days, body.flex_init_range_days):
-        return JSONResponse(
-            status_code=200,
-            content={
-                "ok": True,
-                "host_token": body.host_token,
-                "secondary_token": body.secondary_token,
-                "accounts": accounts,
-                "flex_default_range_days": body.flex_default_range_days,
-                "flex_init_range_days": body.flex_init_range_days,
-            },
-        )
-    return JSONResponse(status_code=500, content={"error": "failed to write flex config"})
 
 
 @router.post("/config/active-strategy")

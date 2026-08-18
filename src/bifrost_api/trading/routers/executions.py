@@ -1,4 +1,9 @@
-"""Executions and transactions: CRUD, Flex fetch, IB fetch, performance."""
+"""Executions and transactions: CRUD, IB TWS fetch, performance.
+
+Flex ingest (trades / cash / XML / config write) is served by Flex Query Plugin
+(``POST /flex/ingest/trigger``, ``POST /flex/ingest/upload-xml``, ``POST /flex/config/write``).
+``GET /transactions`` remains here to read already-ingested cash rows.
+"""
 
 import asyncio
 import logging
@@ -7,11 +12,6 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 
 from bifrost_core.portfolio.reader.option_stock_link import delete_option_stock_link, insert_option_stock_link
-from bifrost_core.portfolio.services.executions_fetch_flex import (
-    fetch_flex_trades_and_upsert_executions,
-    upsert_executions_from_uploaded_flex_xml,
-)
-from bifrost_core.portfolio.services.transactions_fetch import fetch_cash_transactions_from_flex
 from bifrost_core.monitor.reader import (
     write_account_executions_to_db,
     insert_one_execution,
@@ -311,32 +311,6 @@ def get_transactions(
     reader = request.app.state.reader
     items = reader.get_transactions(since_ts=since_ts, until_ts=until_ts, account_id=account_id, limit=limit)
     return {"transactions": items}
-
-
-@router.post("/transactions/fetch")
-def post_transactions_fetch(request: Request, body: Dict[str, Any] = Body(default=None)) -> Dict[str, Any]:
-    """Fetch cash transactions from IB Flex and upsert into account_transactions."""
-    reader = request.app.state.reader
-    control_via_db = request.app.state.control_via_db
-    return fetch_cash_transactions_from_flex(reader, control_via_db, body)
-
-
-@router.post("/executions/fetch-flex")
-def post_executions_fetch_flex(request: Request, body: Dict[str, Any] = Body(default=None)) -> Dict[str, Any]:
-    """Fetch executions/trades from IB Flex (Trades report) and upsert into account_executions."""
-    reader = request.app.state.reader
-    control_via_db = request.app.state.control_via_db
-    return fetch_flex_trades_and_upsert_executions(reader, control_via_db, body)
-
-
-@router.post("/executions/fetch-flex-upload")
-def post_executions_fetch_flex_upload(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-    """Upload Flex Trades XML and upsert into account_executions. Body: { "xml": "<FlexStatement ...>...</FlexStatement>" }"""
-    control_via_db = request.app.state.control_via_db
-    reader = request.app.state.reader
-    raw_xml = (body.get("xml") or "").strip()
-    cfg = getattr(reader, "_config", None)
-    return upsert_executions_from_uploaded_flex_xml(control_via_db, raw_xml, config=cfg)
 
 
 @router.post("/executions")
