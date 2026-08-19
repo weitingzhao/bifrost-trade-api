@@ -58,7 +58,7 @@ Write-path operator token (P6): Trade writers send `Authorization: Bearer $MARKE
 
 ### DDL legacy views (remediated 2026-08-14)
 
-`v_us_equity_universe` and `v_sepa_symbol_price_readiness` are now **thin views** over Plugin-synced tables `public.us_equity_universe` and `public.sepa_symbol_price_readiness` (see `universe_sync.py`). The old `to_regclass('market.*')` guards are gone.
+`public.v_us_equity_universe` is now a backward-compat VIEW over `market.v_us_equity_universe` (FDW-backed from `market.ticker`). The physical `us_equity_universe` and `sepa_symbol_price_readiness` tables and their views have been dropped (core 0.8.3). Price readiness summary is computed at query time via Plugin API `/readiness/bar-aggregate`.
 
 ## Final grep audit
 

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # No row in cache_stock_snapshot for a symbol: never a gap (ignore stock_day / readiness for that symbol).
 # Exclude tickers.instrument_type = 'WARRANT' (case-insensitive) from all gaps.
 # Fallback when snapshot row exists, session_close and last_minute_updated semantics apply:
-# last_minute_updated NULL only then NOT price_ready on v_sepa_symbol_price_readiness (or no p row);
+# last_minute_updated NULL only then NOT price_ready from bar aggregate (or no bar data);
 # still excluding warrants. session_close must be non-null (same as vendor path).
 # Close "equality" uses absolute tolerance (same as SQL) — see _STOCK_DAY_GAP_CLOSE_MATCH_ABS_EPS.
 _STOCK_DAY_GAP_CLOSE_MATCH_ABS_EPS = 0.0001
@@ -127,8 +127,8 @@ READINESS_DATA_CATALOG: Dict[str, Any] = {
         {
             "id": "tickers",
             "object": "public.v_us_equity_universe",
-            "role": "US equity universe synced from Plugin GET /market/reference/universe.",
-            "typical_ingest": "Plugin API universe_sync (Golden Source)",
+            "role": "US equity universe via FDW from Golden Source market.ticker.",
+            "typical_ingest": "FDW (postgres_fdw → market.ticker)",
             "data_points": [
                 "symbol",
                 "name",
@@ -222,19 +222,17 @@ READINESS_DATA_CATALOG: Dict[str, Any] = {
         },
         {
             "id": "v_sepa_symbol_price_readiness",
-            "object": "public.v_sepa_symbol_price_readiness",
-            "role": "Per-symbol bar counts and price_ready over a fixed lookback window (live).",
+            "object": "Plugin API /readiness/bar-aggregate",
+            "role": "Per-symbol bar counts and price_ready computed at query time via Plugin API.",
             "depends_on": ["stock_day"],
             "data_points": [
-                "as_of_date",
                 "symbol",
-                "price_source",
                 "bar_rows",
                 "first_bar_date",
                 "last_bar_date",
                 "null_close_rows",
                 "null_volume_rows",
-                "price_ready (boolean)",
+                "price_ready (derived)",
             ],
         },
         {
@@ -682,25 +680,8 @@ def _db_ok(status_config: Optional[dict]) -> bool:
 
 
 def _sync_plugin_materialized_tables(conn: Any) -> None:
-    """Refresh us_equity_universe + sepa_symbol_price_readiness from Plugin API.
-
-    Failures are logged; last-synced rows are retained.
-    """
-    try:
-        from bifrost_core.persistence.postgres.universe_sync import (
-            sync_price_readiness_from_plugin,
-            sync_universe_from_plugin,
-        )
-
-        sync_universe_from_plugin(conn)
-        sync_price_readiness_from_plugin(conn)
-        conn.commit()
-    except Exception as e:
-        logger.warning("plugin universe/price_readiness sync failed: %s", e)
-        try:
-            conn.rollback()
-        except Exception:
-            pass
+    """No-op: universe is FDW-backed, price readiness uses Plugin API at query time."""
+    pass
 
 
 def run_sepa_universe_readiness_snapshot(
@@ -828,32 +809,45 @@ def fetch_sepa_readiness_summary(status_config: dict) -> Dict[str, Any]:
             cur.execute("SELECT count(*)::bigint AS n FROM public.v_us_equity_universe")
             out["universe_count"] = int((cur.fetchone() or {}).get("n") or 0)
 
-            # Universe counts + last Plugin sync (Step 1). Keys kept for Trade UI.
-            cur.execute(
-                """
-                SELECT
-                    count(*) FILTER (WHERE COALESCE(active, true))::bigint AS active_count,
-                    max(synced_at)::text AS last_synced_at
-                FROM public.us_equity_universe
-                """
-            )
-            tr = cur.fetchone() or {}
-            out["tickers_active_count"] = int(tr.get("active_count") or 0)
-            out["tickers_last_synced_at"] = tr.get("last_synced_at")
+            # Universe counts (Step 1). FDW-backed: no synced_at column.
+            out["tickers_active_count"] = out["universe_count"]
+            out["tickers_last_synced_at"] = None
 
-            cur.execute(
-                """
-                SELECT
-                    count(*)::bigint AS total,
-                    count(*) FILTER (WHERE price_ready)::bigint AS price_ready
-                FROM public.v_sepa_symbol_price_readiness
-                """
-            )
-            pr = cur.fetchone() or {}
-            out["price_readiness_live"] = {
-                "total_symbols": int(pr.get("total") or 0),
-                "price_ready": int(pr.get("price_ready") or 0),
-            }
+            # Price readiness from Plugin API (no local sepa_symbol_price_readiness table)
+            try:
+                from datetime import date as _date, timedelta as _td
+
+                from bifrost_api.research.market_data_client import (
+                    fetch_readiness_bar_aggregate,
+                )
+
+                bar_agg = fetch_readiness_bar_aggregate(window_days=420)
+                _min_bar_rows = 240
+                _stale_cutoff = _date.today() - _td(days=7)
+                _total = len(bar_agg)
+                _ready = 0
+                for _stats in bar_agg.values():
+                    _br = int(_stats.get("bar_rows") or 0)
+                    _lb = _stats.get("last_bar_date")
+                    if _lb and not isinstance(_lb, _date):
+                        try:
+                            _lb = _date.fromisoformat(str(_lb)[:10])
+                        except ValueError:
+                            _lb = None
+                    _nc = int(_stats.get("null_close_rows") or 0)
+                    _nv = int(_stats.get("null_volume_rows") or 0)
+                    if _br >= _min_bar_rows and _lb and _lb >= _stale_cutoff and _nc == 0 and _nv == 0:
+                        _ready += 1
+                out["price_readiness_live"] = {
+                    "total_symbols": _total,
+                    "price_ready": _ready,
+                }
+            except Exception as _pr_err:
+                logger.warning("price readiness Plugin API call failed: %s", _pr_err)
+                out["price_readiness_live"] = {
+                    "total_symbols": 0,
+                    "price_ready": 0,
+                }
 
             out["fund_cache_view_exists"] = True
             try:

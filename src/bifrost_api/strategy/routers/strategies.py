@@ -240,7 +240,7 @@ def get_structure(request: Request, structure_id: int) -> Dict[str, Any]:
 def create_structure_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
     """Create a new strategy structure.
 
-    Body: name, structure_type, legs (array), optional constraints, version, is_active, meta (array of {meta_key, meta_value_text}).
+    Body: name, structure_type, legs (array), optional version, is_active, meta (array of {meta_key, meta_value_text}).
     Per leg: quantity = ratio per leg (structural); strike and expiration are optional presets
     (null/blank = resolve when structure is applied, e.g. ATM or DTE).
     """
