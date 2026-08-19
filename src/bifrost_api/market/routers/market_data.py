@@ -553,7 +553,6 @@ async def post_bars_backfill(
 ) -> Dict[str, Any]:
     """Backfill: enqueue job to Celery Worker only."""
     app = request.app
-    reader = app.state.reader
     control_via_db = app.state.control_via_db
     sym = (symbol or "").strip().upper()
     if not sym:

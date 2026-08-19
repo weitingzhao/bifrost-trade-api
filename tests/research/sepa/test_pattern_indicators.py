@@ -3,7 +3,6 @@
 import pytest
 
 from bifrost_api.research.sepa.pattern_indicators import (
-    PatternConfig,
     compute_base_metrics,
     compute_pocket_pivots,
     compute_rsl_new_high,

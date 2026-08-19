@@ -429,7 +429,7 @@ async def post_executions_fetch(
             f"days={days}",
             f"fetched_primary={fetched_primary}",
             f"fetched_secondary={fetched_secondary}",
-            f"fetched_total=0",
+            "fetched_total=0",
         ]
         if secondary_error:
             detail_parts.append(f"secondary_error={secondary_error}")

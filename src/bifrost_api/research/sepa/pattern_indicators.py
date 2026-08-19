@@ -204,7 +204,6 @@ def compute_base_metrics(
 
     segment_highs = highs[-lookback:]
     segment_lows = lows[-lookback:]
-    segment_closes = closes[-lookback:]
 
     pivot = max(segment_highs)
     base_low = min(segment_lows)

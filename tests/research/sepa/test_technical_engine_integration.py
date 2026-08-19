@@ -1,9 +1,7 @@
 """Integration tests for technical_engine: verify JSONB shape + backward compat."""
 
-import pytest
 
 from bifrost_api.research.sepa.technical_engine import (
-    TechnicalConfig,
     evaluate_symbol_all_tiers,
 )
 

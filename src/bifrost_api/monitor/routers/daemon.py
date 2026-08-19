@@ -8,9 +8,6 @@ import threading
 import time
 from typing import Any, Dict, Optional
 
-MONITOR_STOP_DISCONNECT_TIMEOUT = 2.5  # seconds; avoid hang if IB disconnect blocks
-MONITOR_STOP_EXIT_DELAY = 3.0  # seconds; give client time to receive 200 before process exits
-
 from fastapi import APIRouter, Body, Request
 from fastapi.responses import JSONResponse
 
@@ -24,6 +21,9 @@ from bifrost_core.monitor.reader import (
     write_heartbeat_interval,
     write_run_status,
 )
+
+MONITOR_STOP_DISCONNECT_TIMEOUT = 2.5  # seconds; avoid hang if IB disconnect blocks
+MONITOR_STOP_EXIT_DELAY = 3.0  # seconds; give client time to receive 200 before process exits
 
 logger = logging.getLogger(__name__)
 

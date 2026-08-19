@@ -1,11 +1,9 @@
 """Unit tests for Tier 3a: Structure / Volatility diagnostics."""
 
-import math
 
 import pytest
 
 from bifrost_api.research.sepa.structure_indicators import (
-    StructureConfig,
     compute_adx,
     compute_aroon_oscillator,
     compute_atr,

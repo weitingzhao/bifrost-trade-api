@@ -10,8 +10,7 @@ Mocks 5 symbols with varying data completeness.  Verifies:
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
-from unittest.mock import MagicMock, patch
+from typing import Any, Dict
 
 import pytest
 

@@ -5,9 +5,8 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-from starlette.testclient import TestClient
 
-from tests.contract.helpers import _FULL_SERVER, full_server_config
+from tests.contract.helpers import _FULL_SERVER
 
 
 @pytest.fixture

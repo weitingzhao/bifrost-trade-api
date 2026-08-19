@@ -10,7 +10,7 @@ into the base ``evaluate_fundamentals`` output so that the JSONB written to
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from bifrost_api.research.sepa.fundamentals_engine import make_condition, to_float

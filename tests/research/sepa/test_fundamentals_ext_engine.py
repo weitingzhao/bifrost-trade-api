@@ -4,7 +4,6 @@ Covers boundary cases: NULL values, zero-base division, negative bases, missing
 tables (empty rows → insufficient), and normal pass/fail behavior.
 """
 
-import pytest
 
 from bifrost_api.research.sepa.fundamentals_ext_engine import (
     FundamentalsExtConfig,
