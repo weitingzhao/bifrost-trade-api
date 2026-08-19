@@ -59,6 +59,9 @@ def build_celery_capabilities_payload(
         "registered_tasks": registered,
         "count": len(registered),
         "canonical_broker_queues": list(load_canonical_broker_queue_names(cfg)),
+        # P7: Massive Celery matrix retired — keep empty list + flag for Ops/FE contract.
+        "run_massive_job_matrix": [],
+        "massive_retired": True,
         "beat_tasks": [],
         "broker_queue_labels": broker_queue_labels,
         "beat_running": beat_running,
