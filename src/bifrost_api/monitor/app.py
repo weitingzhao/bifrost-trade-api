@@ -336,7 +336,7 @@ def create_app(
 
 
 def run_server(config: dict, resolved_config_path: Optional[str] = None) -> None:
-    """Start the status server (host 0.0.0.0, port from config). Control channel: PostgreSQL daemon_control + daemon_run_status (RE-5). No start: daemon is started on trading host only."""
+    """Start the status server (host 0.0.0.0, port from config). Control channel: Redis STREAM/HASH daemon IPC. No start: daemon is started on trading host only."""
     import os
     import uvicorn
 
@@ -364,7 +364,7 @@ def run_server(config: dict, resolved_config_path: Optional[str] = None) -> None
     )
     host = "0.0.0.0"
     logger.info(
-        "Status server on %s:%s (control=daemon_control + daemon_run_status; start only on trading host)",
+        "Status server on %s:%s (control=Redis daemon IPC; start only on trading host)",
         host,
         port,
     )
