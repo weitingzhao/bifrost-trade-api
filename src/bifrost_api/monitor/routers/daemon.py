@@ -187,18 +187,18 @@ def post_control_stop(request: Request) -> JSONResponse:
 
 @router.post("/control/flatten")
 def post_control_flatten(request: Request) -> JSONResponse:
-    """Insert 'flatten' into daemon_control. R-C3 not implemented in daemon yet; daemon logs and continues."""
+    """Publish 'flatten' to Redis control stream. R-C3 not implemented in daemon yet; daemon logs and continues."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return JSONResponse(status_code=503, content={"error": "control not available (config required)"})
     if write_control_command(control_via_db, "flatten"):
-        return JSONResponse(status_code=200, content={"ok": True, "message": "flatten written to daemon_control (daemon may not implement yet)"})
+        return JSONResponse(status_code=200, content={"ok": True, "message": "flatten written to Redis control stream (daemon may not implement yet)"})
     return JSONResponse(status_code=500, content={"error": "failed to write control command"})
 
 
 @router.post("/control/suspend")
 def post_control_suspend(request: Request) -> JSONResponse:
-    """Set daemon_run_status.suspended=true; daemon will pause hedging until resume (R-C2-style)."""
+    """Set Redis trading state suspended=true; daemon will pause hedging until resume (R-C2-style)."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return JSONResponse(status_code=503, content={"error": "control not available (config required)"})
@@ -209,7 +209,7 @@ def post_control_suspend(request: Request) -> JSONResponse:
 
 @router.post("/control/resume")
 def post_control_resume(request: Request) -> JSONResponse:
-    """Set daemon_run_status.suspended=false; daemon will resume hedging on next heartbeat."""
+    """Set Redis trading state suspended=false; daemon will resume hedging on next heartbeat."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return JSONResponse(status_code=503, content={"error": "control not available (config required)"})
@@ -223,7 +223,7 @@ def post_control_resume(request: Request) -> JSONResponse:
 
 @router.post("/control/retry_ib")
 def post_control_retry_ib(request: Request) -> JSONResponse:
-    """Insert 'retry_ib' into daemon_control; daemon consumes it as a legacy no-op (no in-process IB)."""
+    """Publish 'retry_ib' to Redis control stream; daemon consumes it as a legacy no-op (no in-process IB)."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return JSONResponse(status_code=503, content={"error": "control not available (config required)"})
@@ -237,7 +237,7 @@ def post_control_retry_ib(request: Request) -> JSONResponse:
 
 @router.post("/control/release_ib")
 def post_control_release_ib(request: Request) -> JSONResponse:
-    """Insert 'release_ib' into daemon_control; daemon consumes it as a legacy no-op (no IB in daemon)."""
+    """Publish 'release_ib' to Redis control stream; daemon consumes it as a legacy no-op (no IB in daemon)."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return JSONResponse(status_code=503, content={"error": "control not available (config required)"})
@@ -311,51 +311,51 @@ async def post_control_refresh_accounts(request: Request) -> JSONResponse:
 
 @router.post("/control/refresh_replay")
 def post_control_refresh_replay(request: Request) -> JSONResponse:
-    """Insert 'refresh_replay' into daemon_control; daemon will sync executions from IB to account_executions on next poll."""
+    """Publish 'refresh_replay' to Redis control stream; daemon will sync executions from IB on next poll."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return JSONResponse(status_code=503, content={"error": "control not available (config required)"})
     if write_control_command(control_via_db, "refresh_replay"):
-        return JSONResponse(status_code=200, content={"ok": True, "message": "refresh_replay written to daemon_control"})
+        return JSONResponse(status_code=200, content={"ok": True, "message": "refresh_replay written to Redis control stream"})
     return JSONResponse(status_code=500, content={"error": "failed to write control command"})
 
 
 @router.post("/control/refresh_ticker_subscriptions")
 def post_control_refresh_ticker_subscriptions(request: Request) -> JSONResponse:
-    """Insert 'refresh_ticker_subscriptions' into daemon_control; daemon will Release then Init on next poll."""
+    """Publish 'refresh_ticker_subscriptions' to Redis control stream; daemon will Release then Init on next poll."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return JSONResponse(status_code=503, content={"error": "control not available (config required)"})
     if write_control_command(control_via_db, "refresh_ticker_subscriptions"):
-        return JSONResponse(status_code=200, content={"ok": True, "message": "refresh_ticker_subscriptions written to daemon_control"})
+        return JSONResponse(status_code=200, content={"ok": True, "message": "refresh_ticker_subscriptions written to Redis control stream"})
     return JSONResponse(status_code=500, content={"error": "failed to write control command"})
 
 
 @router.post("/control/release_ticker_subscriptions")
 def post_control_release_ticker_subscriptions(request: Request) -> JSONResponse:
-    """Insert 'release_ticker_subscriptions' into daemon_control; daemon will unsubscribe all tickers on next poll."""
+    """Publish 'release_ticker_subscriptions' to Redis control stream; daemon will unsubscribe all tickers on next poll."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return JSONResponse(status_code=503, content={"error": "control not available (config required)"})
     if write_control_command(control_via_db, "release_ticker_subscriptions"):
-        return JSONResponse(status_code=200, content={"ok": True, "message": "release_ticker_subscriptions written to daemon_control"})
+        return JSONResponse(status_code=200, content={"ok": True, "message": "release_ticker_subscriptions written to Redis control stream"})
     return JSONResponse(status_code=500, content={"error": "failed to write control command"})
 
 
 @router.post("/control/init_ticker_subscriptions")
 def post_control_init_ticker_subscriptions(request: Request) -> JSONResponse:
-    """Insert 'init_ticker_subscriptions' into daemon_control; daemon will subscribe to watchlist+positions if none subscribed, else set last_control_message."""
+    """Publish 'init_ticker_subscriptions' to Redis control stream; daemon will subscribe to watchlist+positions if none subscribed, else set last_control_message."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return JSONResponse(status_code=503, content={"error": "control not available (config required)"})
     if write_control_command(control_via_db, "init_ticker_subscriptions"):
-        return JSONResponse(status_code=200, content={"ok": True, "message": "init_ticker_subscriptions written to daemon_control"})
+        return JSONResponse(status_code=200, content={"ok": True, "message": "init_ticker_subscriptions written to Redis control stream"})
     return JSONResponse(status_code=500, content={"error": "failed to write control command"})
 
 
 @router.post("/control/set_heartbeat_interval")
 def post_set_heartbeat_interval(request: Request, body: Dict[str, Any] = Body(...)) -> JSONResponse:
-    """Set daemon_run_status.heartbeat_interval_sec (5–120). Daemon polls and uses this on next heartbeat."""
+    """Set Redis trading state heartbeat_interval_sec (5–120). Daemon polls and uses this on next heartbeat."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return JSONResponse(status_code=503, content={"error": "control not available (config required)"})
@@ -378,10 +378,10 @@ def post_set_heartbeat_interval(request: Request, body: Dict[str, Any] = Body(..
 
 @router.post("/account-sync/control/suspend")
 def post_account_sync_suspend(request: Request) -> JSONResponse:
-    """Suspend Account Sync Daemon (account_sync_run_status.suspended=true)."""
+    """Suspend Account Sync Daemon (Redis account_sync state suspended=true)."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
-        return JSONResponse(status_code=503, content={"error": "control via DB not available"})
+        return JSONResponse(status_code=503, content={"error": "control not available (config required)"})
     if write_account_sync_run_status(control_via_db, suspended=True):
         return JSONResponse(status_code=200, content={"ok": True, "message": "Account Sync Daemon suspended"})
     return JSONResponse(status_code=500, content={"error": "failed to set account sync run status"})
@@ -389,10 +389,10 @@ def post_account_sync_suspend(request: Request) -> JSONResponse:
 
 @router.post("/account-sync/control/resume")
 def post_account_sync_resume(request: Request) -> JSONResponse:
-    """Resume Account Sync Daemon (account_sync_run_status.suspended=false)."""
+    """Resume Account Sync Daemon (Redis account_sync state suspended=false)."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
-        return JSONResponse(status_code=503, content={"error": "control via DB not available"})
+        return JSONResponse(status_code=503, content={"error": "control not available (config required)"})
     if write_account_sync_run_status(control_via_db, suspended=False):
         return JSONResponse(status_code=200, content={"ok": True, "message": "Account Sync Daemon resumed"})
     return JSONResponse(status_code=500, content={"error": "failed to set account sync run status"})
@@ -400,32 +400,32 @@ def post_account_sync_resume(request: Request) -> JSONResponse:
 
 @router.post("/account-sync/control/stop")
 def post_account_sync_stop(request: Request) -> JSONResponse:
-    """Insert 'stop' into account_sync_control."""
+    """Publish 'stop' to Redis account-sync control stream."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
-        return JSONResponse(status_code=503, content={"error": "control via DB not available"})
+        return JSONResponse(status_code=503, content={"error": "control not available (config required)"})
     if write_account_sync_control(control_via_db, "stop"):
-        return JSONResponse(status_code=200, content={"ok": True, "message": "stop written to account_sync_control"})
+        return JSONResponse(status_code=200, content={"ok": True, "message": "stop written to Redis account-sync control stream"})
     return JSONResponse(status_code=500, content={"error": "failed to write account sync control command"})
 
 
 @router.post("/account-sync/control/force-sync")
 def post_account_sync_force_sync(request: Request) -> JSONResponse:
-    """Insert 'force_sync' into account_sync_control (clears diff cache, forces full write)."""
+    """Publish 'force_sync' to Redis account-sync control stream (clears diff cache, forces full write)."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
-        return JSONResponse(status_code=503, content={"error": "control via DB not available"})
+        return JSONResponse(status_code=503, content={"error": "control not available (config required)"})
     if write_account_sync_control(control_via_db, "force_sync"):
-        return JSONResponse(status_code=200, content={"ok": True, "message": "force_sync written to account_sync_control"})
+        return JSONResponse(status_code=200, content={"ok": True, "message": "force_sync written to Redis account-sync control stream"})
     return JSONResponse(status_code=500, content={"error": "failed to write account sync control command"})
 
 
 @router.post("/account-sync/control/set_heartbeat_interval")
 def post_account_sync_set_heartbeat_interval(request: Request, body: Dict[str, Any] = Body(...)) -> JSONResponse:
-    """Set account_sync_run_status.heartbeat_interval_sec (2–60)."""
+    """Set Redis account_sync heartbeat_interval_sec (2–60)."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
-        return JSONResponse(status_code=503, content={"error": "control via DB not available"})
+        return JSONResponse(status_code=503, content={"error": "control not available (config required)"})
     sec = body.get("heartbeat_interval_sec")
     if sec is None:
         return JSONResponse(status_code=400, content={"error": "heartbeat_interval_sec required (2–60)"})

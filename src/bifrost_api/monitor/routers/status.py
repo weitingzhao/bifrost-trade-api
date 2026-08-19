@@ -659,8 +659,8 @@ def get_status(request: Request) -> Dict[str, Any]:
             platform_ib_gateway = None
 
         # SSOT: when Platform IB Gateway transport is active, overlay redis-ib live
-        # IB connectivity onto PG daemon_heartbeat before health roll-up. PG may still
-        # hold ib_connected=False because the daemon no longer owns a direct TWS socket.
+        # IB connectivity onto the Redis trading heartbeat HASH before health roll-up.
+        # The HASH may still hold ib_connected=False because the daemon no longer owns a direct TWS socket.
         if daemon_heartbeat is not None and _ib_r is not None:
             try:
                 from bifrost_core.config.startup import get_effective_ib_config
