@@ -161,11 +161,11 @@ def fetch_option_expirations(symbol: str) -> Optional[Tuple[List[str], Optional[
 
 
 def fetch_ticker_detail(symbol: str) -> Optional[Dict[str, Any]]:
-    """GET /reference/ticker/{symbol} → ticker detail dict or None."""
+    """GET /reference/ticker?symbol=… → ticker detail dict or None."""
     try:
-        data = _get_json(f"/reference/ticker/{urllib.parse.quote(symbol.upper())}")
-        if data.get("ok") and data.get("data"):
-            return data["data"]
+        data = _get_json("/reference/ticker", {"symbol": symbol.upper()})
+        if data.get("ok") and isinstance(data.get("ticker"), dict):
+            return data["ticker"]
         return None
     except Exception:
         return None

@@ -1595,7 +1595,7 @@ def get_ticker_overview(symbol: str, request: Request) -> Dict[str, Any]:
                 cur.execute(
                     """
                     SELECT rt.to_symbol
-                    FROM public.ticker_related_tickers rt
+                    FROM market.ticker_related rt
                     WHERE rt.from_symbol = %s
                     ORDER BY rt.rank ASC
                     LIMIT 12
