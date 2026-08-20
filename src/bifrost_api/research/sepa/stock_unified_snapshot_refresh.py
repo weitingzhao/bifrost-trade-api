@@ -1,4 +1,10 @@
-"""Refresh cache_stock_snapshot — retired (Massive API no longer available).
+"""Refresh cache_stock_snapshot — retired.
+
+Massive API is no longer available and ``public.cache_stock_snapshot`` has been
+dropped.  Snapshot data is now managed by the Market Data Plugin CronJob
+``stock-snapshot`` writing to ``market.stock_snapshot`` (Golden Source).
+Coverage and vendor-gap quality signals are exposed via Plugin HTTP endpoints
+``GET /readiness/snapshot-coverage`` and ``GET /readiness/vendor-gap``.
 
 The ``run_refresh_cache_stock_unified_snapshots`` function is kept as a thin
 retired stub so callers (``data_readiness.py``) continue to import without error.

@@ -53,7 +53,7 @@ def post_sepa_readiness_snapshot(request: Request) -> Dict[str, Any]:
 
 @router.post("/research/data/readiness/stock-unified-snapshot")
 def post_sepa_stock_unified_snapshot(request: Request) -> Dict[str, Any]:
-    """Batch GET /v3/snapshot (stocks) for v_us_equity_universe; UPSERT cache_stock_snapshot."""
+    """Retired — cache_stock_snapshot replaced by Plugin CronJob stock-snapshot."""
     db = _db_config(request)
     if not db:
         return {"ok": False, "error": "PostgreSQL not configured"}
@@ -110,10 +110,6 @@ def post_sepa_backfill_fundamentals(
         conn = psycopg2.connect(**params)
     except Exception as e:
         return {"ok": False, "error": f"DB connect failed: {e}"}
-
-    from bifrost_api.research.sepa.readiness_snapshot import _sync_plugin_materialized_tables
-
-    _sync_plugin_materialized_tables(conn)
 
     only_missing = bool(body.get("only_missing", True))
     try:
@@ -205,10 +201,6 @@ def post_sepa_backfill_technical(
         conn = psycopg2.connect(**params)
     except Exception as e:
         return {"ok": False, "error": f"DB connect failed: {e}"}
-
-    from bifrost_api.research.sepa.readiness_snapshot import _sync_plugin_materialized_tables
-
-    _sync_plugin_materialized_tables(conn)
 
     only_missing = bool(body.get("only_missing", True))
     try:

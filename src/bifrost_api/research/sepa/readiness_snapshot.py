@@ -14,112 +14,11 @@ from bifrost_core.persistence.postgres.connection import _get_conn_params
 
 logger = logging.getLogger(__name__)
 
-# SEPA Data Ready Step 3 (per-symbol stock_day backfill check): symbols that need attention.
-# Primary: cache_stock_snapshot.last_minute_updated → NY calendar date vs max(stock_day.bar_time)
-# for source=massive (all history). Raw vendor date gap: vendor_day > last_bar_max (or no bars).
-# Then clear vendor gap if latest massive daily close matches cache.session_close (abs diff < eps).
-# If session_close is NULL on the snapshot row, skip **all** snapshot-driven gap checks for that symbol
-# (no vendor gap, no readiness fallback — stock_day / price_ready are ignored for Step 3 gaps).
-# No row in cache_stock_snapshot for a symbol: never a gap (ignore stock_day / readiness for that symbol).
-# Exclude tickers.instrument_type = 'WARRANT' (case-insensitive) from all gaps.
-# Fallback when snapshot row exists, session_close and last_minute_updated semantics apply:
-# last_minute_updated NULL only then NOT price_ready from bar aggregate (or no bar data);
-# still excluding warrants. session_close must be non-null (same as vendor path).
-# Close "equality" uses absolute tolerance (same as SQL) — see _STOCK_DAY_GAP_CLOSE_MATCH_ABS_EPS.
-_STOCK_DAY_GAP_CLOSE_MATCH_ABS_EPS = 0.0001
 
-# Fast-path lookback window for the latest massive daily bar via LATERAL + partition prune.
-# Most actively-traded tickers have a bar within a few trading days; 90 calendar days is a
-# comfortable headroom and prunes ~60 monthly partitions to ~3-4 per probe.
-_STOCK_DAY_GAP_LATEST_BAR_LOOKBACK_DAYS = 90
-
-# SEPA Data Ready Step 3 — two-stage CTE pipeline.
-#   1. cand_fast  : MATERIALIZED 90-day LATERAL probe per snap symbol (hot path; ~12k rows).
-#   2. older_lookup: MATERIALIZED full-history LATERAL only for symbols where the fast probe
-#      returned NULL (cold path; typically <100 rows), so SPAC units / thinly traded tickers
-#      whose latest bar is older than 90 days are still considered.
-#   3. cand       : combine via COALESCE(recent, older) and evaluate vendor / fallback gap.
-# `MATERIALIZED` is essential here so the small `older_lookup` set is computed once on the
-# pre-filtered subset; without it the planner inlines the LATERAL into every reference and
-# the query degrades to whole-table scans.
-_STOCK_DAY_VENDOR_GAP_CANDIDATE_SQL = f"""
-cand_fast AS MATERIALIZED (
-    SELECT
-        u.symbol,
-        c.last_minute_updated,
-        c.session_close,
-        lb.bar_date::date AS last_bar_max_recent,
-        lb.close AS last_bar_day_close_recent
-    FROM public.v_us_equity_universe u
-    JOIN public.cache_stock_snapshot c
-        ON c.symbol = u.symbol
-       AND c.session_close IS NOT NULL
-    LEFT JOIN _tmp_latest_bar lb ON lb.symbol = c.symbol
-    WHERE lower(coalesce(u.instrument_type, '')) <> 'warrant'
-),
-older_lookup AS MATERIALIZED (
-    SELECT s.symbol, lbf.bar_date::date AS last_bar_max_older, lbf.close AS last_bar_day_close_older
-    FROM (SELECT symbol FROM cand_fast WHERE last_bar_max_recent IS NULL) s
-    LEFT JOIN _tmp_latest_bar_full lbf ON lbf.symbol = s.symbol
-),
-fallback_p AS MATERIALIZED (
-    SELECT
-        ba.symbol,
-        ba.bar_rows::integer AS bar_rows,
-        ba.first_bar_date,
-        ba.last_bar_date,
-        ba.null_close_rows::integer AS null_close_rows,
-        ba.null_volume_rows::integer AS null_volume_rows,
-        (
-            ba.bar_rows >= 240
-            AND ba.last_bar_date >= (CURRENT_DATE - integer '7')::date
-            AND ba.null_close_rows = 0
-            AND ba.null_volume_rows = 0
-        ) AS price_ready
-    FROM _tmp_bar_agg ba
-    INNER JOIN public.cache_stock_snapshot fc
-        ON fc.symbol = ba.symbol
-       AND fc.session_close IS NOT NULL
-       AND fc.last_minute_updated IS NULL
-),
-cand AS (
-    SELECT
-        cf.symbol,
-        cf.last_minute_updated,
-        (cf.last_minute_updated AT TIME ZONE 'America/New_York')::date AS vendor_day,
-        COALESCE(cf.last_bar_max_recent, ol.last_bar_max_older) AS last_bar_max,
-        COALESCE(cf.last_bar_day_close_recent, ol.last_bar_day_close_older) AS last_bar_day_close,
-        cf.session_close,
-        COALESCE(p.bar_rows, 0)::integer AS bar_rows,
-        p.first_bar_date::text AS first_bar_date,
-        p.last_bar_date::text AS last_bar_date,
-        COALESCE(p.null_close_rows, 0)::integer AS null_close_rows,
-        COALESCE(p.null_volume_rows, 0)::integer AS null_volume_rows,
-        p.price_ready,
-        (
-            cf.last_minute_updated IS NOT NULL
-            AND (
-                COALESCE(cf.last_bar_max_recent, ol.last_bar_max_older) IS NULL
-                OR (cf.last_minute_updated AT TIME ZONE 'America/New_York')::date
-                       > COALESCE(cf.last_bar_max_recent, ol.last_bar_max_older)
-            )
-            AND NOT (
-                COALESCE(cf.last_bar_day_close_recent, ol.last_bar_day_close_older) IS NOT NULL
-                AND abs(
-                    COALESCE(cf.last_bar_day_close_recent, ol.last_bar_day_close_older)
-                    - cf.session_close
-                ) < {_STOCK_DAY_GAP_CLOSE_MATCH_ABS_EPS!s}
-            )
-        ) AS is_vendor_gap,
-        (
-            cf.last_minute_updated IS NULL
-            AND (p.symbol IS NULL OR NOT COALESCE(p.price_ready, false))
-        ) AS is_fallback_gap
-    FROM cand_fast cf
-    LEFT JOIN older_lookup ol ON ol.symbol = cf.symbol
-    LEFT JOIN fallback_p p ON p.symbol = cf.symbol
-)
-""".strip()
+# Step 3 vendor gap detection is now delegated to the Market Data Plugin via
+# GET /readiness/vendor-gap. The CTE _STOCK_DAY_VENDOR_GAP_CANDIDATE_SQL and
+# related constants (_STOCK_DAY_GAP_CLOSE_MATCH_ABS_EPS, _STOCK_DAY_GAP_LATEST_BAR_LOOKBACK_DAYS)
+# have been retired.
 
 # Shipped with GET /readiness/summary for UI: raw DB objects vs derived views/tables (English labels).
 READINESS_DATA_CATALOG: Dict[str, Any] = {
@@ -181,21 +80,14 @@ READINESS_DATA_CATALOG: Dict[str, Any] = {
         },
         {
             "id": "cache_stock_snapshot",
-            "object": "public.cache_stock_snapshot",
-            "role": "Massive GET /v3/snapshot via ticker.any_of (no type param) — per-symbol session + last_minute baseline before stock_day backfill.",
-            "typical_ingest": "POST /research/screening/sepa/readiness/stock-unified-snapshot",
+            "object": "market.stock_snapshot (Plugin)",
+            "role": "Plugin-managed stock snapshot — coverage and vendor gap via /readiness/snapshot-coverage and /readiness/vendor-gap.",
+            "typical_ingest": "Plugin CronJob stock-snapshot (Golden Source)",
             "data_points": [
-                "symbol (PK)",
-                "fetched_at",
-                "updated_at",
-                "last_minute_updated",
-                "snapshot_asset_type",
-                "market_status",
-                "snapshot_display_name",
-                "session_* OHLC/volume/change scalars",
-                "last_minute_* bar scalars",
-                "last_trade_* / last_quote_* scalars",
-                "source",
+                "row_count",
+                "last_fetched_at",
+                "session_date",
+                "by_instrument_type",
             ],
         },
     ],
@@ -460,7 +352,7 @@ def _populate_market_temp_tables(cur: Any) -> None:
             "null_close_rows, null_volume_rows) VALUES %s ON CONFLICT DO NOTHING",
             rows, page_size=500)
 
-    latest_bar = fetch_readiness_latest_bar(lookback_days=_STOCK_DAY_GAP_LATEST_BAR_LOOKBACK_DAYS)
+    latest_bar = fetch_readiness_latest_bar(lookback_days=90)
     if latest_bar:
         rows = [(sym, d.get("bar_date"), d.get("close")) for sym, d in latest_bar.items()]
         execute_values(cur,
@@ -679,9 +571,6 @@ def _db_ok(status_config: Optional[dict]) -> bool:
     return status_config.get("sink") == "postgres" or bool(status_config.get("postgres"))
 
 
-def _sync_plugin_materialized_tables(conn: Any) -> None:
-    """No-op: universe is FDW-backed, price readiness uses Plugin API at query time."""
-    pass
 
 
 def run_sepa_universe_readiness_snapshot(
@@ -701,7 +590,6 @@ def run_sepa_universe_readiness_snapshot(
         logger.warning("readiness snapshot connect failed: %s", e)
         return {"ok": False, "error": str(e)}
     try:
-        _sync_plugin_materialized_tables(conn)
         with conn.cursor() as cur:
             cur.execute(f"SET statement_timeout = {int(max(5_000, statement_timeout_ms))}")
             _populate_market_temp_tables(cur)
@@ -799,7 +687,6 @@ def fetch_sepa_readiness_summary(status_config: dict) -> Dict[str, Any]:
     except Exception as e:
         return {"ok": False, "error": str(e)}
     try:
-        _sync_plugin_materialized_tables(conn)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             # JIT helps long analytical queries but adds latency to short summary queries; disable per-session.
             try:
@@ -866,62 +753,26 @@ def fetch_sepa_readiness_summary(status_config: dict) -> Dict[str, Any]:
             except Exception:
                 out["fund_cache_valid_count"] = None
 
+            # Step 2: snapshot coverage via Plugin HTTP (replaces cache_stock_snapshot SQL).
             try:
-                cur.execute(
-                    """
-                    SELECT count(*)::bigint AS n, max(fetched_at)::text AS mx
-                    FROM public.cache_stock_snapshot
-                    """
-                )
-                cr = cur.fetchone() or {}
-                out["stock_unified_snapshot_row_count"] = int(cr.get("n") or 0)
-                out["stock_unified_snapshot_last_fetched_at"] = cr.get("mx")
-            except Exception:
-                out["stock_unified_snapshot_row_count"] = None
-                out["stock_unified_snapshot_last_fetched_at"] = None
-
-            # Step 2 breakdown: cache_stock_snapshot grouped by universe instrument_type.
-            try:
-                cur.execute(
-                    """
-                    WITH snap_by_type AS (
-                        SELECT
-                            COALESCE(NULLIF(u.instrument_type, ''), '(unknown)') AS code,
-                            count(*)::bigint AS snapshot_row_count
-                        FROM public.cache_stock_snapshot c
-                        JOIN public.v_us_equity_universe u ON u.symbol = c.symbol
-                        GROUP BY COALESCE(NULLIF(u.instrument_type, ''), '(unknown)')
-                    ),
-                    uni_by_type AS (
-                        SELECT
-                            COALESCE(NULLIF(instrument_type, ''), '(unknown)') AS code,
-                            count(*)::bigint AS universe_ticker_count
-                        FROM public.v_us_equity_universe
-                        WHERE COALESCE(active, true)
-                        GROUP BY COALESCE(NULLIF(instrument_type, ''), '(unknown)')
-                    )
-                    SELECT
-                        s.code,
-                        s.code AS description,
-                        s.snapshot_row_count,
-                        COALESCE(u.universe_ticker_count, 0)::bigint AS universe_ticker_count
-                    FROM snap_by_type s
-                    LEFT JOIN uni_by_type u ON u.code = s.code
-                    ORDER BY s.snapshot_row_count DESC, s.code
-                    """
-                )
-                rows = cur.fetchall() or []
+                from bifrost_api.research.market_data_client import _get_json as _plugin_get
+                snap_cov = _plugin_get("/readiness/snapshot-coverage")
+                out["stock_unified_snapshot_row_count"] = snap_cov.get("row_count")
+                out["stock_unified_snapshot_last_fetched_at"] = snap_cov.get("last_fetched_at")
+                by_type = snap_cov.get("by_instrument_type") or []
                 out["stock_unified_snapshot_by_type"] = [
                     {
-                        "code": r.get("code"),
-                        "description": r.get("description"),
-                        "snapshot_row_count": int(r.get("snapshot_row_count") or 0),
-                        "universe_ticker_count": int(r.get("universe_ticker_count") or 0),
+                        "code": r.get("code", ""),
+                        "description": r.get("code", ""),
+                        "snapshot_row_count": r.get("snapshot_row_count", 0),
+                        "universe_ticker_count": r.get("universe_ticker_count", 0),
                     }
-                    for r in rows
-                ]
+                    for r in by_type
+                ] if by_type else None
             except Exception as e:
-                logger.debug("stock_unified_snapshot_by_type query failed: %s", e)
+                logger.debug("snapshot-coverage plugin fetch failed: %s", e)
+                out["stock_unified_snapshot_row_count"] = None
+                out["stock_unified_snapshot_last_fetched_at"] = None
                 out["stock_unified_snapshot_by_type"] = None
 
             try:
@@ -932,19 +783,13 @@ def fetch_sepa_readiness_summary(status_config: dict) -> Dict[str, Any]:
                 logger.debug("fundamentals_symbol_count_by_type failed: %s", e)
                 out["fundamentals_symbol_count_by_type"] = None
 
+            # Step 3: vendor gap count via Plugin HTTP (replaces CTE on cache_stock_snapshot).
             try:
-                _populate_market_temp_tables(cur)
-                cur.execute(
-                    f"""
-                    WITH {_STOCK_DAY_VENDOR_GAP_CANDIDATE_SQL}
-                    SELECT count(*)::bigint AS n
-                    FROM cand
-                    WHERE is_vendor_gap OR is_fallback_gap
-                    """
-                )
-                out["stock_day_vendor_fill_gap_count"] = int((cur.fetchone() or {}).get("n") or 0)
+                from bifrost_api.research.market_data_client import _get_json as _plugin_get
+                vg = _plugin_get("/readiness/vendor-gap")
+                out["stock_day_vendor_fill_gap_count"] = vg.get("gap_count")
             except Exception as e:
-                logger.debug("stock_day_vendor_fill_gap_count query failed: %s", e)
+                logger.debug("vendor-gap plugin fetch failed: %s", e)
                 out["stock_day_vendor_fill_gap_count"] = None
 
             # Fundamentals gap counts via Plugin HTTP (SEPA Data Ready Steps 4–9).
@@ -1374,16 +1219,6 @@ def run_fundamentals_local_backfill(
     if not _db_ok(status_config):
         return {"ok": False, "error": "PostgreSQL not configured"}
 
-    try:
-        params_sync = _get_conn_params(status_config)
-        params_sync["connect_timeout"] = 15
-        conn_sync = psycopg2.connect(**params_sync)
-        try:
-            _sync_plugin_materialized_tables(conn_sync)
-        finally:
-            conn_sync.close()
-    except Exception as e:
-        logger.warning("run_fundamentals_local_backfill universe sync skipped: %s", e)
 
     syms = sorted({str(s or "").strip().upper() for s in symbols if str(s or "").strip()})
     if not syms:
@@ -2344,27 +2179,6 @@ def get_sepa_grouped_backfill_dates(
         return {"ok": False, "error": str(e)}
 
 
-def _stock_day_gap_reason_row(r: Dict[str, Any]) -> str:
-    """Human-readable reason for one gap row (vendor calendar vs readiness fallback)."""
-    if r.get("is_vendor_gap"):
-        vd = r.get("vendor_day") or "?"
-        mx = r.get("last_bar_max")
-        mx_s = str(mx) if mx is not None else "none"
-        return f"vendor NY date {vd} ahead of last massive daily bar ({mx_s})"
-    br = int(r.get("bar_rows") or 0)
-    last_bar = r.get("last_bar_date")
-    null_close = int(r.get("null_close_rows") or 0)
-    null_vol = int(r.get("null_volume_rows") or 0)
-    if br == 0 or last_bar is None:
-        return "snapshot row but no last_minute_updated — fallback: no bars in 420d window (readiness)"
-    if br < 240:
-        return f"snapshot row but no last_minute_updated — fallback: insufficient bars ({br}/240 required)"
-    if null_close > 0 or null_vol > 0:
-        return (
-            "snapshot row but no last_minute_updated — fallback: null data "
-            f"(close={null_close} volume={null_vol})"
-        )
-    return "snapshot row but no last_minute_updated — fallback: stale last bar (> 7 calendar days ago)"
 
 
 def get_sepa_price_gap_details(
@@ -2372,93 +2186,31 @@ def get_sepa_price_gap_details(
     *,
     limit: int = 2000,
 ) -> Dict[str, Any]:
-    """Return per-symbol gaps for Step 3 stock_day checks.
+    """Return per-symbol gaps for Step 3 stock_day checks via Plugin HTTP.
 
-    Any snapshot-based gap requires a ``cache_stock_snapshot`` row with **non-null**
-    ``session_close``; otherwise that symbol is not checked against ``stock_day`` or readiness
-    for Step 3 gaps. **Vendor fill gap**: ``last_minute_updated`` set, NY calendar date strictly
-    after ``max(stock_day.bar_time)``, and latest daily ``close`` not within tolerance of
-    ``session_close``. **Fallback gap**: same non-null ``session_close``, ``last_minute_updated``
-    NULL, and ``NOT price_ready`` on the readiness view (or no row there). ``WARRANT`` tickers
-    are excluded. **No snapshot row** → never a gap.
+    Delegates to ``GET /readiness/vendor-gap?detail=true`` on the Market Data Plugin,
+    which evaluates vendor calendar gaps and readiness fallback gaps against
+    ``market.stock_snapshot`` + ``market.stock_daily`` (Golden Source).
 
-    Returns: {ok, total_gap_count, returned, items: [..., last_stock_day_close, session_close, reason]}
+    Returns: {ok, total_gap_count, returned, items: [...]}
     """
-    if not _db_ok(status_config):
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    params = _get_conn_params(status_config)
-    params["connect_timeout"] = 15
     try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        logger.warning("get_sepa_price_gap_details connect failed: %s", e)
-        return {"ok": False, "error": str(e)}
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SET statement_timeout = 45000")
-            try:
-                cur.execute("SET LOCAL jit = off")
-            except Exception:
-                pass
-            _populate_market_temp_tables(cur)
-            cur.execute(
-                f"""
-                WITH {_STOCK_DAY_VENDOR_GAP_CANDIDATE_SQL},
-                gap_rows AS (
-                    SELECT * FROM cand WHERE is_vendor_gap OR is_fallback_gap
-                )
-                SELECT
-                    symbol,
-                    bar_rows,
-                    first_bar_date,
-                    last_bar_date,
-                    null_close_rows,
-                    null_volume_rows,
-                    vendor_day::text AS vendor_day,
-                    last_bar_max::text AS last_bar_max_date,
-                    last_bar_day_close::float8 AS last_stock_day_close,
-                    session_close::float8 AS session_close,
-                    is_vendor_gap,
-                    is_fallback_gap,
-                    count(*) OVER () AS total_count
-                FROM gap_rows
-                ORDER BY is_vendor_gap DESC, bar_rows ASC NULLS LAST, symbol
-                LIMIT %(limit)s
-                """,
-                {"limit": int(limit)},
-            )
-            rows = cur.fetchall() or []
-        total_gap_count = int(rows[0]["total_count"]) if rows else 0
-        items: List[Dict[str, Any]] = []
-        for r in rows:
-            bar_rows = int(r.get("bar_rows") or 0)
-            null_close = int(r.get("null_close_rows") or 0)
-            null_vol = int(r.get("null_volume_rows") or 0)
-            last_bar = r.get("last_bar_date")
-            items.append({
-                "symbol": r.get("symbol"),
-                "bar_rows": bar_rows,
-                "first_bar_date": r.get("first_bar_date"),
-                "last_bar_date": last_bar,
-                "null_close_rows": null_close,
-                "null_volume_rows": null_vol,
-                "vendor_day": r.get("vendor_day"),
-                "last_bar_max_date": r.get("last_bar_max_date"),
-                "last_stock_day_close": r.get("last_stock_day_close"),
-                "session_close": r.get("session_close"),
-                "reason": _stock_day_gap_reason_row(r),
-            })
+        from bifrost_api.research.market_data_client import _get_json as _plugin_get
+        data = _plugin_get(
+            f"/readiness/vendor-gap?detail=true&limit={int(limit)}",
+            timeout=60,
+        )
+        gaps = data.get("gaps") or []
+        gap_count = data.get("gap_count", len(gaps))
         return {
             "ok": True,
-            "total_gap_count": total_gap_count,
-            "returned": len(items),
-            "items": items,
+            "total_gap_count": gap_count,
+            "returned": len(gaps),
+            "items": gaps,
         }
     except Exception as e:
-        logger.warning("get_sepa_price_gap_details query failed: %s", e)
-        return {"ok": False, "error": str(e)}
-    finally:
-        conn.close()
+        logger.warning("get_sepa_price_gap_details plugin fetch failed: %s", e)
+        return {"ok": False, "error": str(e), "total_gap_count": 0, "returned": 0, "items": []}
 
 
 def get_sepa_price_gap_symbols(
@@ -2466,57 +2218,23 @@ def get_sepa_price_gap_symbols(
     *,
     batch_size: int = 50,
 ) -> Dict[str, Any]:
-    """Return symbols matching the Step 3 vendor-calendar / readiness fallback gap rule (see get_sepa_price_gap_details).
+    """Return symbols matching Step 3 vendor-calendar / readiness fallback gap rule via Plugin HTTP.
 
     Returns: {ok, gap_count, batches: [[symbol, ...], ...]}
     """
-    if not _db_ok(status_config):
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    params = _get_conn_params(status_config)
-    params["connect_timeout"] = 15
     try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        logger.warning("get_sepa_price_gap_symbols connect failed: %s", e)
-        return {"ok": False, "error": str(e)}
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SET statement_timeout = 30000")
-            try:
-                cur.execute("SET LOCAL jit = off")
-            except Exception:
-                pass
-            _populate_market_temp_tables(cur)
-            cur.execute(
-                f"""
-                WITH {_STOCK_DAY_VENDOR_GAP_CANDIDATE_SQL}
-                SELECT symbol
-                FROM cand
-                WHERE is_vendor_gap OR is_fallback_gap
-                ORDER BY symbol
-                """
-            )
-            rows = cur.fetchall() or []
+        from bifrost_api.research.market_data_client import _get_json as _plugin_get
+        data = _plugin_get("/readiness/vendor-gap?detail=true&limit=50000", timeout=60)
+        gaps = data.get("gaps") or []
         symbols: List[str] = []
-        for r in rows:
-            if not r:
-                continue
-            if isinstance(r, dict):
-                s = r.get("symbol")
-            else:
-                try:
-                    s = r[0]
-                except (IndexError, TypeError, KeyError):
-                    s = None
-            if s is None or s == "":
-                continue
-            symbols.append(str(s).strip().upper())
+        for g in gaps:
+            s = g.get("symbol") if isinstance(g, dict) else None
+            if s:
+                symbols.append(str(s).strip().upper())
         batches: List[List[str]] = [
             symbols[i : i + batch_size] for i in range(0, len(symbols), batch_size)
         ]
         return {"ok": True, "gap_count": len(symbols), "batches": batches}
     except Exception as e:
-        logger.warning("get_sepa_price_gap_symbols query failed: %s", e)
-        return {"ok": False, "error": str(e)}
-    finally:
-        conn.close()
+        logger.warning("get_sepa_price_gap_symbols plugin fetch failed: %s", e)
+        return {"ok": False, "error": str(e), "gap_count": 0, "batches": []}
