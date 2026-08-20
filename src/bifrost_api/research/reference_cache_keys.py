@@ -15,8 +15,6 @@ from typing import Any
 CACHE_TTL_TICKER_SEC = 3600
 CACHE_TTL_STOCK_SEC = 3600  # deprecated alias
 CACHE_TTL_SEARCH_SEC = 120
-CACHE_TTL_TICKER_TYPES_SEC = 86400
-CACHE_TTL_INSTRUMENT_TYPES_SEC = 86400  # deprecated alias for CACHE_TTL_TICKER_TYPES_SEC
 CACHE_TTL_PEERS_SEC = 1800
 CACHE_TTL_SEPA_FUNDAMENTALS_SEC = 21600
 
@@ -52,17 +50,6 @@ def key_search(normalized_q: str) -> str:
         return f"{MASSIVE_INGESTOR_CACHE_PREFIX}:search:empty"
     h = hashlib.sha256(nq.encode("utf-8")).hexdigest()[:24]
     return f"{MASSIVE_INGESTOR_CACHE_PREFIX}:search:{h}"
-
-
-def key_ticker_types(locale: str, asset_class: str) -> str:
-    loc = (locale or "*").strip() or "*"
-    ac = (asset_class or "*").strip() or "*"
-    return f"{MASSIVE_INGESTOR_CACHE_PREFIX}:ticker_types:{loc}:{ac}"
-
-
-def key_instrument_types(locale: str, asset_class: str) -> str:
-    """Deprecated: use ``key_ticker_types`` (same cache key as canonical ``key_ticker_types``)."""
-    return key_ticker_types(locale, asset_class)
 
 
 def key_peers(symbol: str) -> str:
