@@ -1070,27 +1070,24 @@ def fetch_sepa_readiness_summary(status_config: dict) -> Dict[str, Any]:
                 rows.append({"notes": r.get("notes_key"), "count": int(r.get("cnt") or 0)})
             out["notes_breakdown"] = rows
 
-            # Holidays summary — covers the same Step 1 as ticker universe sync.
+            # Holidays summary — market.us_market_holiday via FDW (Plugin-owned).
             try:
                 cur.execute(
                     """
                     SELECT
                         count(*)::bigint AS total,
                         count(*) FILTER (WHERE status = 'early-close')::bigint AS early_close_count,
-                        count(*) FILTER (WHERE source = 'massive')::bigint AS massive_count,
-                        count(*) FILTER (WHERE source = 'manual_seed')::bigint AS seed_count,
-                        count(*) FILTER (WHERE source = 'manual')::bigint AS manual_count,
                         min(holiday_date)::text AS earliest_date,
                         max(holiday_date)::text AS latest_date,
-                        max(updated_at) FILTER (WHERE source = 'massive')::text AS last_massive_sync
-                    FROM public.reference_us_holidays
+                        max(fetched_at)::text AS last_fetched_at
+                    FROM market.us_market_holiday
                     """
                 )
                 hr = cur.fetchone() or {}
                 cur.execute(
                     """
                     SELECT exchange, count(*)::bigint AS cnt
-                    FROM public.reference_us_holidays
+                    FROM market.us_market_holiday
                     GROUP BY exchange
                     ORDER BY exchange
                     """
@@ -1102,12 +1099,9 @@ def fetch_sepa_readiness_summary(status_config: dict) -> Dict[str, Any]:
                 out["holidays_summary"] = {
                     "total": int(hr.get("total") or 0),
                     "early_close_count": int(hr.get("early_close_count") or 0),
-                    "massive_count": int(hr.get("massive_count") or 0),
-                    "seed_count": int(hr.get("seed_count") or 0),
-                    "manual_count": int(hr.get("manual_count") or 0),
                     "earliest_date": hr.get("earliest_date"),
                     "latest_date": hr.get("latest_date"),
-                    "last_massive_sync": hr.get("last_massive_sync"),
+                    "last_fetched_at": hr.get("last_fetched_at"),
                     "by_exchange": by_exchange,
                 }
             except Exception as e:
@@ -1115,12 +1109,9 @@ def fetch_sepa_readiness_summary(status_config: dict) -> Dict[str, Any]:
                 out["holidays_summary"] = {
                     "total": 0,
                     "early_close_count": 0,
-                    "massive_count": 0,
-                    "seed_count": 0,
-                    "manual_count": 0,
                     "earliest_date": None,
                     "latest_date": None,
-                    "last_massive_sync": None,
+                    "last_fetched_at": None,
                     "by_exchange": [],
                 }
 

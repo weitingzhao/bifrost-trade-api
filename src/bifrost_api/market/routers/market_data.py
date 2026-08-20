@@ -248,24 +248,19 @@ def get_market_holidays(
     year: Optional[int] = Query(None, description="Filter by year"),
     exchange: Optional[str] = Query(None, description="Exchange filter (e.g. NYSE). Omit to return all exchanges."),
 ) -> List[Dict[str, Any]]:
-    """Return US market holidays from reference_us_holidays. exchange omitted = all exchanges."""
+    """Return US market holidays from market.us_market_holiday (FDW). exchange omitted = all exchanges."""
     reader = request.app.state.reader
     return reader.get_market_holidays(exchange=exchange or None, year=year)
 
 
 @router.post("/market/holidays")
 def post_market_holiday(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Add or update one holiday. Body: date (YYYY-MM-DD), label (optional), exchange (optional, default NYSE)."""
-    reader = request.app.state.reader
-    date_str = (body.get("date") or "").strip()
-    if not date_str:
-        raise HTTPException(status_code=400, detail="date is required")
-    label = (body.get("label") or "").strip() or None
-    exchange = (body.get("exchange") or "NYSE").strip() or "NYSE"
-    ok = reader.add_market_holiday(date_str, label=label, exchange=exchange)
-    if not ok:
-        raise HTTPException(status_code=400, detail="Invalid date or failed to add holiday")
-    return {"date": date_str, "exchange": exchange, "label": label}
+    """Retired: holiday calendar is maintained by Market Data Plugin (Polygon ingest)."""
+    _ = request, body
+    raise HTTPException(
+        status_code=405,
+        detail="Holiday CRUD retired — calendar maintained by Market Data Plugin",
+    )
 
 
 @router.delete("/market/holidays")
@@ -274,15 +269,12 @@ def delete_market_holiday(
     date_param: str = Query(..., alias="date", description="Date YYYY-MM-DD"),
     exchange: str = Query("NYSE", description="Exchange"),
 ) -> Dict[str, Any]:
-    """Delete one holiday."""
-    reader = request.app.state.reader
-    date_str = date_param.strip()
-    if not date_str:
-        raise HTTPException(status_code=400, detail="date is required")
-    ok = reader.delete_market_holiday(date_str, exchange=exchange)
-    if not ok:
-        raise HTTPException(status_code=400, detail="Invalid date or failed to delete")
-    return {"date": date_str, "exchange": exchange, "deleted": True}
+    """Retired: holiday calendar is maintained by Market Data Plugin (Polygon ingest)."""
+    _ = request, date_param, exchange
+    raise HTTPException(
+        status_code=405,
+        detail="Holiday CRUD retired — calendar maintained by Market Data Plugin",
+    )
 
 
 # --- Bars coverage and indices ---
