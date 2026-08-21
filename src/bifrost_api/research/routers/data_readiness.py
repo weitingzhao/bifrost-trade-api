@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, Request
 
+from bifrost_api.research.analytics_reader import use_analytics
 from bifrost_api.research.sepa.readiness_snapshot import (
     compute_data_inventory_stats,
     compute_sepa_criteria_stats,
@@ -16,6 +18,7 @@ from bifrost_api.research.sepa.readiness_snapshot import (
 )
 from bifrost_api.research.sepa.stock_unified_snapshot_refresh import run_refresh_cache_stock_unified_snapshots
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["research"])
 
 
@@ -86,13 +89,22 @@ def post_sepa_backfill_fundamentals(
     request: Request,
     body: Dict[str, Any] = Body(default={}),
 ) -> Dict[str, Any]:
-    """Evaluate SEPA fundamentals for all universe symbols and write directly to stock_readiness_daily.
+    """Evaluate SEPA fundamentals for all universe symbols.
 
-    Reads from stock_income_statements (already downloaded by Steps 4/5) and evaluates the 8 SEPA
-    fundamental conditions for every symbol whose today's stock_readiness_daily row lacks fundamental_eval.
-    No Phase1 / CRS filtering is applied — this is a data-completeness backfill, not a screening run.
-    The heavy work is done in a background thread so the endpoint returns immediately.
+    When SEPA_USE_ANALYTICS=true (default), evaluation is handled by the dbt CronJob
+    in bifrost-analytics. This endpoint returns a deprecation notice.
+    When SEPA_USE_ANALYTICS=false, falls back to the legacy Python evaluation path.
     """
+    if use_analytics():
+        return {
+            "ok": True,
+            "status": "deprecated",
+            "message": (
+                "Fundamental evaluation is now handled by dbt CronJob. "
+                "Run 'dbt run --select sepa_fundamental_eval' in bifrost-analytics to refresh."
+            ),
+        }
+
     import threading
 
     import psycopg2
@@ -177,13 +189,22 @@ def post_sepa_backfill_technical(
     request: Request,
     body: Dict[str, Any] = Body(default={}),
 ) -> Dict[str, Any]:
-    """Evaluate 11 SEPA technical conditions (10 Phase-1 + CRS) for universe symbols and
-    write directly to stock_readiness_daily.technical_eval.
+    """Evaluate SEPA technical conditions for universe symbols.
 
-    Reads only from local stock_day (massive). No vendor calls. CRS is computed
-    universe-wide so the rank percentile is meaningful. The heavy work runs in a
-    background thread so this endpoint returns immediately.
+    When SEPA_USE_ANALYTICS=true (default), evaluation is handled by the dbt CronJob
+    in bifrost-analytics. This endpoint returns a deprecation notice.
+    When SEPA_USE_ANALYTICS=false, falls back to the legacy Python evaluation path.
     """
+    if use_analytics():
+        return {
+            "ok": True,
+            "status": "deprecated",
+            "message": (
+                "Technical evaluation is now handled by dbt CronJob. "
+                "Run 'dbt run --select sepa_technical_eval' in bifrost-analytics to refresh."
+            ),
+        }
+
     import threading
 
     import psycopg2
@@ -521,10 +542,25 @@ def post_sepa_gap_ack(
 
 @router.get("/research/data/readiness/criteria-stats")
 def get_sepa_criteria_stats(request: Request) -> Dict[str, Any]:
+    if use_analytics():
+        return _criteria_stats_analytics()
     db = _db_config(request)
     if not db:
         return {"ok": False, "error": "PostgreSQL not configured"}
     return compute_sepa_criteria_stats(db)
+
+
+def _criteria_stats_analytics() -> Dict[str, Any]:
+    """Criteria stats sourced from analytics.sepa_criteria_stats (dbt)."""
+    from bifrost_api.research.analytics_reader import fetch_criteria_stats
+
+    try:
+        raw = fetch_criteria_stats()
+    except Exception as e:
+        logger.warning("analytics criteria_stats failed, no legacy fallback: %s", e)
+        return {"ok": False, "error": f"Analytics DB error: {e}"}
+
+    return {"ok": True, **raw}
 
 
 @router.get("/research/data/readiness/fundamental-distribution/symbols")
@@ -533,12 +569,15 @@ def get_fundamental_distribution_symbols(
     conditions_passed: int = 0,
 ) -> Dict[str, Any]:
     """Return symbols that passed exactly N out of 8 SEPA fundamental conditions today."""
+    if conditions_passed < 0 or conditions_passed > 8:
+        return {"ok": False, "error": "conditions_passed must be 0–8"}
+
+    if use_analytics():
+        return _fundamental_distribution_analytics(conditions_passed)
+
     import psycopg2
     from psycopg2.extras import RealDictCursor
     from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    if conditions_passed < 0 or conditions_passed > 8:
-        return {"ok": False, "error": "conditions_passed must be 0–8"}
     db = _db_config(request)
     if not db:
         return {"ok": False, "error": "PostgreSQL not configured"}
@@ -585,18 +624,33 @@ def get_fundamental_distribution_symbols(
         conn.close()
 
 
+def _fundamental_distribution_analytics(conditions_passed: int) -> Dict[str, Any]:
+    """Fundamental distribution from analytics.sepa_fundamental_eval."""
+    from bifrost_api.research.analytics_reader import fetch_fundamental_distribution_symbols
+
+    try:
+        symbols = fetch_fundamental_distribution_symbols(conditions_passed)
+        return {"ok": True, "conditions_passed": conditions_passed, "count": len(symbols), "symbols": symbols}
+    except Exception as e:
+        logger.warning("analytics fundamental_distribution failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
 @router.get("/research/data/readiness/technical-distribution/symbols")
 def get_technical_distribution_symbols(
     request: Request,
     conditions_passed: int = 0,
 ) -> Dict[str, Any]:
     """Return symbols that passed exactly N out of 11 SEPA technical conditions today."""
+    if conditions_passed < 0 or conditions_passed > 11:
+        return {"ok": False, "error": "conditions_passed must be 0–11"}
+
+    if use_analytics():
+        return _technical_distribution_analytics(conditions_passed)
+
     import psycopg2
     from psycopg2.extras import RealDictCursor
     from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    if conditions_passed < 0 or conditions_passed > 11:
-        return {"ok": False, "error": "conditions_passed must be 0–11"}
     db = _db_config(request)
     if not db:
         return {"ok": False, "error": "PostgreSQL not configured"}
@@ -642,6 +696,18 @@ def get_technical_distribution_symbols(
         conn.close()
 
 
+def _technical_distribution_analytics(conditions_passed: int) -> Dict[str, Any]:
+    """Technical distribution from analytics.sepa_technical_eval."""
+    from bifrost_api.research.analytics_reader import fetch_technical_distribution_symbols
+
+    try:
+        symbols = fetch_technical_distribution_symbols(conditions_passed)
+        return {"ok": True, "conditions_passed": conditions_passed, "count": len(symbols), "symbols": symbols}
+    except Exception as e:
+        logger.warning("analytics technical_distribution failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
 @router.get("/research/data/readiness/data-inventory")
 def get_sepa_data_inventory(request: Request) -> Dict[str, Any]:
     db = _db_config(request)
@@ -657,18 +723,20 @@ def get_fundamental_conditions_by_symbol(
 ) -> Dict[str, Any]:
     """Return today's SEPA fundamental conditions snapshot for a single symbol.
 
-    Reads from ``public.stock_readiness_daily.fundamental_eval`` (jsonb) for the latest
-    ``as_of_date <= CURRENT_DATE``. Falls back to the most recent stored row when today's
-    snapshot is missing (e.g. before the daily Phase4 run).
+    Reads from ``analytics.sepa_fundamental_eval`` when SEPA_USE_ANALYTICS=true,
+    else falls back to ``public.stock_readiness_daily.fundamental_eval`` (jsonb).
     """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return {"ok": False, "error": "symbol is required"}
+
+    if use_analytics():
+        return _fundamental_conditions_analytics(sym)
+
     import psycopg2
     from psycopg2.extras import RealDictCursor
 
     from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    sym = (symbol or "").strip().upper()
-    if not sym:
-        return {"ok": False, "error": "symbol is required"}
     db = _db_config(request)
     if not db:
         return {"ok": False, "error": "PostgreSQL not configured"}
@@ -740,6 +808,47 @@ def get_fundamental_conditions_by_symbol(
     }
 
 
+def _fundamental_conditions_analytics(sym: str) -> Dict[str, Any]:
+    """Single-symbol fundamental conditions from analytics.sepa_fundamental_eval."""
+    from bifrost_api.research.analytics_reader import FUND_CONDITION_COLUMNS, fetch_fundamental_eval_single
+
+    try:
+        row = fetch_fundamental_eval_single(sym)
+    except Exception as e:
+        logger.warning("analytics fundamental_conditions failed for %s: %s", sym, e)
+        return {"ok": False, "error": str(e)}
+
+    if not row:
+        return {"ok": True, "symbol": sym, "found": False}
+
+    conditions = []
+    for col in FUND_CONDITION_COLUMNS:
+        conditions.append({
+            "id": col,
+            "group": "sepa_core",
+            "pass": bool(row.get(col)),
+            "actual": None,
+            "threshold": None,
+            "reason": None,
+        })
+
+    eval_date = row.get("eval_date")
+    as_of_str = eval_date.isoformat() if hasattr(eval_date, "isoformat") else str(eval_date) if eval_date else None
+    pass_count = int(row.get("pass_count") or 0)
+
+    return {
+        "ok": True,
+        "symbol": sym,
+        "found": True,
+        "as_of_date": as_of_str,
+        "pass_count": pass_count,
+        "fundamental_pass": pass_count >= 6,
+        "insufficient_data": bool(row.get("insufficient_data")),
+        "conditions": conditions,
+        "groups": None,
+    }
+
+
 @router.get("/research/data/readiness/symbol-technical-conditions")
 def get_symbol_technical_conditions(
     request: Request,
@@ -747,18 +856,20 @@ def get_symbol_technical_conditions(
 ) -> Dict[str, Any]:
     """Return today's SEPA technical conditions snapshot for a single symbol.
 
-    Reads from ``public.stock_readiness_daily.technical_eval`` (jsonb) for the latest
-    ``as_of_date <= CURRENT_DATE``. Falls back to the most recent stored row when today's
-    snapshot is missing.
+    Reads from ``analytics.sepa_technical_eval`` when SEPA_USE_ANALYTICS=true,
+    else falls back to ``public.stock_readiness_daily.technical_eval`` (jsonb).
     """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return {"ok": False, "error": "symbol is required"}
+
+    if use_analytics():
+        return _technical_conditions_analytics(sym)
+
     import psycopg2
     from psycopg2.extras import RealDictCursor
 
     from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    sym = (symbol or "").strip().upper()
-    if not sym:
-        return {"ok": False, "error": "symbol is required"}
     db = _db_config(request)
     if not db:
         return {"ok": False, "error": "PostgreSQL not configured"}
@@ -833,6 +944,47 @@ def get_symbol_technical_conditions(
         "conditions": conditions,
         "metrics": metrics,
         "tiers": tiers,
+    }
+
+
+def _technical_conditions_analytics(sym: str) -> Dict[str, Any]:
+    """Single-symbol technical conditions from analytics.sepa_technical_eval."""
+    from bifrost_api.research.analytics_reader import TECH_CONDITION_COLUMNS, fetch_technical_eval_single
+
+    try:
+        row = fetch_technical_eval_single(sym)
+    except Exception as e:
+        logger.warning("analytics technical_conditions failed for %s: %s", sym, e)
+        return {"ok": False, "error": str(e)}
+
+    if not row:
+        return {"ok": True, "symbol": sym, "found": False}
+
+    conditions = []
+    for col in TECH_CONDITION_COLUMNS:
+        conditions.append({
+            "id": col,
+            "pass": bool(row.get(col)),
+            "actual": None,
+            "threshold": None,
+            "reason": None,
+        })
+
+    eval_date = row.get("eval_date")
+    as_of_str = eval_date.isoformat() if hasattr(eval_date, "isoformat") else str(eval_date) if eval_date else None
+    pass_count = int(row.get("pass_count") or 0)
+
+    return {
+        "ok": True,
+        "symbol": sym,
+        "found": True,
+        "as_of_date": as_of_str,
+        "pass_count": pass_count,
+        "technical_pass": pass_count == 11,
+        "insufficient_data": False,
+        "conditions": conditions,
+        "metrics": {},
+        "tiers": None,
     }
 
 
@@ -986,11 +1138,6 @@ def get_fundamental_filter(
     ``_SEPA_VALID_CONDITION_IDS``). Insufficient-data rows and rows outside the universe are
     excluded. Results are sorted by descending ``pass_count``, then symbol.
     """
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-
     raw_ids = [s.strip() for s in (include or "").split(",") if s.strip()]
     cond_ids = [c for c in raw_ids if c in _SEPA_VALID_CONDITION_IDS]
     if not raw_ids:
@@ -1002,6 +1149,14 @@ def get_fundamental_filter(
         eff_limit = max(1, min(int(limit), 5000))
     except Exception:
         eff_limit = 500
+
+    if use_analytics():
+        return _fundamental_filter_analytics(cond_ids, eff_limit)
+
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+
+    from bifrost_core.persistence.postgres.connection import _get_conn_params
 
     db = _db_config(request)
     if not db:
@@ -1070,6 +1225,22 @@ def get_fundamental_filter(
     }
 
 
+def _fundamental_filter_analytics(cond_ids: list, limit: int) -> Dict[str, Any]:
+    """Fundamental filter using analytics.sepa_fundamental_eval boolean columns."""
+    from bifrost_api.research.analytics_reader import fetch_fundamental_filter
+
+    try:
+        rows = fetch_fundamental_filter(cond_ids, limit=limit)
+        symbols = [
+            {"symbol": r["symbol"], "pass_count": int(r.get("pass_count") or 0), "passed_conditions": cond_ids}
+            for r in rows
+        ]
+        return {"ok": True, "include": cond_ids, "count": len(symbols), "symbols": symbols, "limit": limit}
+    except Exception as e:
+        logger.warning("analytics fundamental_filter failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
 @router.get("/research/data/readiness/technical-filter")
 def get_technical_filter(
     request: Request,
@@ -1083,11 +1254,6 @@ def get_technical_filter(
     ``_TECH_VALID_CONDITION_IDS``). Insufficient-data rows are excluded.
     Results are sorted by descending ``pass_count``, then symbol.
     """
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-
     raw_ids = [s.strip() for s in (include or "").split(",") if s.strip()]
     cond_ids = [c for c in raw_ids if c in _TECH_VALID_CONDITION_IDS]
     if not raw_ids:
@@ -1099,6 +1265,14 @@ def get_technical_filter(
         eff_limit = max(1, min(int(limit), 5000))
     except Exception:
         eff_limit = 500
+
+    if use_analytics():
+        return _technical_filter_analytics(cond_ids, eff_limit)
+
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+
+    from bifrost_core.persistence.postgres.connection import _get_conn_params
 
     db = _db_config(request)
     if not db:
@@ -1166,24 +1340,32 @@ def get_technical_filter(
     }
 
 
+def _technical_filter_analytics(cond_ids: list, limit: int) -> Dict[str, Any]:
+    """Technical filter using analytics.sepa_technical_eval boolean columns."""
+    from bifrost_api.research.analytics_reader import fetch_technical_filter
+
+    try:
+        rows = fetch_technical_filter(cond_ids, limit=limit)
+        symbols = [
+            {"symbol": r["symbol"], "pass_count": int(r.get("pass_count") or 0), "passed_conditions": cond_ids}
+            for r in rows
+        ]
+        return {"ok": True, "include": cond_ids, "count": len(symbols), "symbols": symbols, "limit": limit}
+    except Exception as e:
+        logger.warning("analytics technical_filter failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
 @router.get("/research/data/readiness/symbols-snapshot")
 def get_symbols_readiness_snapshot(
     request: Request,
     symbols: str = "",
 ) -> Dict[str, Any]:
-    """Return the latest ``stock_readiness_daily`` row for each requested symbol.
+    """Return the latest readiness row for each requested symbol.
 
-    Used by the Stock Screener main results table: instead of re-running Phase1/CRS/
-    Fundamentals on demand, just read what the unified Stock Data Readiness daily
-    pipeline already wrote. For each symbol we pick the row with the largest
-    ``as_of_date`` (typically today), regardless of which ``universe_rule_version``
-    or ``price_source`` produced it (priority: most recent computed_at).
+    When SEPA_USE_ANALYTICS=true, reads from analytics.sepa_screener_wide.
+    Otherwise falls back to stock_readiness_daily jsonb path.
     """
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-
     raw = (symbols or "").strip()
     if not raw:
         return {"ok": True, "as_of_date": None, "count": 0, "symbols": []}
@@ -1191,6 +1373,14 @@ def get_symbols_readiness_snapshot(
     syms = [s for s in syms if s][:500]
     if not syms:
         return {"ok": True, "as_of_date": None, "count": 0, "symbols": []}
+
+    if use_analytics():
+        return _symbols_snapshot_analytics(syms)
+
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+
+    from bifrost_core.persistence.postgres.connection import _get_conn_params
 
     db = _db_config(request)
     if not db:
@@ -1318,6 +1508,69 @@ def get_symbols_readiness_snapshot(
         "count": len(ordered),
         "symbols": ordered,
     }
+
+
+def _symbols_snapshot_analytics(syms: list) -> Dict[str, Any]:
+    """Symbols snapshot from analytics.sepa_screener_wide."""
+    from bifrost_api.research.analytics_reader import FUND_CONDITION_COLUMNS, TECH_CONDITION_COLUMNS, fetch_screener_wide
+
+    try:
+        rows = fetch_screener_wide(symbols=syms)
+    except Exception as e:
+        logger.warning("analytics symbols_snapshot failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+    rows_by_symbol = {}
+    latest_as_of: Optional[str] = None
+    for r in rows:
+        sym = r.get("symbol", "")
+        eval_date = r.get("eval_date")
+        as_of_str = eval_date.isoformat() if hasattr(eval_date, "isoformat") else str(eval_date) if eval_date else None
+
+        fund_passed = [col for col in FUND_CONDITION_COLUMNS if r.get(col) is True]
+        tech_passed = [col for col in TECH_CONDITION_COLUMNS if r.get(col) is True]
+        fund_pass_count = int(r.get("fund_pass_count") or 0)
+        tech_pass_count = int(r.get("tech_pass_count") or 0)
+
+        rows_by_symbol[sym] = {
+            "symbol": sym,
+            "found": True,
+            "as_of_date": as_of_str,
+            "included_in_universe": True,
+            "price_ready": True,
+            "bar_count_lookback": 0,
+            "first_bar_date": None,
+            "last_bar_date": None,
+            "income_stmt_ready": True,
+            "income_stmt_q_count": 0,
+            "income_stmt_a_count": 0,
+            "balance_sheet_present": True,
+            "cash_flow_present": True,
+            "ratios_present": True,
+            "short_interest_present": True,
+            "short_volume_present": True,
+            "fundamental_pass": fund_pass_count >= 6,
+            "fundamental_pass_count": fund_pass_count,
+            "fundamental_insufficient": bool(r.get("insufficient_data")),
+            "passed_conditions": fund_passed,
+            "passed_conditions_by_group": {},
+            "fund_groups": None,
+            "technical_pass": tech_pass_count == 11,
+            "technical_pass_count": tech_pass_count,
+            "technical_insufficient": False,
+            "passed_tech_conditions": tech_passed,
+        }
+        if as_of_str and (latest_as_of is None or as_of_str > latest_as_of):
+            latest_as_of = as_of_str
+
+    ordered = []
+    for s in syms:
+        if s in rows_by_symbol:
+            ordered.append(rows_by_symbol[s])
+        else:
+            ordered.append({"symbol": s, "found": False})
+
+    return {"ok": True, "as_of_date": latest_as_of, "count": len(ordered), "symbols": ordered}
 
 
 @router.get("/research/data/readiness/symbol-fundamental-raw-data")
