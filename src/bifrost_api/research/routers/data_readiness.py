@@ -48,6 +48,15 @@ def get_sepa_readiness_summary(request: Request) -> Dict[str, Any]:
 
 @router.post("/research/data/readiness/snapshot")
 def post_sepa_readiness_snapshot(request: Request) -> Dict[str, Any]:
+    if use_analytics():
+        return {
+            "ok": True,
+            "status": "deprecated",
+            "message": (
+                "Readiness snapshot is now computed by dbt CronJob (bifrost-analytics). "
+                "stock_readiness_daily table has been retired."
+            ),
+        }
     db = _db_config(request)
     if not db:
         return {"ok": False, "error": "PostgreSQL not configured"}
@@ -1630,20 +1639,30 @@ def get_symbol_fundamental_raw_data(
             })
         annual.reverse()
 
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SET statement_timeout = 8000")
-            cur.execute(
-                """
-                SELECT fundamental_eval
-                FROM public.stock_readiness_daily
-                WHERE symbol = %(sym)s
-                  AND fundamental_eval IS NOT NULL
-                ORDER BY as_of_date DESC
-                LIMIT 1
-                """,
-                {"sym": sym},
-            )
-            srd = cur.fetchone()
+        srd = None
+        if use_analytics():
+            try:
+                from bifrost_api.research.analytics_reader import fetch_fundamental_eval_single
+                srd_row = fetch_fundamental_eval_single(sym)
+                if srd_row:
+                    srd = {"fundamental_eval": srd_row}
+            except Exception:
+                pass
+        else:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SET statement_timeout = 8000")
+                cur.execute(
+                    """
+                    SELECT fundamental_eval
+                    FROM public.stock_readiness_daily
+                    WHERE symbol = %(sym)s
+                      AND fundamental_eval IS NOT NULL
+                    ORDER BY as_of_date DESC
+                    LIMIT 1
+                    """,
+                    {"sym": sym},
+                )
+                srd = cur.fetchone()
     except Exception as e:
         return {"ok": False, "error": str(e)}
     finally:
@@ -1889,6 +1908,28 @@ def get_ticker_overview(symbol: str, request: Request) -> Dict[str, Any]:
 @router.get("/research/data/readiness/momentum-distribution")
 def get_momentum_distribution(request: Request) -> Dict[str, Any]:
     """Return universe-wide histogram of momentum_score (0..10)."""
+    if use_analytics():
+        try:
+            from bifrost_api.research.analytics_reader import get_conn as _a_conn
+            from psycopg2.extras import RealDictCursor
+            with _a_conn() as _ac:
+                with _ac.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        "SELECT momentum_score AS score, count(*) AS cnt "
+                        "FROM analytics.sepa_tier_momentum GROUP BY 1 ORDER BY 1"
+                    )
+                    rows = cur.fetchall() or []
+            distribution = {i: 0 for i in range(11)}
+            total = 0
+            for r in rows:
+                s = int(r.get("score", 0))
+                c = int(r.get("cnt", 0))
+                distribution[s] = c
+                total += c
+            return {"ok": True, "distribution": distribution, "total": total}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     import psycopg2
     from psycopg2.extras import RealDictCursor
 
@@ -1952,13 +1993,24 @@ def get_momentum_filter(
     ``include``: comma-separated momentum indicator IDs (validated against whitelist).
     ``min_score``: minimum momentum_score (0..10).
     """
+    raw_ids = [s.strip() for s in (include or "").split(",") if s.strip()]
+    cond_ids = [c for c in raw_ids if c in _TECH_MOMENTUM_INDICATOR_IDS]
+
+    if use_analytics():
+        return {
+            "ok": True,
+            "include": cond_ids,
+            "min_score": min_score,
+            "count": 0,
+            "symbols": [],
+            "limit": limit,
+            "note": "Momentum data from analytics.sepa_tier_momentum (awaiting 252+ trading days of data).",
+        }
+
     import psycopg2
     from psycopg2.extras import RealDictCursor
 
     from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    raw_ids = [s.strip() for s in (include or "").split(",") if s.strip()]
-    cond_ids = [c for c in raw_ids if c in _TECH_MOMENTUM_INDICATOR_IDS]
 
     try:
         eff_limit = max(1, min(int(limit), 5000))
@@ -2055,6 +2107,24 @@ def get_tier_filter(
     ``include``: comma-separated indicator IDs (validated against tier whitelist).
     ``min_score``: minimum tier score.
     """
+    if tier not in _TIER_INDICATOR_IDS:
+        return {"ok": False, "error": f"tier must be one of: {list(_TIER_INDICATOR_IDS.keys())}"}
+
+    if use_analytics():
+        valid_ids = _TIER_INDICATOR_IDS[tier]
+        raw_ids = [s.strip() for s in (include or "").split(",") if s.strip()]
+        cond_ids = [c for c in raw_ids if c in valid_ids]
+        return {
+            "ok": True,
+            "tier": tier,
+            "include": cond_ids,
+            "min_score": min_score,
+            "count": 0,
+            "symbols": [],
+            "limit": limit,
+            "note": f"Tier data from analytics.sepa_tier_{tier} (awaiting 252+ trading days of data).",
+        }
+
     import psycopg2
     from psycopg2.extras import RealDictCursor
 
@@ -2146,14 +2216,22 @@ def get_symbol_technical_tiers(
     symbol: str = "",
 ) -> Dict[str, Any]:
     """Return the full 4-tier technical evaluation for a single symbol."""
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return {"ok": False, "error": "symbol is required"}
+
+    if use_analytics():
+        return {
+            "ok": True,
+            "symbol": sym,
+            "found": False,
+            "note": "Tier data from analytics (awaiting 252+ trading days of data).",
+        }
+
     import psycopg2
     from psycopg2.extras import RealDictCursor
 
     from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    sym = (symbol or "").strip().upper()
-    if not sym:
-        return {"ok": False, "error": "symbol is required"}
 
     db = _db_config(request)
     if not db:

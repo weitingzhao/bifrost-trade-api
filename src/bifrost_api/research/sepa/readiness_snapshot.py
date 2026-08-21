@@ -738,18 +738,28 @@ def fetch_sepa_readiness_summary(status_config: dict) -> Dict[str, Any]:
 
             out["fund_cache_view_exists"] = True
             try:
-                cur.execute(
-                    """
-                    SELECT count(*)::bigint AS n
-                    FROM public.stock_readiness_daily
-                    WHERE as_of_date = CURRENT_DATE
-                      AND universe_rule_version = 'v1'
-                      AND price_source = 'massive'
-                      AND fundamental_eval IS NOT NULL
-                      AND fund_cache_expire_at > now()
-                    """
-                )
-                out["fund_cache_valid_count"] = int((cur.fetchone() or {}).get("n") or 0)
+                from bifrost_api.research.analytics_reader import use_analytics as _use_a, get_conn as _a_conn
+                if _use_a():
+                    with _a_conn() as _ac:
+                        with _ac.cursor(cursor_factory=RealDictCursor) as _acur:
+                            _acur.execute(
+                                "SELECT count(*)::bigint AS n FROM analytics.sepa_fundamental_eval "
+                                "WHERE insufficient_data = false"
+                            )
+                            out["fund_cache_valid_count"] = int((_acur.fetchone() or {}).get("n") or 0)
+                else:
+                    cur.execute(
+                        """
+                        SELECT count(*)::bigint AS n
+                        FROM public.stock_readiness_daily
+                        WHERE as_of_date = CURRENT_DATE
+                          AND universe_rule_version = 'v1'
+                          AND price_source = 'massive'
+                          AND fundamental_eval IS NOT NULL
+                          AND fund_cache_expire_at > now()
+                        """
+                    )
+                    out["fund_cache_valid_count"] = int((cur.fetchone() or {}).get("n") or 0)
             except Exception:
                 out["fund_cache_valid_count"] = None
 
@@ -853,67 +863,37 @@ def fetch_sepa_readiness_summary(status_config: dict) -> Dict[str, Any]:
                     out[f"{dt}_actionable_gap_count"] = out.get(f"{dt}_gap_count")
                     out[f"{dt}_void_reason"] = None
 
-            cur.execute(
-                """
-                SELECT count(*)::bigint AS n
-                FROM public.stock_readiness_daily
-                WHERE as_of_date = CURRENT_DATE
-                  AND universe_rule_version = 'v1'
-                  AND price_source = 'massive'
-                """
-            )
-            snap_total = int((cur.fetchone() or {}).get("n") or 0)
-            out["snapshot_populated"] = snap_total > 0
-
-            cur.execute(
-                """
-                SELECT count(*)::bigint AS n
-                FROM public.stock_readiness_daily
-                WHERE as_of_date = CURRENT_DATE
-                  AND universe_rule_version = 'v1'
-                  AND price_source = 'massive'
-                  AND included_in_universe
-                """
-            )
-            snap_included = int((cur.fetchone() or {}).get("n") or 0)
-
-            cur.execute(
-                """
-                SELECT count(*)::bigint AS n
-                FROM public.stock_readiness_daily
-                WHERE as_of_date = CURRENT_DATE
-                  AND universe_rule_version = 'v1'
-                  AND price_source = 'massive'
-                  AND included_in_universe
-                  AND price_ready
-                """
-            )
-            snap_ready = int((cur.fetchone() or {}).get("n") or 0)
-
-            out["snapshot_today"] = {
-                "rows_total": snap_total,
-                "included_in_universe": snap_included,
-                "price_ready": snap_ready,
-            }
-
-            cur.execute(
-                """
-                SELECT coalesce(notes, '(ready)') AS notes_key, count(*)::bigint AS cnt
-                FROM public.stock_readiness_daily
-                WHERE as_of_date = CURRENT_DATE
-                  AND universe_rule_version = 'v1'
-                  AND price_source = 'massive'
-                  AND included_in_universe
-                  AND NOT price_ready
-                GROUP BY 1
-                ORDER BY cnt DESC
-                LIMIT 20
-                """
-            )
-            rows: List[Dict[str, Any]] = []
-            for r in cur.fetchall() or []:
-                rows.append({"notes": r.get("notes_key"), "count": int(r.get("cnt") or 0)})
-            out["notes_breakdown"] = rows
+            try:
+                from bifrost_api.research.analytics_reader import use_analytics as _use_a2, get_conn as _a_conn2
+                if _use_a2():
+                    with _a_conn2() as _ac2:
+                        with _ac2.cursor(cursor_factory=RealDictCursor) as _acur2:
+                            _acur2.execute(
+                                "SELECT count(*)::bigint AS n FROM analytics.sepa_fundamental_eval"
+                            )
+                            snap_total = int((_acur2.fetchone() or {}).get("n") or 0)
+                            _acur2.execute(
+                                "SELECT count(*)::bigint AS n FROM analytics.sepa_fundamental_eval "
+                                "WHERE insufficient_data = false"
+                            )
+                            snap_ready = int((_acur2.fetchone() or {}).get("n") or 0)
+                    out["snapshot_populated"] = snap_total > 0
+                    out["snapshot_today"] = {
+                        "rows_total": snap_total,
+                        "included_in_universe": snap_total,
+                        "price_ready": snap_ready,
+                    }
+                    out["notes_breakdown"] = []
+                else:
+                    raise ImportError("fallback to legacy")
+            except Exception:
+                out["snapshot_populated"] = False
+                out["snapshot_today"] = {
+                    "rows_total": 0,
+                    "included_in_universe": 0,
+                    "price_ready": 0,
+                }
+                out["notes_breakdown"] = []
 
             # Holidays summary — market.us_market_holiday via FDW (Plugin-owned).
             try:
