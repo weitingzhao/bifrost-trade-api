@@ -110,7 +110,7 @@ def post_sepa_backfill_fundamentals(
             "status": "deprecated",
             "message": (
                 "Fundamental evaluation is now handled by dbt CronJob. "
-                "Run 'dbt run --select sepa_fundamental_eval' in bifrost-analytics to refresh."
+                "Run 'dbt run --select mart_sepa_fundamental_eval' in bifrost-analytics to refresh."
             ),
         }
 
@@ -210,7 +210,7 @@ def post_sepa_backfill_technical(
             "status": "deprecated",
             "message": (
                 "Technical evaluation is now handled by dbt CronJob. "
-                "Run 'dbt run --select sepa_technical_eval' in bifrost-analytics to refresh."
+                "Run 'dbt run --select mart_sepa_technical_eval' in bifrost-analytics to refresh."
             ),
         }
 
@@ -560,8 +560,15 @@ def get_sepa_criteria_stats(request: Request) -> Dict[str, Any]:
 
 
 def _criteria_stats_analytics() -> Dict[str, Any]:
-    """Criteria stats sourced from analytics.sepa_criteria_stats (dbt)."""
-    from bifrost_api.research.analytics_reader import fetch_criteria_stats
+    """Criteria stats from analytics marts, reshaped for Stock Screener FE."""
+    from datetime import datetime, timezone
+
+    from bifrost_api.research.analytics_reader import (
+        FUND_CONDITION_COLUMNS,
+        TECH_CONDITION_COLUMNS,
+        fetch_criteria_stats,
+        get_conn,
+    )
 
     try:
         raw = fetch_criteria_stats()
@@ -569,7 +576,156 @@ def _criteria_stats_analytics() -> Dict[str, Any]:
         logger.warning("analytics criteria_stats failed, no legacy fallback: %s", e)
         return {"ok": False, "error": f"Analytics DB error: {e}"}
 
-    return {"ok": True, **raw}
+    fund_raw = raw.get("fundamental") if isinstance(raw.get("fundamental"), dict) else {}
+    tech_raw = raw.get("technical") if isinstance(raw.get("technical"), dict) else {}
+
+    # Already FE-shaped (has conditions list)
+    if isinstance(fund_raw.get("conditions"), list):
+        return {"ok": True, "computed_at": datetime.now(timezone.utc).isoformat(), **raw}
+
+    fund_key_map = {
+        "eps_q2q": "eps_q2q_ge_25pct",
+        "rev_q2q": "rev_q2q_ge_25pct",
+        "eps_acc": "eps_acc_2q",
+        "rev_acc": "rev_acc_2q",
+        "eps_3y": "eps_3y_ge_15pct",
+        "rev_3y": "rev_3y_ge_15pct",
+        "eps_acc_fy": "eps_acc_fy",
+        "rev_acc_fy": "rev_acc_fy",
+    }
+    tech_key_map = {
+        "volume": "avg_volume_50_gt_threshold",
+        "low52": "close_ge_low52_x_1_3",
+        "high52": "close_ge_high52_x_0_75",
+        "sma50_150": "sma50_gt_sma150",
+        "sma50_200": "sma50_gt_sma200",
+        "sma150_200": "sma150_gt_sma200",
+        "sma200_rising": "sma200_rising_1m",
+        "price_sma50": "price_gt_sma50",
+        "price_sma150": "price_gt_sma150",
+        "price_sma200": "price_gt_sma200",
+        "crs": "crs_ge_70",
+    }
+
+    def _conds(stats: dict, key_map: dict, ids: list[str]) -> list[dict]:
+        total = int(stats.get("evaluated") or stats.get("total") or 0)
+        out = []
+        id_set = set(ids)
+        for key, cid in key_map.items():
+            if cid not in id_set:
+                continue
+            p = int(stats.get(f"{key}_pass") or 0)
+            f = int(stats.get(f"{key}_fail") or 0)
+            out.append(
+                {
+                    "id": cid,
+                    "label": cid,
+                    "pass": p,
+                    "fail": f,
+                    "no_data": max(0, total - p - f),
+                    "total": total,
+                }
+            )
+        return out
+
+    fund_eval = int(fund_raw.get("evaluated") or fund_raw.get("total") or 0)
+    tech_eval = int(tech_raw.get("evaluated") or tech_raw.get("total") or 0)
+
+    fundamental = {
+        "cached_count": fund_eval,
+        "fund_pass_count": int(fund_raw.get("all_pass") or 0),
+        "no_data_count": int(fund_raw.get("no_data") or 0),
+        "pass_6_plus": int(fund_raw.get("pass_6_plus") or 0),
+        "pass_4_plus": int(fund_raw.get("pass_4_plus") or 0),
+        "conditions": _conds(fund_raw, fund_key_map, FUND_CONDITION_COLUMNS),
+        "pass_count_distribution": [],
+    }
+    technical = {
+        "total_in_snapshot": tech_eval,
+        "price_ready_count": tech_eval,
+        "fund_cached_count": fund_eval,
+        "both_ready": min(fund_eval, tech_eval),
+        "bars_ge_252": 0,
+        "bars_ge_240": 0,
+        "bars_ge_200": 0,
+        "bars_lt_200": 0,
+        "no_bars": 0,
+        "failure_reasons": [],
+        "tech_cached_count": tech_eval,
+        "tech_pass_count": int(tech_raw.get("all_pass") or 0),
+        "tech_insufficient_count": 0,
+        "pass_8_plus": int(tech_raw.get("pass_8_plus") or 0),
+        "pass_4_plus": int(tech_raw.get("pass_4_plus") or 0),
+        "conditions": [
+            {"id": c["id"], "label": c["label"], "pass": c["pass"], "fail": c["fail"]}
+            for c in _conds(tech_raw, tech_key_map, TECH_CONDITION_COLUMNS)
+        ],
+        "pass_count_distribution": [],
+    }
+
+    try:
+        from psycopg2.extras import RealDictCursor
+
+        from bifrost_api.research.analytics_reader import (
+            _FUND_EVAL_TABLE,
+            _TECH_EVAL_TABLE,
+            latest_eval_date,
+        )
+
+        with get_conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                fund_as_of = latest_eval_date(cur, _FUND_EVAL_TABLE)
+                if fund_as_of is not None:
+                    cur.execute(
+                        f"""
+                        SELECT COALESCE(pass_count, 0)::int AS conditions_passed, COUNT(*)::int AS symbol_count
+                        FROM {_FUND_EVAL_TABLE}
+                        WHERE eval_date = %s
+                          AND COALESCE(insufficient_data, false) IS NOT TRUE
+                        GROUP BY 1
+                        """,
+                        (fund_as_of,),
+                    )
+                    dist = {
+                        int(r["conditions_passed"]): int(r["symbol_count"])
+                        for r in (cur.fetchall() or [])
+                    }
+                    fundamental["pass_count_distribution"] = [
+                        {"conditions_passed": i, "symbol_count": dist.get(i, 0)}
+                        for i in range(8, -1, -1)
+                    ]
+                    fundamental["eval_date"] = fund_as_of.isoformat()
+
+                tech_as_of = latest_eval_date(cur, _TECH_EVAL_TABLE)
+                if tech_as_of is not None:
+                    cur.execute(
+                        f"""
+                        SELECT COALESCE(pass_count, 0)::int AS conditions_passed, COUNT(*)::int AS symbol_count
+                        FROM {_TECH_EVAL_TABLE}
+                        WHERE eval_date = %s
+                        GROUP BY 1
+                        """,
+                        (tech_as_of,),
+                    )
+                    tdist = {
+                        int(r["conditions_passed"]): int(r["symbol_count"])
+                        for r in (cur.fetchall() or [])
+                    }
+                    technical["pass_count_distribution"] = [
+                        {"conditions_passed": i, "symbol_count": tdist.get(i, 0)}
+                        for i in range(11, -1, -1)
+                    ]
+                    technical["eval_date"] = tech_as_of.isoformat()
+    except Exception as exc:
+        logger.warning("criteria_stats distribution enrich failed: %s", exc)
+
+    return {
+        "ok": True,
+        "universe_count": int(fund_raw.get("total") or tech_raw.get("total") or fund_eval),
+        "computed_at": datetime.now(timezone.utc).isoformat(),
+        "fundamental": fundamental,
+        "technical": technical,
+    }
 
 
 @router.get("/research/data/readiness/fundamental-distribution/symbols")
@@ -634,14 +790,66 @@ def get_fundamental_distribution_symbols(
 
 
 def _fundamental_distribution_analytics(conditions_passed: int) -> Dict[str, Any]:
-    """Fundamental distribution from analytics.sepa_fundamental_eval."""
-    from bifrost_api.research.analytics_reader import fetch_fundamental_distribution_symbols
+    """Fundamental distribution from analytics.sepa_fundamental_eval (latest snapshot)."""
+    from bifrost_api.research.analytics_reader import (
+        _FUND_EVAL_TABLE,
+        fetch_fundamental_distribution_symbols,
+        get_conn,
+        latest_eval_date,
+    )
+    from psycopg2.extras import RealDictCursor
 
     try:
         symbols = fetch_fundamental_distribution_symbols(conditions_passed)
-        return {"ok": True, "conditions_passed": conditions_passed, "count": len(symbols), "symbols": symbols}
+        as_of = None
+        try:
+            with get_conn() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    d = latest_eval_date(cur, _FUND_EVAL_TABLE)
+                    as_of = d.isoformat() if d else None
+        except Exception:
+            as_of = None
+        return {
+            "ok": True,
+            "conditions_passed": conditions_passed,
+            "count": len(symbols),
+            "symbols": symbols,
+            "as_of": as_of,
+        }
     except Exception as e:
         logger.warning("analytics fundamental_distribution failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+def _technical_distribution_analytics(conditions_passed: int) -> Dict[str, Any]:
+    """Technical distribution from analytics mart (latest snapshot)."""
+    from bifrost_api.research.analytics_reader import (
+        _TECH_EVAL_TABLE,
+        fetch_technical_distribution_symbols,
+        get_conn,
+        latest_eval_date,
+    )
+    from psycopg2.extras import RealDictCursor
+
+    try:
+        symbols = fetch_technical_distribution_symbols(conditions_passed)
+        as_of = None
+        try:
+            with get_conn() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    d = latest_eval_date(cur, _TECH_EVAL_TABLE)
+                    as_of = d.isoformat() if d else None
+        except Exception:
+            as_of = None
+        return {
+            "ok": True,
+            "conditions_passed": conditions_passed,
+            "count": len(symbols),
+            "symbols": symbols,
+            "as_of": as_of,
+        }
+    except Exception as e:
+        logger.warning("analytics technical_distribution failed: %s", e)
         return {"ok": False, "error": str(e)}
 
 
@@ -703,18 +911,6 @@ def get_technical_distribution_symbols(
         return {"ok": False, "error": str(e)}
     finally:
         conn.close()
-
-
-def _technical_distribution_analytics(conditions_passed: int) -> Dict[str, Any]:
-    """Technical distribution from analytics.sepa_technical_eval."""
-    from bifrost_api.research.analytics_reader import fetch_technical_distribution_symbols
-
-    try:
-        symbols = fetch_technical_distribution_symbols(conditions_passed)
-        return {"ok": True, "conditions_passed": conditions_passed, "count": len(symbols), "symbols": symbols}
-    except Exception as e:
-        logger.warning("analytics technical_distribution failed: %s", e)
-        return {"ok": False, "error": str(e)}
 
 
 @router.get("/research/data/readiness/data-inventory")
@@ -1916,7 +2112,7 @@ def get_momentum_distribution(request: Request) -> Dict[str, Any]:
                 with _ac.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(
                         "SELECT momentum_score AS score, count(*) AS cnt "
-                        "FROM analytics.sepa_tier_momentum GROUP BY 1 ORDER BY 1"
+                        "FROM analytics.mart_sepa_tier_momentum GROUP BY 1 ORDER BY 1"
                     )
                     rows = cur.fetchall() or []
             distribution = {i: 0 for i in range(11)}
@@ -2004,7 +2200,7 @@ def get_momentum_filter(
             "count": 0,
             "symbols": [],
             "limit": limit,
-            "note": "Momentum data from analytics.sepa_tier_momentum (awaiting 252+ trading days of data).",
+            "note": "Momentum data from analytics.mart_sepa_tier_momentum (awaiting 252+ trading days of data).",
         }
 
     import psycopg2
@@ -2122,7 +2318,7 @@ def get_tier_filter(
             "count": 0,
             "symbols": [],
             "limit": limit,
-            "note": f"Tier data from analytics.sepa_tier_{tier} (awaiting 252+ trading days of data).",
+            "note": f"Tier data from analytics.mart_sepa_tier_{tier} (awaiting 252+ trading days of data).",
         }
 
     import psycopg2

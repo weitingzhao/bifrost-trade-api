@@ -743,7 +743,7 @@ def fetch_sepa_readiness_summary(status_config: dict) -> Dict[str, Any]:
                     with _a_conn() as _ac:
                         with _ac.cursor(cursor_factory=RealDictCursor) as _acur:
                             _acur.execute(
-                                "SELECT count(*)::bigint AS n FROM analytics.sepa_fundamental_eval "
+                                "SELECT count(*)::bigint AS n FROM analytics.mart_sepa_fundamental_eval "
                                 "WHERE insufficient_data = false"
                             )
                             out["fund_cache_valid_count"] = int((_acur.fetchone() or {}).get("n") or 0)
@@ -869,11 +869,11 @@ def fetch_sepa_readiness_summary(status_config: dict) -> Dict[str, Any]:
                     with _a_conn2() as _ac2:
                         with _ac2.cursor(cursor_factory=RealDictCursor) as _acur2:
                             _acur2.execute(
-                                "SELECT count(*)::bigint AS n FROM analytics.sepa_fundamental_eval"
+                                "SELECT count(*)::bigint AS n FROM analytics.mart_sepa_fundamental_eval"
                             )
                             snap_total = int((_acur2.fetchone() or {}).get("n") or 0)
                             _acur2.execute(
-                                "SELECT count(*)::bigint AS n FROM analytics.sepa_fundamental_eval "
+                                "SELECT count(*)::bigint AS n FROM analytics.mart_sepa_fundamental_eval "
                                 "WHERE insufficient_data = false"
                             )
                             snap_ready = int((_acur2.fetchone() or {}).get("n") or 0)
