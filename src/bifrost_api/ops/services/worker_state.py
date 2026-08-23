@@ -470,8 +470,7 @@ class WorkerStateService:
             if rk:
                 return str(rk).strip()
         name = str(task.get("name") or "")
-        if "backfill_bars" in name:
-            return "stocks_ib"
+        del name
         return ""
 
     def _count_celery_tasks_for_queue(
@@ -508,42 +507,8 @@ class WorkerStateService:
         return 0
 
     def _pg_status_counts(self) -> Optional[Dict[str, int]]:
-        """Return bars_status_counts from job_bars_backfill, or None if DB unavailable."""
-        pg = self._config.get("postgres") or {}
-        host = str(pg.get("host") or "").strip()
-        if not host:
-            return None
-        try:
-            import psycopg2
-
-            port = int(pg.get("port") or 5432)
-            dbname = str(pg.get("database") or "bifrost_dev")
-            user = str(pg.get("user") or "bifrost")
-            password = str(pg.get("password") or "")
-            conn = psycopg2.connect(
-                host=host,
-                port=port,
-                dbname=dbname,
-                user=user,
-                password=password,
-                connect_timeout=5,
-            )
-            try:
-                bars_counts: Dict[str, int] = {"pending": 0, "running": 0, "done": 0, "failed": 0}
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT status, COUNT(*)::bigint FROM job_bars_backfill GROUP BY status"
-                    )
-                    for row in cur.fetchall() or []:
-                        st = str(row[0] or "").strip().lower()
-                        if st in bars_counts:
-                            bars_counts[st] = int(row[1])
-                return bars_counts
-            finally:
-                conn.close()
-        except Exception as e:
-            logger.debug("queue summary PG counts failed: %s", e)
-            return None
+        """Trade Celery job_bars_backfill retired — no PG queue counts."""
+        return None
 
     def _queues_from_worker_profiles(self) -> set[str]:
         try:
@@ -643,24 +608,14 @@ class WorkerStateService:
         for q in ordered:
             pending_broker = llens.get(q)
             display_name = labels.get(q) or q
-            if q == "stocks_ib":
-                row = {
-                    "name": q,
-                    "display_name": display_name,
-                    "pending_broker": pending_broker,
-                    "running_celery": (bars_db.get("running") if bars_db else None),
-                    "done_db": (bars_db.get("done") if bars_db else None),
-                    "failed_db": (bars_db.get("failed") if bars_db else None),
-                }
-            else:
-                row = {
-                    "name": q,
-                    "display_name": display_name,
-                    "pending_broker": pending_broker,
-                    "running_celery": None,
-                    "done_db": None,
-                    "failed_db": None,
-                }
+            row = {
+                "name": q,
+                "display_name": display_name,
+                "pending_broker": pending_broker,
+                "running_celery": None,
+                "done_db": None,
+                "failed_db": None,
+            }
             rows.append(row)
         return {
             "queues": rows,

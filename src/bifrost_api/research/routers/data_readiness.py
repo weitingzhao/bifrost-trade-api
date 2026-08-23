@@ -790,7 +790,7 @@ def get_fundamental_distribution_symbols(
 
 
 def _fundamental_distribution_analytics(conditions_passed: int) -> Dict[str, Any]:
-    """Fundamental distribution from analytics.sepa_fundamental_eval (latest snapshot)."""
+    """Fundamental distribution from dw_stock.mart_sepa_fundamental_eval (latest snapshot)."""
     from bifrost_api.research.analytics_reader import (
         _FUND_EVAL_TABLE,
         fetch_fundamental_distribution_symbols,
@@ -928,7 +928,7 @@ def get_fundamental_conditions_by_symbol(
 ) -> Dict[str, Any]:
     """Return today's SEPA fundamental conditions snapshot for a single symbol.
 
-    Reads from ``analytics.sepa_fundamental_eval`` when SEPA_USE_ANALYTICS=true,
+    Reads from ``dw_stock.mart_sepa_fundamental_eval`` when SEPA_USE_ANALYTICS=true,
     else falls back to ``public.stock_readiness_daily.fundamental_eval`` (jsonb).
     """
     sym = (symbol or "").strip().upper()
@@ -1014,7 +1014,7 @@ def get_fundamental_conditions_by_symbol(
 
 
 def _fundamental_conditions_analytics(sym: str) -> Dict[str, Any]:
-    """Single-symbol fundamental conditions from analytics.sepa_fundamental_eval."""
+    """Single-symbol fundamental conditions from dw_stock.mart_sepa_fundamental_eval."""
     from bifrost_api.research.analytics_reader import FUND_CONDITION_COLUMNS, fetch_fundamental_eval_single
 
     try:
@@ -1061,7 +1061,7 @@ def get_symbol_technical_conditions(
 ) -> Dict[str, Any]:
     """Return today's SEPA technical conditions snapshot for a single symbol.
 
-    Reads from ``analytics.sepa_technical_eval`` when SEPA_USE_ANALYTICS=true,
+    Reads from ``dw_stock.mart_sepa_technical_eval`` when SEPA_USE_ANALYTICS=true,
     else falls back to ``public.stock_readiness_daily.technical_eval`` (jsonb).
     """
     sym = (symbol or "").strip().upper()
@@ -1153,7 +1153,7 @@ def get_symbol_technical_conditions(
 
 
 def _technical_conditions_analytics(sym: str) -> Dict[str, Any]:
-    """Single-symbol technical conditions from analytics.sepa_technical_eval."""
+    """Single-symbol technical conditions from dw_stock.mart_sepa_technical_eval."""
     from bifrost_api.research.analytics_reader import TECH_CONDITION_COLUMNS, fetch_technical_eval_single
 
     try:
@@ -1431,7 +1431,7 @@ def get_fundamental_filter(
 
 
 def _fundamental_filter_analytics(cond_ids: list, limit: int) -> Dict[str, Any]:
-    """Fundamental filter using analytics.sepa_fundamental_eval boolean columns."""
+    """Fundamental filter using dw_stock.mart_sepa_fundamental_eval boolean columns."""
     from bifrost_api.research.analytics_reader import fetch_fundamental_filter
 
     try:
@@ -1546,7 +1546,7 @@ def get_technical_filter(
 
 
 def _technical_filter_analytics(cond_ids: list, limit: int) -> Dict[str, Any]:
-    """Technical filter using analytics.sepa_technical_eval boolean columns."""
+    """Technical filter using dw_stock.mart_sepa_technical_eval boolean columns."""
     from bifrost_api.research.analytics_reader import fetch_technical_filter
 
     try:
@@ -1568,7 +1568,7 @@ def get_symbols_readiness_snapshot(
 ) -> Dict[str, Any]:
     """Return the latest readiness row for each requested symbol.
 
-    When SEPA_USE_ANALYTICS=true, reads from analytics.sepa_screener_wide.
+    When SEPA_USE_ANALYTICS=true, reads from dw_stock.mart_sepa_screener_wide.
     Otherwise falls back to stock_readiness_daily jsonb path.
     """
     raw = (symbols or "").strip()
@@ -1716,7 +1716,7 @@ def get_symbols_readiness_snapshot(
 
 
 def _symbols_snapshot_analytics(syms: list) -> Dict[str, Any]:
-    """Symbols snapshot from analytics.sepa_screener_wide."""
+    """Symbols snapshot from dw_stock.mart_sepa_screener_wide."""
     from bifrost_api.research.analytics_reader import FUND_CONDITION_COLUMNS, TECH_CONDITION_COLUMNS, fetch_screener_wide
 
     try:
@@ -2055,7 +2055,7 @@ def get_ticker_overview(symbol: str, request: Request) -> Dict[str, Any]:
                 cur.execute(
                     """
                     SELECT rt.to_symbol
-                    FROM market.ticker_related rt
+                    FROM raw_market.ticker_related rt
                     WHERE rt.from_symbol = %s
                     ORDER BY rt.rank ASC
                     LIMIT 12
@@ -2112,7 +2112,7 @@ def get_momentum_distribution(request: Request) -> Dict[str, Any]:
                 with _ac.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(
                         "SELECT momentum_score AS score, count(*) AS cnt "
-                        "FROM analytics.mart_sepa_tier_momentum GROUP BY 1 ORDER BY 1"
+                        "FROM dw_stock.mart_sepa_tier_momentum GROUP BY 1 ORDER BY 1"
                     )
                     rows = cur.fetchall() or []
             distribution = {i: 0 for i in range(11)}
@@ -2200,7 +2200,7 @@ def get_momentum_filter(
             "count": 0,
             "symbols": [],
             "limit": limit,
-            "note": "Momentum data from analytics.mart_sepa_tier_momentum (awaiting 252+ trading days of data).",
+            "note": "Momentum data from dw_stock.mart_sepa_tier_momentum (awaiting 252+ trading days of data).",
         }
 
     import psycopg2
@@ -2318,7 +2318,7 @@ def get_tier_filter(
             "count": 0,
             "symbols": [],
             "limit": limit,
-            "note": f"Tier data from analytics.mart_sepa_tier_{tier} (awaiting 252+ trading days of data).",
+            "note": f"Tier data from dw_stock.mart_sepa_tier_{tier} (awaiting 252+ trading days of data).",
         }
 
     import psycopg2

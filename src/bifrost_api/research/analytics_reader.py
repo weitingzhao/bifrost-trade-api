@@ -38,8 +38,8 @@ _RESEARCH_TIMEOUT = float(os.environ.get("RESEARCH_API_TIMEOUT", "30"))
 _pool: Optional[ThreadedConnectionPool] = None
 
 # dbt SEPA marts are single-day snapshots — prefer MAX(eval_date), not CURRENT_DATE.
-_FUND_EVAL_TABLE = "analytics.mart_sepa_fundamental_eval"
-_TECH_EVAL_TABLE = "analytics.mart_sepa_technical_eval"
+_FUND_EVAL_TABLE = "dw_stock.mart_sepa_fundamental_eval"
+_TECH_EVAL_TABLE = "dw_stock.mart_sepa_technical_eval"
 _ALLOWED_EVAL_TABLES = frozenset({_FUND_EVAL_TABLE, _TECH_EVAL_TABLE})
 
 FUND_CONDITION_COLUMNS = [
@@ -171,9 +171,9 @@ def _fetch_criteria_stats_direct() -> Dict[str, Any]:
     with get_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             try:
-                cur.execute("SELECT domain, stats FROM analytics.mart_sepa_criteria_stats")
+                cur.execute("SELECT domain, stats FROM dw_stock.mart_sepa_criteria_stats")
             except Exception:
-                cur.execute("SELECT domain, stats FROM analytics.sepa_criteria_stats")
+                cur.execute("SELECT domain, stats FROM dw_stock.mart_sepa_criteria_stats")
             rows = cur.fetchall() or []
     result: Dict[str, Any] = {}
     for row in rows:
@@ -203,7 +203,7 @@ def fetch_fundamental_eval_single(symbol: str) -> Optional[Dict[str, Any]]:
             cur.execute(
                 """
                 SELECT *
-                FROM analytics.mart_sepa_fundamental_eval
+                FROM dw_stock.mart_sepa_fundamental_eval
                 WHERE symbol = %s
                 ORDER BY eval_date DESC
                 LIMIT 1
@@ -231,7 +231,7 @@ def fetch_technical_eval_single(symbol: str) -> Optional[Dict[str, Any]]:
             cur.execute(
                 """
                 SELECT *
-                FROM analytics.mart_sepa_technical_eval
+                FROM dw_stock.mart_sepa_technical_eval
                 WHERE symbol = %s
                 ORDER BY eval_date DESC
                 LIMIT 1
@@ -417,7 +417,7 @@ def fetch_screener_wide(
                 cur.execute(
                     """
                     SELECT *
-                    FROM analytics.mart_sepa_screener_wide
+                    FROM dw_stock.mart_sepa_screener_wide
                     WHERE symbol = ANY(%s)
                     ORDER BY symbol
                     """,
@@ -427,7 +427,7 @@ def fetch_screener_wide(
                 cur.execute(
                     f"""
                     SELECT *
-                    FROM analytics.mart_sepa_screener_wide
+                    FROM dw_stock.mart_sepa_screener_wide
                     ORDER BY overall_rank ASC NULLS LAST
                     LIMIT {int(limit)}
                     """
@@ -447,7 +447,7 @@ def fetch_screening_ranked(*, limit: int = 500) -> List[Dict[str, Any]]:
             cur.execute(
                 f"""
                 SELECT symbol, composite_score, overall_rank, decile, percentile
-                FROM analytics.mart_sepa_screening_ranked
+                FROM dw_stock.mart_sepa_screening_ranked
                 ORDER BY overall_rank ASC NULLS LAST
                 LIMIT {int(limit)}
                 """

@@ -1,40 +1,17 @@
-"""Enumerate Celery task names registered on the Ops app (same app as workers)."""
+"""Enumerate Celery task names — Trade Celery retired (stocks_ib bars backfill)."""
 
 from __future__ import annotations
 
-import importlib
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 
 def build_supported_tasks_payload(celery_app: Any) -> Dict[str, Any]:
-    """Return sorted project tasks (``src.*``) with default queue from ``task_routes`` / ``task_default_queue``.
-
-    Ensures bars task modules are imported so ``app.tasks`` is populated (task names stay ``src.*``).
-    Massive Celery tasks retired (Wave 7-C).
-    """
-    importlib.import_module("bifrost_worker.data.bars.tasks")
-
-    default_q = str(getattr(celery_app.conf, "task_default_queue", None) or "stocks_ib")
-    routes = getattr(celery_app.conf, "task_routes", None) or {}
-    if not isinstance(routes, dict):
-        routes = {}
-
-    tasks_out: List[Dict[str, str]] = []
-    for name in sorted(celery_app.tasks.keys()):
-        if name.startswith("celery."):
-            continue
-        if not name.startswith("src."):
-            continue
-        q = default_q
-        spec = routes.get(name)
-        if isinstance(spec, dict) and spec.get("queue"):
-            q = str(spec["queue"])
-        tasks_out.append(
-            {
-                "name": name,
-                "default_queue": q,
-                "task_route_default_queue": q,
-            }
-        )
-
-    return {"ok": True, "tasks": tasks_out, "count": len(tasks_out)}
+    """Return empty task list after Trade Celery retirement."""
+    del celery_app
+    return {
+        "ok": True,
+        "tasks": [],
+        "count": 0,
+        "retired": True,
+        "note": "Trade Celery retired; stock OHLC via Market Data Plugin ops_jobs.",
+    }

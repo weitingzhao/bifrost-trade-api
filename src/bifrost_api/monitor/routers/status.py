@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Query, Request
 
-from bifrost_core.monitor.reader import get_job_bars_backfill_last_updated
 from bifrost_core.monitor.reader.reference_indices_merge import (
     augment_reference_indices_with_caret_symbols,
     merge_reference_indices,
@@ -464,9 +463,7 @@ def get_status(request: Request) -> Dict[str, Any]:
         except Exception:
             pass
 
-        celery_worker_last_updated_ts = (
-            get_job_bars_backfill_last_updated(control_via_db) if control_via_db else None
-        )
+        celery_worker_last_updated_ts = None
 
         massive = None
         ib_ingestor = None

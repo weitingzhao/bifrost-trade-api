@@ -10,9 +10,7 @@ from fastapi.exceptions import HTTPException
 from pydantic import BaseModel
 
 from bifrost_core.monitor.reader import (
-    write_ohlc_bars_to_db,
     delete_stock_bars_for_symbol,
-    trim_job_bars_backfill,
 )
 from bifrost_core.monitor.reader.reference_indices_merge import merge_reference_indices
 from bifrost_core.monitor.reader.symbol_normalize import norm_bars_symbol
@@ -20,18 +18,16 @@ from bifrost_core.monitor.services.market_jobs import (
     TOLERANCE_END_SEC_NON_TRADING,
     TOLERANCE_END_SEC_TRADING_DAY,
     WATCHLIST_EOD_PERIODS,
+    build_plugin_backfill_preview,
     coverage_status,
-    enqueue_job_bars_backfill,
+    enqueue_plugin_bars_backfill,
+    enqueue_watchlist_eod_plugin,
     get_watchlist_stock_symbols,
-    job_row_to_api,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["market"])
-
-# Back-compat for ops job_queues (delegate to service).
-_job_row_to_api = job_row_to_api
 
 
 def _synthetic_option_vwap_from_ohlcv(row_pg: Dict[str, Any]) -> Optional[float]:
@@ -422,64 +418,41 @@ async def post_bars_fetch(
     request: Request,
     symbol: Optional[str] = Query(..., description="Symbol, e.g. NVDA"),
     period: Optional[str] = Query("1 D", description="Bar period (e.g. 1 D, 1 min)"),
-    duration: Optional[str] = Query("30 D", description="IB durationStr (e.g. 30 D, 5 D)"),
-    smart_duration: bool = Query(False, description="Compute duration from latest bar gap"),
+    duration: Optional[str] = Query("30 D", description="Lookback hint (e.g. 30 D) — mapped to Plugin enqueue range"),
+    smart_duration: bool = Query(False, description="Compute range from latest bar gap"),
 ) -> Dict[str, Any]:
-    """Fetch bars via IB Gateway and write to stock_day/stock_min."""
+    """Enqueue Polygon ingest for symbol+period (replaces IB Gateway fetch_bars)."""
     app = request.app
     reader = app.state.reader
-    control_via_db = app.state.control_via_db
-    sym = (symbol or "").strip()
+    sym = (symbol or "").strip().upper()
     if not sym:
         return {"ok": False, "error": "Missing symbol parameter.", "bars": [], "count": 0}
-    if not control_via_db:
-        return {"ok": False, "error": "PostgreSQL is required to write bar tables.", "bars": [], "count": 0}
     if not getattr(app.state, "monitor_enabled", True):
         return {"ok": False, "error": "Monitor stopped; cannot fetch bars.", "bars": [], "count": 0}
-    gw = getattr(app.state, "ib_operator_client", None)
-    if gw is None:
-        return {"ok": False, "error": "IB Gateway client is not configured.", "bars": [], "count": 0}
     per = (period or "1 D").strip()
-    dur = (duration or "30 D").strip()
-    if per.lower() in ("1 min", "1min"):
-        dur = "1 D"
+    days: Optional[int] = None
+    if duration and str(duration).strip().upper().endswith(" D"):
+        try:
+            days = int(str(duration).strip().split()[0])
+        except ValueError:
+            days = None
     if smart_duration:
         latest_ts = reader.get_bars_latest(symbol=sym, period=per)
         if latest_ts is not None:
-            now = datetime.now(tz=timezone.utc).timestamp()
-            gap_sec = max(0, now - latest_ts)
-            if per.upper() == "1 D":
-                gap_days = min(max(1, int(gap_sec / 86400) + 1), 720)
-                dur = f"{gap_days} D"
-            elif per.lower() in ("1 min", "1min"):
-                dur = "1 D"
-            else:
-                gap_days = min(max(1, int(gap_sec / 86400) + 1), 7)
-                dur = f"{gap_days} D"
-    env = await gw.request_async(
-        "fetch_bars",
-        {"symbol": sym, "period": per, "duration": dur},
-        caller="market_bars_fetch",
-    )
-    if not env.get("ok"):
-        return {
-            "ok": False,
-            "error": str(env.get("error") or "IB gateway error"),
-            "bars": [],
-            "count": 0,
-        }
-    data = env.get("data") or {}
-    raw = list(data.get("bars") or [])
-    if not raw:
-        return {"ok": True, "message": "IB returned no bar data.", "bars": [], "count": 0}
-    rows = [dict(b, symbol=sym, period=per) for b in raw]
-    if not write_ohlc_bars_to_db(control_via_db, rows):
-        return {"ok": False, "error": "Failed to write bar tables.", "bars": [], "count": 0}
-    bars = [
-        {"time": float(b.get("bar_time") or 0), "open": float(b.get("open") or 0), "high": float(b.get("high") or 0), "low": float(b.get("low") or 0), "close": float(b.get("close") or 0), "volume": float(b.get("volume") or 0)}
-        for b in raw
-    ]
-    return {"ok": True, "count": len(bars), "bars": bars}
+            gap_sec = max(0, time.time() - float(latest_ts))
+            days = min(max(1, int(gap_sec / 86400) + 1), 720 if per.upper() == "1 D" else 7)
+    ok, job_id, error = enqueue_plugin_bars_backfill(reader, sym, per, days=days)
+    if not ok:
+        return {"ok": False, "error": error or "Enqueue failed.", "bars": [], "count": 0}
+    if not job_id:
+        return {"ok": True, "message": error or "Nothing to fetch.", "bars": [], "count": 0, "job_id": None}
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "message": "Queued Plugin ingest; poll market-data worker / ops_jobs for completion.",
+        "bars": [],
+        "count": 0,
+    }
 
 
 @router.post("/bars/watchlist/eod-refresh/preview")
@@ -488,29 +461,21 @@ async def post_watchlist_eod_refresh_preview(
     override_days: float = Query(1.0, ge=0, le=7),
     api_interval_sec: int = Query(10, ge=0, le=300),
 ) -> Dict[str, Any]:
-    """Preview EOD refresh without enqueuing jobs."""
+    """Preview watchlist EOD Plugin enqueue plan (no IB requests)."""
     app = request.app
     reader = app.state.reader
-    control_via_db = app.state.control_via_db
-    if not control_via_db:
-        return {"ok": False, "error": "PostgreSQL is required to read bar tables and Watchlist."}
-    from bifrost_worker.data.bars.backfill import build_backfill_preview
     symbols = get_watchlist_stock_symbols(reader)
     periods = WATCHLIST_EOD_PERIODS
     items = []
     failures = []
-    total_override_records = 0
-    total_request_chunks = 0
     for sym in symbols:
         for per in periods:
-            item = build_backfill_preview(reader, sym, per, override_days=override_days)
+            item = build_plugin_backfill_preview(reader, sym, per, override_days=override_days)
             if item.get("ok") is False:
                 failures.append({"symbol": sym, "period": per, "error": item.get("error", "Preview failed")})
                 continue
             item["api_interval_sec"] = api_interval_sec
             items.append(item)
-            total_override_records += int(((item.get("override_records") or {}).get("count")) or 0)
-            total_request_chunks += len(item.get("ib_request_plan") or [])
     return {
         "ok": True,
         "preview_only": True,
@@ -522,11 +487,9 @@ async def post_watchlist_eod_refresh_preview(
         "periods": periods,
         "symbols": symbols,
         "items": items,
-        "total_override_records": total_override_records,
-        "total_request_chunks": total_request_chunks,
         "failed_count": len(failures),
         "failures": failures,
-        "message": f"Dry run ready: {len(items)} preview item(s), {total_override_records} existing record(s) may be overwritten, {total_request_chunks} IB request chunk(s).",
+        "message": f"Dry run: {len(items)} Plugin ingest job(s) would be enqueued for watchlist EOD.",
     }
 
 
@@ -539,30 +502,32 @@ async def post_bars_backfill(
     days: Optional[int] = Query(None),
     override_days: Optional[float] = Query(None),
     span_hours: Optional[float] = Query(None),
-    queue: bool = Query(True, description="Must be true; backfill runs via Celery Worker."),
+    queue: bool = Query(True, description="Ignored; enqueue always uses Market Data Plugin."),
     is_test: bool = Query(False),
     api_interval_sec: int = Query(10, ge=0, le=300),
 ) -> Dict[str, Any]:
-    """Backfill: enqueue job to Celery Worker only."""
+    """Backfill: enqueue Market Data Plugin ingest job."""
+    del queue, is_test, api_interval_sec
     app = request.app
-    control_via_db = app.state.control_via_db
+    reader = app.state.reader
     sym = (symbol or "").strip().upper()
     if not sym:
         return {"ok": False, "error": "Missing symbol parameter.", "count": 0}
-    if not control_via_db:
-        return {"ok": False, "error": "PostgreSQL is required to write bar tables.", "count": 0}
     if not getattr(app.state, "monitor_enabled", True):
         return {"ok": False, "error": "Monitor stopped; cannot backfill bars.", "count": 0}
     per = (period or "1 D").strip()
-    if not queue:
-        return {"ok": False, "error": "Backfill requires queue=true (Celery worker pulls in background; IB rate limits).", "count": 0}
-    ok, job_id, error = enqueue_job_bars_backfill(
-        control_via_db, sym, per, years=years, days=days, override_days=override_days, span_hours=span_hours, is_test=is_test, api_interval_sec=api_interval_sec
+    ok, job_id, error = enqueue_plugin_bars_backfill(
+        reader, sym, per, years=years, days=days, override_days=override_days, span_hours=span_hours
     )
-    if not ok or not job_id:
+    if not ok:
         return {"ok": False, "error": error or "Enqueue failed.", "count": 0}
-    trim_job_bars_backfill(control_via_db, keep=200)
-    return {"ok": True, "job_id": job_id, "message": "Queued (Celery). Poll GET /ops/bars/jobs/{job_id} on Ops API for status."}
+    if not job_id:
+        return {"ok": True, "job_id": None, "message": error or "Nothing to backfill.", "count": 0}
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "message": "Queued (Market Data Plugin). Poll ops_jobs.job_ingest for status.",
+    }
 
 
 @router.post("/bars/watchlist/eod-refresh")
@@ -572,33 +537,10 @@ async def post_watchlist_eod_refresh(
     is_test: bool = Query(False),
     api_interval_sec: int = Query(10, ge=0, le=300),
 ) -> Dict[str, Any]:
-    """Queue end-of-day refresh for every Watchlist stock and all coverage periods."""
+    """Queue EOD refresh via Market Data Plugin for every Watchlist stock."""
+    del is_test, api_interval_sec
     app = request.app
     reader = app.state.reader
-    control_via_db = app.state.control_via_db
-    if not control_via_db:
-        return {"ok": False, "error": "PostgreSQL is required to write bar tables.", "queued_count": 0}
     if not getattr(app.state, "monitor_enabled", True):
         return {"ok": False, "error": "Monitor stopped; cannot backfill bars.", "queued_count": 0}
-    symbols = get_watchlist_stock_symbols(reader)
-    periods = WATCHLIST_EOD_PERIODS
-    if not symbols:
-        return {"ok": True, "queued_count": 0, "failed_count": 0, "symbols_count": 0, "symbols": [], "periods": periods, "override_days": override_days, "message": "No stock symbols in Watchlist; nothing to enqueue for close refresh."}
-    queued_jobs = []
-    failures = []
-    for sym in symbols:
-        for per in periods:
-            ok, job_id, error = enqueue_job_bars_backfill(control_via_db, sym, per, override_days=override_days, is_test=is_test, api_interval_sec=api_interval_sec)
-            if ok and job_id:
-                queued_jobs.append({"job_id": job_id, "symbol": sym, "period": per})
-            else:
-                failures.append({"symbol": sym, "period": per, "error": error or "Enqueue failed."})
-    trim_job_bars_backfill(control_via_db, keep=200)
-    queued_count = len(queued_jobs)
-    failed_count = len(failures)
-    if queued_count == 0:
-        return {"ok": False, "error": "Failed to enqueue close refresh tasks.", "queued_count": 0, "failed_count": failed_count, "symbols_count": len(symbols), "symbols": symbols, "periods": periods, "override_days": override_days, "failures": failures}
-    message = f"Queued {queued_count} EOD refresh job(s) for {len(symbols)} watchlist symbol(s). override_days={override_days:g}."
-    if failed_count > 0:
-        message += f" Failed: {failed_count}."
-    return {"ok": True, "message": message, "queued_count": queued_count, "failed_count": failed_count, "symbols_count": len(symbols), "symbols": symbols, "periods": periods, "override_days": override_days, "queued_jobs": queued_jobs, "failures": failures}
+    return enqueue_watchlist_eod_plugin(reader, override_days=override_days)
