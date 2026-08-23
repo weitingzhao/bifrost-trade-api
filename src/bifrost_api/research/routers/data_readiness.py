@@ -1340,81 +1340,6 @@ def get_ticker_overview(symbol: str, request: Request) -> Dict[str, Any]:
 
 # ── Tier 2–4 new endpoints ────────────────────────────────────────────────────
 
-
-@router.get("/research/data/readiness/momentum-distribution")
-def get_momentum_distribution(request: Request) -> Dict[str, Any]:
-    """Return universe-wide histogram of momentum_score (0..10)."""
-    if use_analytics():
-        try:
-            from bifrost_api.research.analytics_reader import get_conn as _a_conn
-            from psycopg2.extras import RealDictCursor
-            with _a_conn() as _ac:
-                with _ac.cursor(cursor_factory=RealDictCursor) as cur:
-                    cur.execute(
-                        "SELECT momentum_score AS score, count(*) AS cnt "
-                        "FROM dw_stock.mart_sepa_tier_momentum GROUP BY 1 ORDER BY 1"
-                    )
-                    rows = cur.fetchall() or []
-            distribution = {i: 0 for i in range(11)}
-            total = 0
-            for r in rows:
-                s = int(r.get("score", 0))
-                c = int(r.get("cnt", 0))
-                distribution[s] = c
-                total += c
-            return {"ok": True, "distribution": distribution, "total": total}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 10
-    try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SET statement_timeout = 15000")
-            cur.execute(
-                """
-                SELECT
-                    coalesce(
-                        (technical_eval->'tiers'->'momentum'->>'score')::int,
-                        0
-                    ) AS score,
-                    count(*) AS cnt
-                FROM public.stock_readiness_daily
-                WHERE as_of_date = CURRENT_DATE
-                  AND technical_eval IS NOT NULL
-                  AND technical_eval->'tiers'->'momentum' IS NOT NULL
-                GROUP BY 1
-                ORDER BY 1
-                """
-            )
-            rows = cur.fetchall() or []
-
-        distribution = {i: 0 for i in range(11)}
-        total = 0
-        for r in rows:
-            s = int(r.get("score", 0))
-            c = int(r.get("cnt", 0))
-            distribution[s] = c
-            total += c
-
-        return {"ok": True, "distribution": distribution, "total": total}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    finally:
-        conn.close()
 _TECH_MOMENTUM_INDICATOR_IDS = frozenset(
     (
         "rsi_14_in_band",
@@ -1453,6 +1378,46 @@ _TECH_SENTIMENT_INDICATOR_IDS = frozenset(
     )
 )
 
+_TIER_INDICATOR_IDS: Dict[str, frozenset] = {
+    "structure": _TECH_STRUCTURE_INDICATOR_IDS,
+    "sentiment": _TECH_SENTIMENT_INDICATOR_IDS,
+}
+_TIER_MAX_SCORE: Dict[str, int] = {
+    "structure": 10,
+    "sentiment": 3,
+}
+
+
+@router.get("/research/data/readiness/momentum-distribution")
+def get_momentum_distribution(request: Request) -> Dict[str, Any]:
+    """Return universe-wide histogram of momentum_score (0..10)."""
+    _ = request
+    err = _require_analytics()
+    if err:
+        return err
+    try:
+        from bifrost_api.research.analytics_reader import get_conn as _a_conn
+        from psycopg2.extras import RealDictCursor
+
+        with _a_conn() as _ac:
+            with _ac.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT momentum_score AS score, count(*) AS cnt "
+                    "FROM dw_stock.mart_sepa_tier_momentum GROUP BY 1 ORDER BY 1"
+                )
+                rows = cur.fetchall() or []
+        distribution = {i: 0 for i in range(11)}
+        total = 0
+        for r in rows:
+            s = int(r.get("score", 0))
+            c = int(r.get("cnt", 0))
+            distribution[s] = c
+            total += c
+        return {"ok": True, "distribution": distribution, "total": total}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @router.get("/research/data/readiness/momentum-filter")
 def get_momentum_filter(
     request: Request,
@@ -1479,16 +1444,7 @@ def get_momentum_filter(
         "symbols": [],
         "limit": limit,
         "note": "Momentum data from dw_stock.mart_sepa_tier_momentum (awaiting 252+ trading days of data).",
-        }
-
-_TIER_INDICATOR_IDS: Dict[str, frozenset] = {
-    "structure": _TECH_STRUCTURE_INDICATOR_IDS,
-    "sentiment": _TECH_SENTIMENT_INDICATOR_IDS,
-}
-_TIER_MAX_SCORE: Dict[str, int] = {
-    "structure": 10,
-    "sentiment": 3,
-}
+    }
 
 
 @router.get("/research/data/readiness/tier-filter")
