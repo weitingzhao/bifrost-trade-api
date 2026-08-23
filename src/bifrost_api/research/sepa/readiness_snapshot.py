@@ -126,34 +126,6 @@ READINESS_DATA_CATALOG: Dict[str, Any] = {
                 "price_ready (derived)",
             ],
         },
-        {
-            "id": "research_sepa_fundamentals_cache",
-            "object": "public.research_sepa_fundamentals_cache",
-            "role": "Cached income-statement payload for SEPA fundamentals / Phase4.",
-            "typical_ingest": "Written by SEPA Phase4 or fundamentals batch jobs",
-            "data_points": [
-                "symbol",
-                "rule_version",
-                "payload (jsonb: evaluation + rows)",
-                "source",
-                "fetched_at",
-                "expire_at",
-                "updated_at",
-            ],
-        },
-        {
-            "id": "v_sepa_symbol_fund_cache_readiness",
-            "object": "public.v_sepa_symbol_fund_cache_readiness",
-            "role": "Symbols with non-expired fundamentals cache (optional view).",
-            "depends_on": ["research_sepa_fundamentals_cache"],
-            "data_points": [
-                "symbol",
-                "rule_version",
-                "fund_cache_valid",
-                "expire_at",
-                "fetched_at",
-            ],
-        },
     ],
 }
 

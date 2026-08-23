@@ -6,7 +6,6 @@ Reads ``market.*`` tables; SEPA job tables remain in public schema.
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import date as date_type
 from datetime import datetime
@@ -14,10 +13,7 @@ from datetime import time as time_of_day
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-import psycopg2
-from psycopg2.extras import RealDictCursor
 
-from bifrost_core.persistence.postgres.connection import _get_conn_params
 
 from bifrost_api.research import market_data_client
 
@@ -346,77 +342,16 @@ def replace_option_expiration_cache(
         logger.warning("replace_option_expiration_cache failed: %s", e)
 
 
-def _ensure_sepa_fundamentals_cache_table(cur: Any) -> None:
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS research_sepa_fundamentals_cache (
-            symbol text NOT NULL,
-            rule_version text NOT NULL,
-            payload jsonb NOT NULL,
-            source text DEFAULT 'massive',
-            fetched_at timestamptz NOT NULL DEFAULT now(),
-            expire_at timestamptz NOT NULL,
-            updated_at timestamptz NOT NULL DEFAULT now(),
-            PRIMARY KEY (symbol, rule_version)
-        )
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_research_sepa_fund_cache_expire
-        ON research_sepa_fundamentals_cache (expire_at)
-        """
-    )
-
-
 def get_sepa_fundamentals_cache_snapshot(
     status_config: dict,
     symbol: str,
     *,
     rule_version: str,
 ) -> Optional[Dict[str, Any]]:
-    sym = (symbol or "").strip().upper()
-    if not sym or not status_config:
-        return None
-    try:
-        params = _get_conn_params(status_config)
-        conn = psycopg2.connect(**params)
-        try:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                _ensure_sepa_fundamentals_cache_table(cur)
-                cur.execute(
-                    """
-                    SELECT payload, fetched_at, expire_at, source
-                    FROM research_sepa_fundamentals_cache
-                    WHERE symbol = %s AND rule_version = %s AND expire_at > now()
-                    LIMIT 1
-                    """,
-                    (sym, rule_version),
-                )
-                row = cur.fetchone()
-            conn.commit()
-            if not row:
-                return None
-            payload = row.get("payload")
-            if isinstance(payload, str):
-                try:
-                    payload = json.loads(payload)
-                except Exception:
-                    payload = None
-            if not isinstance(payload, dict):
-                return None
-            return {
-                "symbol": sym,
-                "payload": payload,
-                "source": row.get("source"),
-                "fetched_at": row.get("fetched_at"),
-                "expire_at": row.get("expire_at"),
-            }
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.debug("get_sepa_fundamentals_cache_snapshot failed: %s", e)
-        return None
+    """RETIRED: research_sepa_fundamentals_cache dropped; use analytics marts."""
+    _ = (status_config, symbol, rule_version)
+    logger.debug("get_sepa_fundamentals_cache_snapshot retired")
+    return None
 
 
 def upsert_sepa_fundamentals_cache(
@@ -428,37 +363,10 @@ def upsert_sepa_fundamentals_cache(
     source: str = "massive",
     ttl_sec: int = 21600,
 ) -> bool:
-    sym = (symbol or "").strip().upper()
-    if not sym or not status_config or not isinstance(payload, dict):
-        return False
-    ttl = max(60, int(ttl_sec))
-    try:
-        params = _get_conn_params(status_config)
-        conn = psycopg2.connect(**params)
-        try:
-            with conn.cursor() as cur:
-                _ensure_sepa_fundamentals_cache_table(cur)
-                cur.execute(
-                    """
-                    INSERT INTO research_sepa_fundamentals_cache
-                        (symbol, rule_version, payload, source, fetched_at, expire_at, updated_at)
-                    VALUES (%s, %s, %s::jsonb, %s, now(), now() + (%s || ' seconds')::interval, now())
-                    ON CONFLICT (symbol, rule_version) DO UPDATE SET
-                        payload = EXCLUDED.payload,
-                        source = EXCLUDED.source,
-                        fetched_at = EXCLUDED.fetched_at,
-                        expire_at = EXCLUDED.expire_at,
-                        updated_at = now()
-                    """,
-                    (sym, rule_version, json.dumps(payload), source, str(ttl)),
-                )
-            conn.commit()
-            return True
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.debug("upsert_sepa_fundamentals_cache failed: %s", e)
-        return False
+    """RETIRED: research_sepa_fundamentals_cache dropped; use analytics marts."""
+    _ = (status_config, symbol, payload, rule_version, source, ttl_sec)
+    logger.debug("upsert_sepa_fundamentals_cache retired")
+    return False
 
 
 # ── Tier 2–4 batch readers (technical_engine) ────────────────────────────────
