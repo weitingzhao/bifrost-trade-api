@@ -1,6 +1,6 @@
-"""Integration smoke test for run_fundamentals_local_backfill with extension evaluators.
+"""Integration smoke test for SEPA fundamentals extension evaluators.
 
-Mocks 5 symbols with varying data completeness.  Verifies:
+Mocks 5 symbols with varying data completeness. Verifies:
   - fundamental_eval.groups structure is present and well-formed
   - SEPA core fields (fundamental_pass / pass_count / insufficient) are not corrupted
   - Extension group conditions appear in the flat conditions[] list with group tags
