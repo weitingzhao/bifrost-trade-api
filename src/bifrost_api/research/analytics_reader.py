@@ -7,7 +7,8 @@ function signatures so ``data_readiness`` / FE paths stay stable.
 Env:
   RESEARCH_API_URL   — default ``http://research-api.research.svc.cluster.local:8795``
   RESEARCH_PROXY     — ``true`` (default) to prefer HTTP; ``false`` uses direct PG
-  SEPA_USE_ANALYTICS — master flag (unchanged)
+  SEPA_USE_ANALYTICS — master flag (unchanged); read at process start — Deployment env
+                       changes require pod rollout before routes honor the new value
   ANALYTICS_PG_*     — direct PG fallback / readiness_snapshot get_conn
 """
 

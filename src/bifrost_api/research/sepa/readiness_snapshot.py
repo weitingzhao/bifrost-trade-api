@@ -366,7 +366,7 @@ def fetch_sepa_readiness_summary(status_config: dict) -> Dict[str, Any]:
                     "price_ready": 0,
                 }
 
-            out["fund_cache_view_exists"] = True
+            out["fund_cache_valid_count"] = None
             try:
                 from bifrost_api.research.analytics_reader import get_conn as _a_conn
 
