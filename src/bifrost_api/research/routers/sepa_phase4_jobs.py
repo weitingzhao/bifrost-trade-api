@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
+from bifrost_api.research.analytics_reader import sepa_use_analytics
 from bifrost_api.research.sepa.phase4_engine import (
     Phase4JobConfig,
     create_phase4_job,
@@ -17,6 +18,16 @@ from bifrost_api.research.sepa.phase4_engine import (
 )
 
 router = APIRouter(tags=["research"])
+
+_PHASE4_RETIRED_MSG = (
+    "SEPA Phase4 PG job queue retired; use analytics.sepa_screener_wide / Research screener APIs."
+)
+
+
+def _phase4_retired() -> Optional[Dict[str, Any]]:
+    if sepa_use_analytics():
+        return {"ok": False, "error": _PHASE4_RETIRED_MSG}
+    return None
 
 
 class SepaPhase4SubmitRequest(BaseModel):
@@ -40,6 +51,9 @@ def _db_config(request: Request) -> Optional[dict]:
 
 @router.post("/research/screening/sepa/phase4/jobs")
 def submit_sepa_phase4_job(body: SepaPhase4SubmitRequest, request: Request) -> Dict[str, Any]:
+    retired = _phase4_retired()
+    if retired:
+        return retired
     db = _db_config(request)
     if not db:
         return {"ok": False, "error": "PostgreSQL not configured"}
@@ -86,6 +100,9 @@ def submit_sepa_phase4_job(body: SepaPhase4SubmitRequest, request: Request) -> D
 
 @router.get("/research/screening/sepa/phase4/jobs/{job_id}")
 def get_sepa_phase4_job(job_id: str, request: Request) -> Dict[str, Any]:
+    retired = _phase4_retired()
+    if retired:
+        return retired
     db = _db_config(request)
     row = get_phase4_job(db, job_id) if db else None
     if row is None:
@@ -100,6 +117,9 @@ def get_sepa_phase4_job_result(
     offset: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=1000),
 ) -> Dict[str, Any]:
+    retired = _phase4_retired()
+    if retired:
+        return retired
     db = _db_config(request)
     row = get_phase4_job_result(db, job_id, offset=offset, limit=limit) if db else None
     if row is None:
@@ -116,6 +136,9 @@ def list_sepa_phase4_jobs(
     created_from: Optional[str] = Query(None, description="ISO datetime lower bound on created_at"),
     created_to: Optional[str] = Query(None, description="ISO datetime upper bound on created_at"),
 ) -> Dict[str, Any]:
+    retired = _phase4_retired()
+    if retired:
+        return {**retired, "jobs": []}
     db = _db_config(request)
     if not db:
         return {"ok": False, "error": "PostgreSQL not configured", "jobs": []}
@@ -142,6 +165,9 @@ def list_sepa_phase4_jobs(
 
 @router.delete("/research/screening/sepa/phase4/jobs/{job_id}")
 def delete_sepa_phase4_job(job_id: str, request: Request) -> Dict[str, Any]:
+    retired = _phase4_retired()
+    if retired:
+        return retired
     db = _db_config(request)
     if not db:
         return {"ok": False, "error": "PostgreSQL not configured"}
