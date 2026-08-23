@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Dict, Optional
 
@@ -9,17 +8,59 @@ from fastapi import APIRouter, Body, Request
 from bifrost_api.research.analytics_reader import use_analytics
 from bifrost_api.research.sepa.readiness_snapshot import (
     compute_data_inventory_stats,
-    compute_sepa_criteria_stats,
     fetch_sepa_readiness_summary,
     get_sepa_price_gap_details,
-    run_fundamentals_local_backfill,
-    run_sepa_universe_readiness_snapshot,
-    run_technical_local_backfill,
 )
 from bifrost_api.research.sepa.stock_unified_snapshot_refresh import run_refresh_cache_stock_unified_snapshots
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["research"])
+
+_SRD_RETIRED_MSG = (
+    "SEPA analytics path required; stock_readiness_daily retired; use analytics.sepa_* marts."
+)
+
+
+def _require_analytics(extra: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    if use_analytics():
+        return None
+    out: Dict[str, Any] = {"ok": False, "error": _SRD_RETIRED_MSG}
+    if extra:
+        out.update(extra)
+    return out
+
+
+def _readiness_snapshot_deprecated() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "status": "deprecated",
+        "message": (
+            "Readiness snapshot is computed by dbt CronJob (analytics.sepa_*). "
+            "stock_readiness_daily table has been retired."
+        ),
+    }
+
+
+def _fundamentals_backfill_deprecated() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "status": "deprecated",
+        "message": (
+            "Fundamental evaluation is handled by dbt CronJob. "
+            "Run mart_sepa_fundamental_eval refresh in bifrost-research."
+        ),
+    }
+
+
+def _technical_backfill_deprecated() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "status": "deprecated",
+        "message": (
+            "Technical evaluation is handled by dbt CronJob. "
+            "Run mart_sepa_technical_eval refresh in bifrost-research."
+        ),
+    }
 
 
 def _massive_enqueue_retired(
@@ -48,19 +89,8 @@ def get_sepa_readiness_summary(request: Request) -> Dict[str, Any]:
 
 @router.post("/research/data/readiness/snapshot")
 def post_sepa_readiness_snapshot(request: Request) -> Dict[str, Any]:
-    if use_analytics():
-        return {
-            "ok": True,
-            "status": "deprecated",
-            "message": (
-                "Readiness snapshot is now computed by dbt CronJob (bifrost-analytics). "
-                "stock_readiness_daily table has been retired."
-            ),
-        }
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    return run_sepa_universe_readiness_snapshot(db)
+    _ = request
+    return _readiness_snapshot_deprecated()
 
 
 @router.post("/research/data/readiness/stock-unified-snapshot")
@@ -98,99 +128,8 @@ def post_sepa_backfill_fundamentals(
     request: Request,
     body: Dict[str, Any] = Body(default={}),
 ) -> Dict[str, Any]:
-    """Evaluate SEPA fundamentals for all universe symbols.
-
-    When SEPA_USE_ANALYTICS=true (default), evaluation is handled by the dbt CronJob
-    in bifrost-analytics. This endpoint returns a deprecation notice.
-    When SEPA_USE_ANALYTICS=false, falls back to the legacy Python evaluation path.
-    """
-    if use_analytics():
-        return {
-            "ok": True,
-            "status": "deprecated",
-            "message": (
-                "Fundamental evaluation is now handled by dbt CronJob. "
-                "Run 'dbt run --select mart_sepa_fundamental_eval' in bifrost-analytics to refresh."
-            ),
-        }
-
-    import threading
-
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 15
-    try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        return {"ok": False, "error": f"DB connect failed: {e}"}
-
-    only_missing = bool(body.get("only_missing", True))
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SET statement_timeout = 30000")
-            if only_missing:
-                cur.execute(
-                    """
-                    SELECT u.symbol
-                    FROM public.v_us_equity_universe u
-                    LEFT JOIN public.stock_readiness_daily srd
-                        ON srd.symbol = u.symbol
-                       AND srd.as_of_date = CURRENT_DATE
-                       AND srd.universe_rule_version = 'v1'
-                       AND srd.price_source = 'massive'
-                       AND srd.fundamental_eval IS NOT NULL
-                    WHERE srd.symbol IS NULL
-                    ORDER BY u.symbol
-                    """
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT symbol FROM public.v_us_equity_universe ORDER BY symbol
-                    """
-                )
-            rows = cur.fetchall() or []
-    except Exception as e:
-        return {"ok": False, "error": f"Query failed: {e}"}
-    finally:
-        conn.close()
-
-    symbols = [str(r["symbol"]) for r in rows]
-    if not symbols:
-        return {
-            "ok": True,
-            "gap_count": 0,
-            "message": "All universe symbols already have valid fundamentals cache.",
-        }
-
-    max_symbols = int(body.get("max_symbols", 50000))
-    symbols = symbols[:max_symbols]
-    cache_ttl_sec = int(body.get("cache_ttl_sec", 21600))
-
-    t = threading.Thread(
-        target=run_fundamentals_local_backfill,
-        kwargs={
-            "status_config": db,
-            "symbols": symbols,
-            "cache_ttl_sec": cache_ttl_sec,
-        },
-        daemon=True,
-    )
-    t.start()
-
-    return {
-        "ok": True,
-        "gap_count": len(symbols),
-        "message": f"Local fundamentals backfill started for {len(symbols)} symbols (no Phase1/CRS filter).",
-    }
+    _ = (request, body)
+    return _fundamentals_backfill_deprecated()
 
 
 @router.post("/research/data/readiness/backfill-technical")
@@ -198,104 +137,8 @@ def post_sepa_backfill_technical(
     request: Request,
     body: Dict[str, Any] = Body(default={}),
 ) -> Dict[str, Any]:
-    """Evaluate SEPA technical conditions for universe symbols.
-
-    When SEPA_USE_ANALYTICS=true (default), evaluation is handled by the dbt CronJob
-    in bifrost-analytics. This endpoint returns a deprecation notice.
-    When SEPA_USE_ANALYTICS=false, falls back to the legacy Python evaluation path.
-    """
-    if use_analytics():
-        return {
-            "ok": True,
-            "status": "deprecated",
-            "message": (
-                "Technical evaluation is now handled by dbt CronJob. "
-                "Run 'dbt run --select mart_sepa_technical_eval' in bifrost-analytics to refresh."
-            ),
-        }
-
-    import threading
-
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 15
-    try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        return {"ok": False, "error": f"DB connect failed: {e}"}
-
-    only_missing = bool(body.get("only_missing", True))
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SET statement_timeout = 30000")
-            if only_missing:
-                cur.execute(
-                    """
-                    SELECT u.symbol
-                    FROM public.v_us_equity_universe u
-                    LEFT JOIN public.stock_readiness_daily srd
-                        ON srd.symbol = u.symbol
-                       AND srd.as_of_date = CURRENT_DATE
-                       AND srd.universe_rule_version = 'v1'
-                       AND srd.price_source = 'massive'
-                       AND srd.technical_eval IS NOT NULL
-                    WHERE srd.symbol IS NULL
-                    ORDER BY u.symbol
-                    """
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT symbol FROM public.v_us_equity_universe ORDER BY symbol
-                    """
-                )
-            rows = cur.fetchall() or []
-    except Exception as e:
-        return {"ok": False, "error": f"Query failed: {e}"}
-    finally:
-        conn.close()
-
-    symbols = [str(r["symbol"]) for r in rows]
-    if not symbols:
-        return {
-            "ok": True,
-            "gap_count": 0,
-            "message": "All universe symbols already have a technical_eval row for today.",
-        }
-
-    max_symbols = int(body.get("max_symbols", 50000))
-    symbols = symbols[:max_symbols]
-    min_crs = float(body.get("min_crs", 70.0))
-    lookback_days = int(body.get("lookback_days", 420))
-
-    t = threading.Thread(
-        target=run_technical_local_backfill,
-        kwargs={
-            "status_config": db,
-            "symbols": symbols,
-            "min_crs": min_crs,
-            "lookback_days": lookback_days,
-        },
-        daemon=True,
-    )
-    t.start()
-
-    return {
-        "ok": True,
-        "gap_count": len(symbols),
-        "message": (
-            f"Local technical backfill started for {len(symbols)} symbols "
-            f"(Phase-1 + CRS ≥ {min_crs:g})."
-        ),
-    }
+    _ = (request, body)
+    return _technical_backfill_deprecated()
 
 
 @router.post("/research/data/readiness/sync-holidays")
@@ -551,12 +394,11 @@ def post_sepa_gap_ack(
 
 @router.get("/research/data/readiness/criteria-stats")
 def get_sepa_criteria_stats(request: Request) -> Dict[str, Any]:
-    if use_analytics():
-        return _criteria_stats_analytics()
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    return compute_sepa_criteria_stats(db)
+    _ = request
+    err = _require_analytics()
+    if err:
+        return err
+    return _criteria_stats_analytics()
 
 
 def _criteria_stats_analytics() -> Dict[str, Any]:
@@ -737,56 +579,10 @@ def get_fundamental_distribution_symbols(
     if conditions_passed < 0 or conditions_passed > 8:
         return {"ok": False, "error": "conditions_passed must be 0–8"}
 
-    if use_analytics():
-        return _fundamental_distribution_analytics(conditions_passed)
-
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 10
-    try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SET statement_timeout = 15000")
-            cur.execute(
-                """
-                SELECT
-                    symbol,
-                    coalesce((fundamental_eval->>'pass_count')::int, 0) AS pass_count,
-                    coalesce((fundamental_eval->>'fundamental_pass')::boolean, false) AS fund_pass,
-                    fundamental_eval->'conditions' AS conditions
-                FROM public.stock_readiness_daily
-                WHERE as_of_date = CURRENT_DATE
-                  AND included_in_universe = true
-                  AND fundamental_eval IS NOT NULL
-                  AND coalesce((fundamental_eval->>'insufficient_data')::boolean, false) IS NOT TRUE
-                  AND coalesce((fundamental_eval->>'pass_count')::int, 0) = %(n)s
-                ORDER BY symbol
-                """,
-                {"n": conditions_passed},
-            )
-            rows = cur.fetchall() or []
-        symbols = []
-        for r in rows:
-            cond_list = r.get("conditions") or []
-            passed_ids = [c.get("id") for c in cond_list if c.get("pass") is True] if isinstance(cond_list, list) else []
-            symbols.append({
-                "symbol": r["symbol"],
-                "pass_count": int(r.get("pass_count") or 0),
-                "passed_conditions": passed_ids,
-            })
-        return {"ok": True, "conditions_passed": conditions_passed, "count": len(symbols), "symbols": symbols}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    finally:
-        conn.close()
+    err = _require_analytics()
+    if err:
+        return err
+    return _fundamental_distribution_analytics(conditions_passed)
 
 
 def _fundamental_distribution_analytics(conditions_passed: int) -> Dict[str, Any]:
@@ -862,56 +658,10 @@ def get_technical_distribution_symbols(
     if conditions_passed < 0 or conditions_passed > 11:
         return {"ok": False, "error": "conditions_passed must be 0–11"}
 
-    if use_analytics():
-        return _technical_distribution_analytics(conditions_passed)
-
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 10
-    try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SET statement_timeout = 15000")
-            cur.execute(
-                """
-                SELECT
-                    symbol,
-                    coalesce(technical_pass_count, 0) AS pass_count,
-                    technical_eval->'conditions'      AS conditions
-                FROM public.stock_readiness_daily
-                WHERE as_of_date = CURRENT_DATE
-                  AND included_in_universe = true
-                  AND technical_eval IS NOT NULL
-                  AND coalesce((technical_eval->>'insufficient_data')::boolean, false) IS NOT TRUE
-                  AND coalesce(technical_pass_count, 0) = %(n)s
-                ORDER BY symbol
-                """,
-                {"n": conditions_passed},
-            )
-            rows = cur.fetchall() or []
-        symbols = []
-        for r in rows:
-            cond_list = r.get("conditions") or []
-            passed_ids = [c.get("id") for c in cond_list if c.get("pass") is True] if isinstance(cond_list, list) else []
-            symbols.append({
-                "symbol": r["symbol"],
-                "pass_count": int(r.get("pass_count") or 0),
-                "passed_conditions": passed_ids,
-            })
-        return {"ok": True, "conditions_passed": conditions_passed, "count": len(symbols), "symbols": symbols}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    finally:
-        conn.close()
-
+    err = _require_analytics()
+    if err:
+        return err
+    return _technical_distribution_analytics(conditions_passed)
 
 @router.get("/research/data/readiness/data-inventory")
 def get_sepa_data_inventory(request: Request) -> Dict[str, Any]:
@@ -929,89 +679,16 @@ def get_fundamental_conditions_by_symbol(
     """Return today's SEPA fundamental conditions snapshot for a single symbol.
 
     Reads from ``dw_stock.mart_sepa_fundamental_eval`` when SEPA_USE_ANALYTICS=true,
-    else falls back to ``public.stock_readiness_daily.fundamental_eval`` (jsonb).
+    Requires SEPA analytics marts (stock_readiness_daily retired).
     """
     sym = (symbol or "").strip().upper()
     if not sym:
         return {"ok": False, "error": "symbol is required"}
 
-    if use_analytics():
-        return _fundamental_conditions_analytics(sym)
-
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 10
-    try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SET statement_timeout = 8000")
-            cur.execute(
-                """
-                SELECT
-                    symbol,
-                    as_of_date::text                                       AS as_of_date,
-                    coalesce(fundamental_pass, false)                      AS fundamental_pass,
-                    coalesce(fundamental_pass_count, 0)                    AS pass_count,
-                    coalesce(fundamental_insufficient, false)              AS insufficient_data,
-                    fundamental_eval
-                FROM public.stock_readiness_daily
-                WHERE symbol = %(sym)s
-                  AND fundamental_eval IS NOT NULL
-                ORDER BY as_of_date DESC, universe_rule_version DESC, price_source DESC
-                LIMIT 1
-                """,
-                {"sym": sym},
-            )
-            row = cur.fetchone()
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    finally:
-        conn.close()
-
-    if not row:
-        return {"ok": True, "symbol": sym, "found": False}
-
-    eval_json = row.get("fundamental_eval") or {}
-    conditions_raw = eval_json.get("conditions") if isinstance(eval_json, dict) else []
-    conditions = []
-    if isinstance(conditions_raw, list):
-        for c in conditions_raw:
-            if not isinstance(c, dict):
-                continue
-            conditions.append(
-                {
-                    "id": str(c.get("id") or ""),
-                    "group": str(c.get("group") or "sepa_core"),
-                    "pass": bool(c.get("pass") or False),
-                    "actual": c.get("actual"),
-                    "threshold": c.get("threshold"),
-                    "reason": c.get("reason"),
-                }
-            )
-
-    groups_raw = eval_json.get("groups") if isinstance(eval_json, dict) else None
-
-    return {
-        "ok": True,
-        "symbol": sym,
-        "found": True,
-        "as_of_date": row.get("as_of_date"),
-        "pass_count": int(row.get("pass_count") or 0),
-        "fundamental_pass": bool(row.get("fundamental_pass") or False),
-        "insufficient_data": bool(row.get("insufficient_data") or False),
-        "conditions": conditions,
-        "groups": groups_raw,
-    }
-
+    err = _require_analytics()
+    if err:
+        return err
+    return _fundamental_conditions_analytics(sym)
 
 def _fundamental_conditions_analytics(sym: str) -> Dict[str, Any]:
     """Single-symbol fundamental conditions from dw_stock.mart_sepa_fundamental_eval."""
@@ -1062,95 +739,16 @@ def get_symbol_technical_conditions(
     """Return today's SEPA technical conditions snapshot for a single symbol.
 
     Reads from ``dw_stock.mart_sepa_technical_eval`` when SEPA_USE_ANALYTICS=true,
-    else falls back to ``public.stock_readiness_daily.technical_eval`` (jsonb).
+    Requires SEPA analytics marts (stock_readiness_daily retired).
     """
     sym = (symbol or "").strip().upper()
     if not sym:
         return {"ok": False, "error": "symbol is required"}
 
-    if use_analytics():
-        return _technical_conditions_analytics(sym)
-
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 10
-    try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SET statement_timeout = 8000")
-            cur.execute(
-                """
-                SELECT
-                    symbol,
-                    as_of_date::text                                       AS as_of_date,
-                    coalesce(technical_pass, false)                        AS technical_pass,
-                    coalesce(technical_pass_count, 0)                      AS pass_count,
-                    coalesce(technical_insufficient, false)                AS insufficient_data,
-                    technical_eval
-                FROM public.stock_readiness_daily
-                WHERE symbol = %(sym)s
-                  AND technical_eval IS NOT NULL
-                ORDER BY as_of_date DESC, universe_rule_version DESC, price_source DESC
-                LIMIT 1
-                """,
-                {"sym": sym},
-            )
-            row = cur.fetchone()
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    finally:
-        conn.close()
-
-    if not row:
-        return {"ok": True, "symbol": sym, "found": False}
-
-    eval_json = row.get("technical_eval") or {}
-    conditions_raw = eval_json.get("conditions") if isinstance(eval_json, dict) else []
-    conditions = []
-    if isinstance(conditions_raw, list):
-        for c in conditions_raw:
-            if not isinstance(c, dict):
-                continue
-            conditions.append(
-                {
-                    "id": str(c.get("id") or ""),
-                    "pass": bool(c.get("pass") or False),
-                    "actual": c.get("actual"),
-                    "threshold": c.get("threshold"),
-                    "reason": c.get("reason"),
-                }
-            )
-
-    metrics: Dict[str, Any] = {}
-    if isinstance(eval_json, dict):
-        metrics = eval_json.get("metrics") or {}
-
-    tiers = None
-    if isinstance(eval_json, dict) and "tiers" in eval_json:
-        tiers = eval_json["tiers"]
-
-    return {
-        "ok": True,
-        "symbol": sym,
-        "found": True,
-        "as_of_date": row.get("as_of_date"),
-        "pass_count": int(row.get("pass_count") or 0),
-        "technical_pass": bool(row.get("technical_pass") or False),
-        "insufficient_data": bool(row.get("insufficient_data") or False),
-        "conditions": conditions,
-        "metrics": metrics,
-        "tiers": tiers,
-    }
-
+    err = _require_analytics()
+    if err:
+        return err
+    return _technical_conditions_analytics(sym)
 
 def _technical_conditions_analytics(sym: str) -> Dict[str, Any]:
     """Single-symbol technical conditions from dw_stock.mart_sepa_technical_eval."""
@@ -1355,80 +953,10 @@ def get_fundamental_filter(
     except Exception:
         eff_limit = 500
 
-    if use_analytics():
-        return _fundamental_filter_analytics(cond_ids, eff_limit)
-
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 10
-    try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-    # Build dynamic WHERE: one jsonb containment predicate per required condition.
-    where_clauses = [
-        "as_of_date = CURRENT_DATE",
-        "included_in_universe = true",
-        "fundamental_eval IS NOT NULL",
-        "coalesce((fundamental_eval->>'insufficient_data')::boolean, false) IS NOT TRUE",
-    ]
-    sql_params: Dict[str, Any] = {"lim": eff_limit}
-    for i, cid in enumerate(cond_ids):
-        key = f"c{i}"
-        where_clauses.append(f"fundamental_eval->'conditions' @> %({key})s::jsonb")
-        sql_params[key] = json.dumps([{"id": cid, "pass": True}])
-
-    sql = (
-        "SELECT symbol, "
-        "       coalesce((fundamental_eval->>'pass_count')::int, 0) AS pass_count, "
-        "       fundamental_eval->'conditions' AS conditions "
-        "FROM public.stock_readiness_daily "
-        f"WHERE {' AND '.join(where_clauses)} "
-        "ORDER BY pass_count DESC, symbol ASC "
-        "LIMIT %(lim)s"
-    )
-
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SET statement_timeout = 10000")
-            cur.execute(sql, sql_params)
-            rows = cur.fetchall() or []
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    finally:
-        conn.close()
-
-    symbols = []
-    for r in rows:
-        cond_list = r.get("conditions") or []
-        passed_ids = (
-            [c.get("id") for c in cond_list if isinstance(c, dict) and c.get("pass") is True]
-            if isinstance(cond_list, list)
-            else []
-        )
-        symbols.append(
-            {
-                "symbol": r["symbol"],
-                "pass_count": int(r.get("pass_count") or 0),
-                "passed_conditions": passed_ids,
-            }
-        )
-    return {
-        "ok": True,
-        "include": cond_ids,
-        "count": len(symbols),
-        "symbols": symbols,
-        "limit": eff_limit,
-    }
-
+    err = _require_analytics()
+    if err:
+        return err
+    return _fundamental_filter_analytics(cond_ids, eff_limit)
 
 def _fundamental_filter_analytics(cond_ids: list, limit: int) -> Dict[str, Any]:
     """Fundamental filter using dw_stock.mart_sepa_fundamental_eval boolean columns."""
@@ -1471,79 +999,10 @@ def get_technical_filter(
     except Exception:
         eff_limit = 500
 
-    if use_analytics():
-        return _technical_filter_analytics(cond_ids, eff_limit)
-
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 10
-    try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-    where_clauses = [
-        "as_of_date = CURRENT_DATE",
-        "included_in_universe = true",
-        "technical_eval IS NOT NULL",
-        "coalesce((technical_eval->>'insufficient_data')::boolean, false) IS NOT TRUE",
-    ]
-    sql_params: Dict[str, Any] = {"lim": eff_limit}
-    for i, cid in enumerate(cond_ids):
-        key = f"c{i}"
-        where_clauses.append(f"technical_eval->'conditions' @> %({key})s::jsonb")
-        sql_params[key] = json.dumps([{"id": cid, "pass": True}])
-
-    sql = (
-        "SELECT symbol, "
-        "       coalesce((technical_eval->>'pass_count')::int, 0) AS pass_count, "
-        "       technical_eval->'conditions' AS conditions "
-        "FROM public.stock_readiness_daily "
-        f"WHERE {' AND '.join(where_clauses)} "
-        "ORDER BY pass_count DESC, symbol ASC "
-        "LIMIT %(lim)s"
-    )
-
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SET statement_timeout = 10000")
-            cur.execute(sql, sql_params)
-            rows = cur.fetchall() or []
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    finally:
-        conn.close()
-
-    symbols = []
-    for r in rows:
-        cond_list = r.get("conditions") or []
-        passed_ids = (
-            [c.get("id") for c in cond_list if isinstance(c, dict) and c.get("pass") is True]
-            if isinstance(cond_list, list)
-            else []
-        )
-        symbols.append(
-            {
-                "symbol": r["symbol"],
-                "pass_count": int(r.get("pass_count") or 0),
-                "passed_conditions": passed_ids,
-            }
-        )
-    return {
-        "ok": True,
-        "include": cond_ids,
-        "count": len(symbols),
-        "symbols": symbols,
-        "limit": eff_limit,
-    }
-
+    err = _require_analytics()
+    if err:
+        return err
+    return _technical_filter_analytics(cond_ids, eff_limit)
 
 def _technical_filter_analytics(cond_ids: list, limit: int) -> Dict[str, Any]:
     """Technical filter using dw_stock.mart_sepa_technical_eval boolean columns."""
@@ -1569,7 +1028,7 @@ def get_symbols_readiness_snapshot(
     """Return the latest readiness row for each requested symbol.
 
     When SEPA_USE_ANALYTICS=true, reads from dw_stock.mart_sepa_screener_wide.
-    Otherwise falls back to stock_readiness_daily jsonb path.
+    Requires SEPA analytics marts (stock_readiness_daily retired).
     """
     raw = (symbols or "").strip()
     if not raw:
@@ -1579,141 +1038,10 @@ def get_symbols_readiness_snapshot(
     if not syms:
         return {"ok": True, "as_of_date": None, "count": 0, "symbols": []}
 
-    if use_analytics():
-        return _symbols_snapshot_analytics(syms)
-
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 10
-    try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-    rows_by_symbol: Dict[str, Dict[str, Any]] = {}
-    latest_as_of: Optional[str] = None
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SET statement_timeout = 10000")
-            # DISTINCT ON keeps the most recent row per symbol (largest as_of_date,
-            # then largest computed_at as tiebreaker).
-            cur.execute(
-                """
-                SELECT DISTINCT ON (symbol)
-                  symbol,
-                  as_of_date,
-                  included_in_universe,
-                  price_ready,
-                  bar_count_lookback,
-                  first_bar_date,
-                  last_bar_date,
-                  income_stmt_ready,
-                  income_stmt_q_count,
-                  income_stmt_a_count,
-                  balance_sheet_present,
-                  cash_flow_present,
-                  ratios_present,
-                  short_interest_present,
-                  short_volume_present,
-                  fundamental_pass,
-                  fundamental_pass_count,
-                  fundamental_insufficient,
-                  fundamental_eval,
-                  technical_pass,
-                  technical_pass_count,
-                  technical_insufficient,
-                  technical_eval
-                FROM public.stock_readiness_daily
-                WHERE symbol = ANY(%(syms)s)
-                ORDER BY symbol, as_of_date DESC, computed_at DESC
-                """,
-                {"syms": syms},
-            )
-            for r in cur.fetchall() or []:
-                sym = r["symbol"]
-                fund_eval = r.get("fundamental_eval") or {}
-                fund_cond_list = fund_eval.get("conditions") if isinstance(fund_eval, dict) else None
-                passed_conditions = (
-                    [c.get("id") for c in fund_cond_list if isinstance(c, dict) and c.get("pass") is True]
-                    if isinstance(fund_cond_list, list)
-                    else []
-                )
-                # Build passed_conditions_by_group from fund_eval conditions
-                passed_by_group: Dict[str, list] = {}
-                if isinstance(fund_cond_list, list):
-                    for c in fund_cond_list:
-                        if isinstance(c, dict) and c.get("pass") is True:
-                            grp = c.get("group") or "sepa_core"
-                            passed_by_group.setdefault(grp, []).append(c.get("id"))
-                fund_groups_summary = fund_eval.get("groups") if isinstance(fund_eval, dict) else None
-                tech_eval = r.get("technical_eval") or {}
-                tech_cond_list = tech_eval.get("conditions") if isinstance(tech_eval, dict) else None
-                passed_tech_conditions = (
-                    [c.get("id") for c in tech_cond_list if isinstance(c, dict) and c.get("pass") is True]
-                    if isinstance(tech_cond_list, list)
-                    else []
-                )
-                ao = r.get("as_of_date")
-                ao_str = ao.isoformat() if hasattr(ao, "isoformat") else (str(ao) if ao else None)
-                first_bar = r.get("first_bar_date")
-                last_bar = r.get("last_bar_date")
-                rows_by_symbol[sym] = {
-                    "symbol": sym,
-                    "found": True,
-                    "as_of_date": ao_str,
-                    "included_in_universe": bool(r.get("included_in_universe") or False),
-                    "price_ready": bool(r.get("price_ready") or False),
-                    "bar_count_lookback": int(r.get("bar_count_lookback") or 0),
-                    "first_bar_date": first_bar.isoformat() if hasattr(first_bar, "isoformat") else (str(first_bar) if first_bar else None),
-                    "last_bar_date": last_bar.isoformat() if hasattr(last_bar, "isoformat") else (str(last_bar) if last_bar else None),
-                    "income_stmt_ready": bool(r.get("income_stmt_ready") or False),
-                    "income_stmt_q_count": int(r.get("income_stmt_q_count") or 0),
-                    "income_stmt_a_count": int(r.get("income_stmt_a_count") or 0),
-                    "balance_sheet_present": bool(r.get("balance_sheet_present") or False),
-                    "cash_flow_present": bool(r.get("cash_flow_present") or False),
-                    "ratios_present": bool(r.get("ratios_present") or False),
-                    "short_interest_present": bool(r.get("short_interest_present") or False),
-                    "short_volume_present": bool(r.get("short_volume_present") or False),
-                    "fundamental_pass": bool(r.get("fundamental_pass") or False),
-                    "fundamental_pass_count": int(r.get("fundamental_pass_count") or 0),
-                    "fundamental_insufficient": bool(r.get("fundamental_insufficient") or False),
-                    "passed_conditions": passed_conditions,
-                    "passed_conditions_by_group": passed_by_group,
-                    "fund_groups": fund_groups_summary,
-                    "technical_pass": bool(r.get("technical_pass") or False),
-                    "technical_pass_count": int(r.get("technical_pass_count") or 0),
-                    "technical_insufficient": bool(r.get("technical_insufficient") or False),
-                    "passed_tech_conditions": passed_tech_conditions,
-                }
-                if ao_str and (latest_as_of is None or ao_str > latest_as_of):
-                    latest_as_of = ao_str
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    finally:
-        conn.close()
-
-    # Preserve request order; fill missing symbols with placeholder rows.
-    ordered = []
-    for s in syms:
-        if s in rows_by_symbol:
-            ordered.append(rows_by_symbol[s])
-        else:
-            ordered.append({"symbol": s, "found": False})
-
-    return {
-        "ok": True,
-        "as_of_date": latest_as_of,
-        "count": len(ordered),
-        "symbols": ordered,
-    }
-
+    err = _require_analytics()
+    if err:
+        return err
+    return _symbols_snapshot_analytics(syms)
 
 def _symbols_snapshot_analytics(syms: list) -> Dict[str, Any]:
     """Symbols snapshot from dw_stock.mart_sepa_screener_wide."""
@@ -1788,95 +1116,6 @@ def get_symbol_fundamental_raw_data(
     Used by the Stock Inspector sidebar to display the underlying EPS/revenue data
     behind each SEPA fundamental condition and highlight which rows feed each condition.
     """
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    sym = (symbol or "").strip().upper()
-    if not sym:
-        return {"ok": False, "error": "symbol is required"}
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 10
-    try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    try:
-        from bifrost_api.research.sepa.financials_data import (
-            _INCOME_FIELDS,
-            unpack_financial_data,
-        )
-        from bifrost_api.research.market_data_client import fetch_sepa_income_rows
-
-        income = fetch_sepa_income_rows(sym)
-
-        quarterly = []
-        for r in (income.get("quarterly") or [])[-10:]:
-            flat = unpack_financial_data(r.get("data"), _INCOME_FIELDS)
-            quarterly.append({
-                "fiscal_year": r.get("fiscal_year"),
-                "fiscal_quarter": r.get("fiscal_quarter"),
-                "eps": flat.get("basic_earnings_per_share"),
-                "revenues": flat.get("revenue"),
-            })
-        quarterly.reverse()
-
-        annual = []
-        for r in (income.get("annual") or [])[-5:]:
-            flat = unpack_financial_data(r.get("data"), _INCOME_FIELDS)
-            annual.append({
-                "fiscal_year": r.get("fiscal_year"),
-                "eps": flat.get("basic_earnings_per_share"),
-                "revenues": flat.get("revenue"),
-            })
-        annual.reverse()
-
-        srd = None
-        if use_analytics():
-            try:
-                from bifrost_api.research.analytics_reader import fetch_fundamental_eval_single
-                srd_row = fetch_fundamental_eval_single(sym)
-                if srd_row:
-                    srd = {"fundamental_eval": srd_row}
-            except Exception:
-                pass
-        else:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SET statement_timeout = 8000")
-                cur.execute(
-                    """
-                    SELECT fundamental_eval
-                    FROM public.stock_readiness_daily
-                    WHERE symbol = %(sym)s
-                      AND fundamental_eval IS NOT NULL
-                    ORDER BY as_of_date DESC
-                    LIMIT 1
-                    """,
-                    {"sym": sym},
-                )
-                srd = cur.fetchone()
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    finally:
-        conn.close()
-
-    metrics: Dict[str, Any] = {}
-    if srd and isinstance(srd.get("fundamental_eval"), dict):
-        metrics = srd["fundamental_eval"].get("metrics") or {}
-
-    return {
-        "ok": True,
-        "symbol": sym,
-        "quarterly": quarterly,
-        "annual": annual,
-        "metrics": metrics,
-    }
-
-
 @router.get("/research/data/readiness/symbol-option-pcr")
 def get_symbol_option_pcr(
     request: Request,
@@ -2024,6 +1263,7 @@ def get_symbol_statements(
         "short_interest": _serialize(short_interest),
         "short_volume": _serialize(short_volume),
     }
+
 
 
 @router.get("/research/data/ticker-overview/{symbol}")
@@ -2175,7 +1415,43 @@ def get_momentum_distribution(request: Request) -> Dict[str, Any]:
         return {"ok": False, "error": str(e)}
     finally:
         conn.close()
+_TECH_MOMENTUM_INDICATOR_IDS = frozenset(
+    (
+        "rsi_14_in_band",
+        "macd_hist_positive",
+        "roc_3m_positive",
+        "roc_6m_positive",
+        "roc_12m_positive",
+        "multi_period_rs_4w_positive",
+        "multi_period_rs_13w_positive",
+        "multi_period_rs_26w_positive",
+        "slope_sma200_positive",
+        "up_down_volume_50d_gt_1",
+    )
+)
 
+_TECH_STRUCTURE_INDICATOR_IDS = frozenset(
+    (
+        "realized_vol_contraction",
+        "bb_squeeze",
+        "obv_slope_30d_positive",
+        "adx_14_ge_25",
+        "aroon_oscillator_ge_50",
+        "tight_closes_5d",
+        "vcp_contraction_3m",
+        "pocket_pivot_count",
+        "rsl_new_high",
+        "base_metrics",
+    )
+)
+
+_TECH_SENTIMENT_INDICATOR_IDS = frozenset(
+    (
+        "days_to_cover_ge_5",
+        "short_volume_ratio_le_30pct_recent",
+        "short_volume_ratio_trend_4w_falling",
+    )
+)
 
 @router.get("/research/data/readiness/momentum-filter")
 def get_momentum_filter(
@@ -2192,92 +1468,18 @@ def get_momentum_filter(
     raw_ids = [s.strip() for s in (include or "").split(",") if s.strip()]
     cond_ids = [c for c in raw_ids if c in _TECH_MOMENTUM_INDICATOR_IDS]
 
-    if use_analytics():
-        return {
-            "ok": True,
-            "include": cond_ids,
-            "min_score": min_score,
-            "count": 0,
-            "symbols": [],
-            "limit": limit,
-            "note": "Momentum data from dw_stock.mart_sepa_tier_momentum (awaiting 252+ trading days of data).",
+    err = _require_analytics()
+    if err:
+        return err
+    return {
+        "ok": True,
+        "include": cond_ids,
+        "min_score": min_score,
+        "count": 0,
+        "symbols": [],
+        "limit": limit,
+        "note": "Momentum data from dw_stock.mart_sepa_tier_momentum (awaiting 252+ trading days of data).",
         }
-
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    try:
-        eff_limit = max(1, min(int(limit), 5000))
-        eff_score = max(0, min(int(min_score), 10))
-    except Exception:
-        eff_limit = 500
-        eff_score = 0
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 10
-    try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SET statement_timeout = 15000")
-
-            where_parts = [
-                "as_of_date = CURRENT_DATE",
-                "technical_eval IS NOT NULL",
-                "technical_eval->'tiers'->'momentum' IS NOT NULL",
-            ]
-            if eff_score > 0:
-                where_parts.append(
-                    f"(technical_eval->'tiers'->'momentum'->>'score')::int >= {eff_score}"
-                )
-            for cid in cond_ids:
-                where_parts.append(
-                    f"""EXISTS (
-                        SELECT 1 FROM jsonb_array_elements(
-                            technical_eval->'tiers'->'momentum'->'indicators'
-                        ) elem
-                        WHERE elem->>'id' = '{cid}' AND (elem->>'pass')::boolean = true
-                    )"""
-                )
-
-            query = f"""
-                SELECT
-                    symbol,
-                    (technical_eval->'tiers'->'momentum'->>'score')::int AS momentum_score,
-                    coalesce(technical_pass_count, 0) AS core_pass_count
-                FROM public.stock_readiness_daily
-                WHERE {' AND '.join(where_parts)}
-                ORDER BY (technical_eval->'tiers'->'momentum'->>'score')::int DESC, symbol
-                LIMIT {eff_limit}
-            """
-            cur.execute(query)
-            rows = cur.fetchall() or []
-
-        symbols = [
-            {"symbol": r["symbol"], "momentum_score": r["momentum_score"], "core_pass_count": r["core_pass_count"]}
-            for r in rows
-        ]
-        return {
-            "ok": True,
-            "include": cond_ids,
-            "min_score": eff_score,
-            "count": len(symbols),
-            "symbols": symbols,
-            "limit": eff_limit,
-        }
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    finally:
-        conn.close()
-
 
 _TIER_INDICATOR_IDS: Dict[str, frozenset] = {
     "structure": _TECH_STRUCTURE_INDICATOR_IDS,
@@ -2297,113 +1499,28 @@ def get_tier_filter(
     min_score: int = 0,
     limit: int = 500,
 ) -> Dict[str, Any]:
-    """Filter symbols by structure or sentiment tier sub-conditions and/or minimum tier score.
-
-    ``tier``: 'structure' or 'sentiment'.
-    ``include``: comma-separated indicator IDs (validated against tier whitelist).
-    ``min_score``: minimum tier score.
-    """
+    """Filter symbols by structure or sentiment tier sub-conditions and/or minimum tier score."""
+    _ = request
     if tier not in _TIER_INDICATOR_IDS:
         return {"ok": False, "error": f"tier must be one of: {list(_TIER_INDICATOR_IDS.keys())}"}
 
-    if use_analytics():
-        valid_ids = _TIER_INDICATOR_IDS[tier]
-        raw_ids = [s.strip() for s in (include or "").split(",") if s.strip()]
-        cond_ids = [c for c in raw_ids if c in valid_ids]
-        return {
-            "ok": True,
-            "tier": tier,
-            "include": cond_ids,
-            "min_score": min_score,
-            "count": 0,
-            "symbols": [],
-            "limit": limit,
-            "note": f"Tier data from dw_stock.mart_sepa_tier_{tier} (awaiting 252+ trading days of data).",
-        }
-
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    if tier not in _TIER_INDICATOR_IDS:
-        return {"ok": False, "error": f"tier must be one of: {list(_TIER_INDICATOR_IDS.keys())}"}
-
+    err = _require_analytics()
+    if err:
+        return err
     valid_ids = _TIER_INDICATOR_IDS[tier]
-    max_score = _TIER_MAX_SCORE.get(tier, 10)
     raw_ids = [s.strip() for s in (include or "").split(",") if s.strip()]
     cond_ids = [c for c in raw_ids if c in valid_ids]
+    return {
+        "ok": True,
+        "tier": tier,
+        "include": cond_ids,
+        "min_score": min_score,
+        "count": 0,
+        "symbols": [],
+        "limit": limit,
+        "note": f"Tier data from dw_stock.mart_sepa_tier_{tier} (awaiting 252+ trading days of data).",
+    }
 
-    try:
-        eff_limit = max(1, min(int(limit), 5000))
-        eff_score = max(0, min(int(min_score), max_score))
-    except Exception:
-        eff_limit = 500
-        eff_score = 0
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 10
-    try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SET statement_timeout = 15000")
-
-            where_parts = [
-                "as_of_date = CURRENT_DATE",
-                "technical_eval IS NOT NULL",
-                f"technical_eval->'tiers'->'{tier}' IS NOT NULL",
-            ]
-            if eff_score > 0:
-                where_parts.append(
-                    f"(technical_eval->'tiers'->'{tier}'->>'score')::int >= {eff_score}"
-                )
-            for cid in cond_ids:
-                where_parts.append(
-                    f"""EXISTS (
-                        SELECT 1 FROM jsonb_array_elements(
-                            technical_eval->'tiers'->'{tier}'->'indicators'
-                        ) elem
-                        WHERE elem->>'id' = '{cid}' AND (elem->>'pass')::boolean = true
-                    )"""
-                )
-
-            query = f"""
-                SELECT
-                    symbol,
-                    (technical_eval->'tiers'->'{tier}'->>'score')::int AS tier_score,
-                    coalesce(technical_pass_count, 0) AS core_pass_count
-                FROM public.stock_readiness_daily
-                WHERE {' AND '.join(where_parts)}
-                ORDER BY (technical_eval->'tiers'->'{tier}'->>'score')::int DESC, symbol
-                LIMIT {eff_limit}
-            """
-            cur.execute(query)
-            rows = cur.fetchall() or []
-
-        symbols = [
-            {"symbol": r["symbol"], "tier_score": r["tier_score"], "core_pass_count": r["core_pass_count"]}
-            for r in rows
-        ]
-        return {
-            "ok": True,
-            "tier": tier,
-            "include": cond_ids,
-            "min_score": eff_score,
-            "count": len(symbols),
-            "symbols": symbols,
-            "limit": eff_limit,
-        }
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    finally:
-        conn.close()
 
 
 @router.get("/research/data/readiness/symbol-technical-tiers")
@@ -2412,73 +1529,19 @@ def get_symbol_technical_tiers(
     symbol: str = "",
 ) -> Dict[str, Any]:
     """Return the full 4-tier technical evaluation for a single symbol."""
+    _ = request
     sym = (symbol or "").strip().upper()
     if not sym:
         return {"ok": False, "error": "symbol is required"}
 
-    if use_analytics():
-        return {
-            "ok": True,
-            "symbol": sym,
-            "found": False,
-            "note": "Tier data from analytics (awaiting 252+ trading days of data).",
-        }
-
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 10
-    try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SET statement_timeout = 8000")
-            cur.execute(
-                """
-                SELECT
-                    symbol,
-                    as_of_date::text AS as_of_date,
-                    coalesce(technical_pass, false) AS technical_pass,
-                    coalesce(technical_pass_count, 0) AS pass_count,
-                    coalesce(technical_insufficient, false) AS insufficient_data,
-                    technical_eval
-                FROM public.stock_readiness_daily
-                WHERE symbol = %(sym)s
-                  AND technical_eval IS NOT NULL
-                ORDER BY as_of_date DESC, universe_rule_version DESC, price_source DESC
-                LIMIT 1
-                """,
-                {"sym": sym},
-            )
-            row = cur.fetchone()
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    finally:
-        conn.close()
-
-    if not row:
-        return {"ok": True, "symbol": sym, "found": False}
-
-    eval_json = row.get("technical_eval") or {}
-    tiers = eval_json.get("tiers") if isinstance(eval_json, dict) else None
-
+    err = _require_analytics()
+    if err:
+        return err
     return {
         "ok": True,
         "symbol": sym,
-        "found": True,
-        "as_of_date": row.get("as_of_date"),
-        "technical_pass": bool(row.get("technical_pass") or False),
-        "pass_count": int(row.get("pass_count") or 0),
-        "insufficient_data": bool(row.get("insufficient_data") or False),
-        "tiers": tiers,
-        "rule_version": eval_json.get("rule_version") if isinstance(eval_json, dict) else None,
+        "found": False,
+        "note": "Tier data from analytics (awaiting 252+ trading days of data).",
     }
+
+
