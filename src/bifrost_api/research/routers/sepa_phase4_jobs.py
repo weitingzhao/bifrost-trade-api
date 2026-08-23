@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
-from bifrost_api.research.analytics_reader import use_analytics
 from bifrost_api.research.sepa.phase4_engine import (
     Phase4JobConfig,
     create_phase4_job,
@@ -24,10 +23,9 @@ _PHASE4_RETIRED_MSG = (
 )
 
 
-def _phase4_retired() -> Optional[Dict[str, Any]]:
-    if use_analytics():
-        return {"ok": False, "error": _PHASE4_RETIRED_MSG}
-    return None
+def _phase4_retired() -> Dict[str, Any]:
+    """Phase4 PG job queue is permanently retired (independent of SEPA_USE_ANALYTICS)."""
+    return {"ok": False, "error": _PHASE4_RETIRED_MSG}
 
 
 class SepaPhase4SubmitRequest(BaseModel):

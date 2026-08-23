@@ -61,7 +61,7 @@ def _expiry_to_date_param(expiry: str) -> Optional[str]:
     return None
 
 
-# ── SEPA Job CRUD (direct PostgreSQL — not migrated to Plugin) ────────────────
+# ── SEPA Phase4 job queue (RETIRED — table dropped in bifrost-core 0.10.6) ────
 
 
 def insert_job_sepa_phase4(
@@ -71,71 +71,16 @@ def insert_job_sepa_phase4(
     *,
     version: str = "sepa_phase4_v1",
 ) -> Optional[int]:
-    if not status_config or (status_config.get("sink") != "postgres" and not status_config.get("postgres")):
-        return None
-    jid = (job_id or "").strip()
-    if not jid:
-        return None
-    try:
-        params = _get_conn_params(status_config)
-        conn = psycopg2.connect(**params)
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO job_sepa_phase4
-                        (job_id, status, progress, request, summary, errors, created_at, updated_at, version)
-                    VALUES (%s, 'queued', %s::jsonb, %s::jsonb, '{}'::jsonb, '[]'::jsonb, now(), now(), %s)
-                    RETURNING job_sepa_phase4_id
-                    """,
-                    (
-                        jid,
-                        json.dumps({"current": 0, "total": len((request_payload or {}).get("symbols") or []), "stage": "queued", "pct": 0.0}),
-                        json.dumps(request_payload or {}),
-                        version,
-                    ),
-                )
-                row = cur.fetchone()
-            conn.commit()
-            return int(row[0]) if row else None
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.warning("insert_job_sepa_phase4 failed: %s", e)
-        return None
+    """No-op — job_sepa_phase4 retired; use analytics.sepa_screener_wide."""
+    return None
 
 
 def get_job_sepa_phase4(
     status_config: dict,
     job_id: str,
 ) -> Optional[Dict[str, Any]]:
-    if not status_config or (status_config.get("sink") != "postgres" and not status_config.get("postgres")):
-        return None
-    jid = (job_id or "").strip()
-    if not jid:
-        return None
-    try:
-        params = _get_conn_params(status_config)
-        conn = psycopg2.connect(**params)
-        try:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    """
-                    SELECT job_id, status, progress, request, summary, errors,
-                           created_at, updated_at, started_at, finished_at, version
-                    FROM job_sepa_phase4
-                    WHERE job_id = %s
-                    LIMIT 1
-                    """,
-                    (jid,),
-                )
-                row = cur.fetchone()
-            return dict(row) if row else None
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.warning("get_job_sepa_phase4 failed: %s", e)
-        return None
+    """No-op — job_sepa_phase4 retired."""
+    return None
 
 
 def get_job_sepa_phase4_result(
@@ -145,50 +90,8 @@ def get_job_sepa_phase4_result(
     offset: int = 0,
     limit: int = 200,
 ) -> Optional[Dict[str, Any]]:
-    if not status_config or (status_config.get("sink") != "postgres" and not status_config.get("postgres")):
-        return None
-    jid = (job_id or "").strip()
-    if not jid:
-        return None
-    st = max(0, int(offset))
-    lim = max(1, min(int(limit), 1000))
-    try:
-        params = _get_conn_params(status_config)
-        conn = psycopg2.connect(**params)
-        try:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    """
-                    SELECT job_id, status, summary, result, version
-                    FROM job_sepa_phase4
-                    WHERE job_id = %s
-                    LIMIT 1
-                    """,
-                    (jid,),
-                )
-                row = cur.fetchone()
-            if not row:
-                return None
-            result = row.get("result") or {}
-            rows = result.get("rows") or []
-            if not isinstance(rows, list):
-                rows = []
-            ed = st + lim
-            return {
-                "job_id": row.get("job_id"),
-                "status": row.get("status"),
-                "summary": row.get("summary") or {},
-                "rows": rows[st:ed],
-                "total_rows": len(rows),
-                "offset": st,
-                "limit": lim,
-                "version": row.get("version") or "sepa_phase4_v1",
-            }
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.warning("get_job_sepa_phase4_result failed: %s", e)
-        return None
+    """No-op — job_sepa_phase4 retired."""
+    return None
 
 
 def update_job_sepa_phase4(
@@ -196,54 +99,8 @@ def update_job_sepa_phase4(
     job_id: str,
     **fields: Any,
 ) -> bool:
-    if not status_config or (status_config.get("sink") != "postgres" and not status_config.get("postgres")):
-        return False
-    jid = (job_id or "").strip()
-    if not jid:
-        return False
-    allowed = {
-        "status",
-        "progress",
-        "request",
-        "summary",
-        "result",
-        "errors",
-        "started_at",
-        "finished_at",
-        "version",
-    }
-    set_parts: List[str] = []
-    params_list: List[Any] = []
-    for k, v in fields.items():
-        if k not in allowed:
-            continue
-        if k in {"progress", "request", "summary", "result", "errors"}:
-            set_parts.append(f"{k} = %s::jsonb")
-            params_list.append(json.dumps(v) if v is not None else ("[]" if k == "errors" else "{}"))
-        elif k in {"started_at", "finished_at"} and isinstance(v, str):
-            set_parts.append(f"{k} = %s::timestamptz")
-            params_list.append(v)
-        else:
-            set_parts.append(f"{k} = %s")
-            params_list.append(v)
-    if not set_parts:
-        return True
-    set_parts.append("updated_at = now()")
-    sql = f"UPDATE job_sepa_phase4 SET {', '.join(set_parts)} WHERE job_id = %s"
-    params_list.append(jid)
-    try:
-        params = _get_conn_params(status_config)
-        conn = psycopg2.connect(**params)
-        try:
-            with conn.cursor() as cur:
-                cur.execute(sql, tuple(params_list))
-            conn.commit()
-            return True
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.warning("update_job_sepa_phase4 failed: %s", e)
-        return False
+    """No-op — job_sepa_phase4 retired."""
+    return False
 
 
 def list_job_sepa_phase4(
@@ -255,67 +112,13 @@ def list_job_sepa_phase4(
     created_from: Optional[str] = None,
     created_to: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    if not status_config or (status_config.get("sink") != "postgres" and not status_config.get("postgres")):
-        return []
-    lim = max(1, min(int(limit), 200))
-    off = max(0, int(offset))
-    base_sql = """
-        SELECT job_id, status, progress, request, summary, errors,
-               created_at, updated_at, started_at, finished_at, version
-        FROM job_sepa_phase4
-    """
-    conditions: List[str] = []
-    params_list: List[Any] = []
-    sf = (status_filter or "").strip()
-    if sf:
-        conditions.append("status = %s")
-        params_list.append(sf)
-    cf = (created_from or "").strip()
-    if cf:
-        conditions.append("created_at >= %s::timestamptz")
-        params_list.append(cf)
-    ct = (created_to or "").strip()
-    if ct:
-        conditions.append("created_at <= %s::timestamptz")
-        params_list.append(ct)
-    where_sql = (" WHERE " + " AND ".join(conditions)) if conditions else ""
-    sql = f"{base_sql}{where_sql}"
-    sql += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
-    params_list.extend([lim, off])
-    try:
-        params = _get_conn_params(status_config)
-        conn = psycopg2.connect(**params)
-        try:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(sql, tuple(params_list))
-                rows = cur.fetchall()
-            return [dict(r) for r in rows]
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.warning("list_job_sepa_phase4 failed: %s", e)
-        return []
+    """No-op — job_sepa_phase4 retired."""
+    return []
 
 
 def delete_job_sepa_phase4(status_config: dict, job_id: str) -> bool:
-    if not status_config or (status_config.get("sink") != "postgres" and not status_config.get("postgres")):
-        return False
-    jid = (job_id or "").strip()
-    if not jid:
-        return False
-    try:
-        params = _get_conn_params(status_config)
-        conn = psycopg2.connect(**params)
-        try:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM job_sepa_phase4 WHERE job_id = %s", (jid,))
-            conn.commit()
-            return True
-        finally:
-            conn.close()
-    except Exception as e:
-        logger.warning("delete_job_sepa_phase4 failed: %s", e)
-        return False
+    """No-op — job_sepa_phase4 retired."""
+    return False
 
 
 # ── Migrated to Plugin API (market-data plugin HTTP client) ───────────────────

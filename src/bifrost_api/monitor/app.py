@@ -102,7 +102,7 @@ def create_app(
     merged_config: Optional[dict] = None,
 ) -> FastAPI:
     """Build FastAPI app: reader, control channel (stop/flatten/suspend/resume via DB).
-    status_cfg_for_read: when set, read paths that use DB without control channel (e.g. only PGHOST or postgres configured without sink=postgres). Job queue APIs are on Ops: GET /ops/bars/jobs.
+    status_cfg_for_read: when set, read paths that use DB without control channel (e.g. only PGHOST or postgres configured without sink=postgres).
     """
     app = FastAPI(
         title="Bifrost Trader API",
