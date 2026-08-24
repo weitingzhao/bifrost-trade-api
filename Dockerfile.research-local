@@ -1,0 +1,19 @@
+# Local/cluster build for research API domain (sibling bifrost-trade-* packages).
+# syntax=docker/dockerfile:1.4
+FROM python:3.11-slim
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev && rm -rf /var/lib/apt/lists/*
+COPY --from=core pyproject.toml README.md /src/bifrost-trade-core/
+COPY --from=core src /src/bifrost-trade-core/src
+COPY --from=worker pyproject.toml README.md /src/bifrost-trade-worker/
+COPY --from=worker src /src/bifrost-trade-worker/src
+COPY --from=socket pyproject.toml README.md /src/bifrost-trade-socket/
+COPY --from=socket src /src/bifrost-trade-socket/src
+RUN pip install --no-cache-dir /src/bifrost-trade-core /src/bifrost-trade-worker /src/bifrost-trade-socket
+COPY pyproject.toml .
+COPY src/ src/
+COPY scripts/ scripts/
+RUN pip install --no-cache-dir -e .
+ENV PYTHONUNBUFFERED=1 API_DOMAIN=research API_PORT=8773
+EXPOSE 8773
+CMD ["python", "scripts/run_server.py", "research"]

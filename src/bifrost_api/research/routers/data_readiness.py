@@ -7,11 +7,10 @@ from fastapi import APIRouter, Body, Request
 
 from bifrost_api.research.analytics_reader import use_analytics
 from bifrost_api.research.sepa.readiness_snapshot import (
+    READINESS_DATA_CATALOG,
     compute_data_inventory_stats,
-    fetch_sepa_readiness_summary,
     get_sepa_price_gap_details,
 )
-from bifrost_api.research.sepa.stock_unified_snapshot_refresh import run_refresh_cache_stock_unified_snapshots
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["research"])
@@ -63,28 +62,52 @@ def _technical_backfill_deprecated() -> Dict[str, Any]:
     }
 
 
-def _massive_enqueue_retired(
-    message: str = "Massive Celery queues retired — use market-data plugin",
-) -> Dict[str, Any]:
-    return {
-        "ok": False,
-        "error": message,
-        "reason": "massive_retired",
-        "job_ids": [],
-        "chunks": 0,
-    }
-
-
 def _db_config(request: Request) -> Optional[dict]:
     return request.app.state.control_via_db or getattr(request.app.state, "status_cfg_for_read", None)
 
 
+def _plugin_get(path: str, *, params: Dict[str, str] | None = None, timeout: int = 30) -> Dict[str, Any]:
+    from bifrost_api.research.market_data_client import _get_json
+
+    return _get_json(path, params=params, timeout=timeout)
+
+
+def _plugin_post(path: str, body: Dict[str, Any] | None = None, *, timeout: int = 30) -> Dict[str, Any]:
+    from bifrost_api.research.market_data_client import _post_json
+
+    return _post_json(path, body or {}, timeout=timeout)
+
+
+def _enqueue_ingest(kind: str, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """POST /market/ingest/enqueue — restores Stock Data Readiness backfill buttons."""
+    try:
+        body: Dict[str, Any] = {"kind": kind}
+        if payload:
+            body["payload"] = payload
+        resp = _plugin_post("/ingest/enqueue", body)
+        if not isinstance(resp, dict):
+            return {"ok": False, "error": "invalid plugin response", "kind": kind}
+        if "ok" not in resp:
+            resp = {**resp, "ok": True}
+        resp.setdefault("kind", kind)
+        return resp
+    except Exception as e:
+        logger.warning("plugin ingest enqueue failed kind=%s: %s", kind, e)
+        return {"ok": False, "error": str(e), "kind": kind, "job_ids": [], "chunks": 0}
+
+
 @router.get("/research/data/readiness/summary")
 def get_sepa_readiness_summary(request: Request) -> Dict[str, Any]:
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    return fetch_sepa_readiness_summary(db)
+    """Thin passthrough → Market Data Plugin ``GET /market/readiness/summary``."""
+    _ = request
+    try:
+        out = _plugin_get("/readiness/summary", timeout=90)
+        if isinstance(out, dict) and out.get("ok") is not False and "data_catalog" not in out:
+            out = {**out, "data_catalog": READINESS_DATA_CATALOG}
+        return out if isinstance(out, dict) else {"ok": False, "error": "invalid plugin response"}
+    except Exception as e:
+        logger.warning("plugin readiness summary failed: %s", e)
+        return {"ok": False, "error": f"Market Data Plugin summary unavailable: {e}"}
 
 
 @router.post("/research/data/readiness/snapshot")
@@ -95,13 +118,9 @@ def post_sepa_readiness_snapshot(request: Request) -> Dict[str, Any]:
 
 @router.post("/research/data/readiness/stock-unified-snapshot")
 def post_sepa_stock_unified_snapshot(request: Request) -> Dict[str, Any]:
-    """Retired — cache_stock_snapshot replaced by Plugin CronJob stock-snapshot."""
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    reader = getattr(request.app.state, "reader", None)
-    merged_config = reader._config if reader else {}
-    return run_refresh_cache_stock_unified_snapshots(db, merged_config)
+    """Enqueue Plugin ``stock_snapshot`` (alias snapshot_backfill)."""
+    _ = request
+    return _enqueue_ingest("snapshot_backfill")
 
 
 @router.get("/research/data/readiness/price-gaps")
@@ -118,9 +137,10 @@ def post_sepa_backfill_price_gaps(
     request: Request,
     body: Dict[str, Any] = Body(default={}),
 ) -> Dict[str, Any]:
-    """Retired: Massive daily_smart Celery enqueue — use market-data plugin ingest."""
-    _ = (request, body)
-    return _massive_enqueue_retired()
+    """Enqueue Plugin vendor_gap_fix → stock_daily_grouped."""
+    _ = request
+    payload = body if isinstance(body, dict) else {}
+    return _enqueue_ingest("vendor_gap_fix", payload.get("payload") if isinstance(payload.get("payload"), dict) else payload or None)
 
 
 @router.post("/research/data/readiness/backfill-fundamentals")
@@ -143,13 +163,9 @@ def post_sepa_backfill_technical(
 
 @router.post("/research/data/readiness/sync-holidays")
 def post_sepa_sync_holidays(request: Request) -> Dict[str, Any]:
-    """Retired: Massive holidays sync — use market-data plugin."""
+    """Retired: Massive holidays sync — use market-data plugin calendar enqueue."""
     _ = request
-    return {
-        "ok": False,
-        "error": "Market holidays sync via Massive retired — use market-data plugin",
-        "reason": "massive_retired",
-    }
+    return _enqueue_ingest("calendar")
 
 
 @router.post("/research/data/readiness/backfill-grouped-history")
@@ -157,9 +173,36 @@ def post_sepa_backfill_grouped_history(
     request: Request,
     body: Dict[str, Any] = Body(default={}),
 ) -> Dict[str, Any]:
-    """Retired: Massive grouped daily Celery enqueue — use market-data plugin ingest."""
-    _ = (request, body)
-    return _massive_enqueue_retired()
+    """Enqueue Plugin grouped_daily_backfill → stock_daily_grouped."""
+    _ = request
+    payload = body if isinstance(body, dict) else {}
+    return _enqueue_ingest(
+        "grouped_daily_backfill",
+        payload.get("payload") if isinstance(payload.get("payload"), dict) else payload or None,
+    )
+
+
+# Trade FE feed kind → Plugin ops_jobs.job_ingest handler kind.
+# income/balance/cash all use Polygon financials → kind=financials (writes all statements).
+_FIN_FEED_TO_PLUGIN_KIND: Dict[str, str] = {
+    "feed_stocks_income_statements": "financials",
+    "feed_stocks_balance_sheets": "financials",
+    "feed_stocks_cash_flows": "financials",
+    "feed_stocks_ratios": "ratios",
+    "feed_stocks_short_interest": "short_interest",
+    "feed_stocks_short_volume": "short_volume",
+}
+
+_FIN_FEED_TO_REPORT_TYPE: Dict[str, str] = {
+    "feed_stocks_income_statements": "income_statement",
+    "feed_stocks_balance_sheets": "balance_sheet",
+    "feed_stocks_cash_flows": "cash_flow_statement",
+    "feed_stocks_ratios": "ratios",
+    "feed_stocks_short_interest": "short_interest",
+    "feed_stocks_short_volume": "short_volume",
+}
+
+_FIN_ENQUEUE_MAX_SYMBOLS = 500
 
 
 def _post_sepa_financials_backfill(
@@ -168,9 +211,82 @@ def _post_sepa_financials_backfill(
     *,
     kind: str,
 ) -> Dict[str, Any]:
-    """Retired: Massive financials Celery enqueue — use market-data plugin."""
-    _ = (request, body, kind)
-    return {**_massive_enqueue_retired(), "kind": kind}
+    """Enqueue Plugin ingest jobs per gap symbol (Massive Celery retired)."""
+    _ = request
+    plugin_kind = _FIN_FEED_TO_PLUGIN_KIND.get(kind)
+    if not plugin_kind:
+        return {"ok": False, "error": f"unknown feed kind: {kind}", "kind": kind, "job_ids": [], "chunks": 0}
+
+    raw_syms = body.get("symbols") if isinstance(body, dict) else None
+    symbols: list[str] = []
+    if isinstance(raw_syms, list):
+        symbols = sorted(
+            {str(s).strip().upper() for s in raw_syms if str(s or "").strip()}
+        )
+
+    if not symbols:
+        report_type = _FIN_FEED_TO_REPORT_TYPE.get(kind, "")
+        try:
+            from bifrost_api.research.market_data_client import fetch_sepa_gaps
+
+            gap = fetch_sepa_gaps(report_type, limit=_FIN_ENQUEUE_MAX_SYMBOLS)
+            symbols = [
+                str(s).strip().upper()
+                for s in (gap.get("symbols") or [])
+                if str(s or "").strip()
+            ]
+        except Exception as e:
+            logger.warning("fin backfill gap lookup failed kind=%s: %s", kind, e)
+            return {
+                "ok": False,
+                "error": f"failed to resolve gap symbols: {e}",
+                "kind": kind,
+                "job_ids": [],
+                "chunks": 0,
+            }
+
+    if len(symbols) > _FIN_ENQUEUE_MAX_SYMBOLS:
+        symbols = symbols[:_FIN_ENQUEUE_MAX_SYMBOLS]
+
+    if not symbols:
+        return {
+            "ok": True,
+            "kind": kind,
+            "plugin_kind": plugin_kind,
+            "gap_count": 0,
+            "chunks": 0,
+            "job_ids": [],
+            "message": "No gap symbols to enqueue.",
+        }
+
+    job_ids: list[str] = []
+    errors: list[str] = []
+    for sym in symbols:
+        resp = _enqueue_ingest(plugin_kind, {"symbol": sym})
+        if resp.get("ok"):
+            jid = resp.get("job_id")
+            if jid:
+                job_ids.append(str(jid))
+        else:
+            errors.append(f"{sym}:{resp.get('error') or 'enqueue failed'}")
+
+    ok = len(job_ids) > 0 or not errors
+    out: Dict[str, Any] = {
+        "ok": ok,
+        "kind": kind,
+        "plugin_kind": plugin_kind,
+        "gap_count": len(symbols),
+        "chunks": len(job_ids),
+        "job_ids": job_ids,
+        "message": (
+            f"Enqueued {len(job_ids)}/{len(symbols)} {plugin_kind} jobs via Market Data Plugin."
+        ),
+    }
+    if errors:
+        out["error"] = f"{len(errors)} enqueue failures (first: {errors[0]})"
+        if not job_ids:
+            out["ok"] = False
+    return out
 
 
 def _get_sepa_financials_gaps(
@@ -178,8 +294,6 @@ def _get_sepa_financials_gaps(
     *,
     detail_fetcher: str,
     limit: int = 2000,
-    ingest_status: str | None = None,
-    ingest_note: str | None = None,
 ) -> Dict[str, Any]:
     import psycopg2
     from psycopg2.extras import RealDictCursor
@@ -202,24 +316,12 @@ def _get_sepa_financials_gaps(
             rows, total = fn(cur, limit=limit)
     finally:
         conn.close()
-    out: Dict[str, Any] = {
+    return {
         "ok": True,
         "gaps": rows,
         "total_gap_count": total,
         "returned": len(rows),
     }
-    if ingest_status:
-        out["ingest_status"] = ingest_status
-    if ingest_note:
-        out["ingest_note"] = ingest_note
-    return out
-
-
-_PENDING_PLUGIN_NOTE = (
-    "Market-data plugin currently ingests statement report_types only "
-    "(income_statement / balance_sheet / cash_flow_statement). "
-    "ratios / short_interest / short_volume ingest is pending."
-)
 
 
 @router.get("/research/data/readiness/income-statements-gaps")
@@ -263,12 +365,7 @@ def post_sepa_backfill_cash_flows(
 
 @router.get("/research/data/readiness/ratios-gaps")
 def get_sepa_ratios_gaps(request: Request) -> Dict[str, Any]:
-    return _get_sepa_financials_gaps(
-        request,
-        detail_fetcher="get_ratios_gap_details",
-        ingest_status="pending_plugin",
-        ingest_note=_PENDING_PLUGIN_NOTE,
-    )
+    return _get_sepa_financials_gaps(request, detail_fetcher="get_ratios_gap_details")
 
 
 @router.post("/research/data/readiness/backfill-ratios")
@@ -281,12 +378,7 @@ def post_sepa_backfill_ratios(
 
 @router.get("/research/data/readiness/short-interest-gaps")
 def get_sepa_short_interest_gaps(request: Request) -> Dict[str, Any]:
-    return _get_sepa_financials_gaps(
-        request,
-        detail_fetcher="get_short_interest_gap_details",
-        ingest_status="pending_plugin",
-        ingest_note=_PENDING_PLUGIN_NOTE,
-    )
+    return _get_sepa_financials_gaps(request, detail_fetcher="get_short_interest_gap_details")
 
 
 @router.post("/research/data/readiness/backfill-short-interest")
@@ -299,12 +391,7 @@ def post_sepa_backfill_short_interest(
 
 @router.get("/research/data/readiness/short-volume-gaps")
 def get_sepa_short_volume_gaps(request: Request) -> Dict[str, Any]:
-    return _get_sepa_financials_gaps(
-        request,
-        detail_fetcher="get_short_volume_gap_details",
-        ingest_status="pending_plugin",
-        ingest_note=_PENDING_PLUGIN_NOTE,
-    )
+    return _get_sepa_financials_gaps(request, detail_fetcher="get_short_volume_gap_details")
 
 
 @router.post("/research/data/readiness/backfill-short-volume")
@@ -320,39 +407,19 @@ _VALID_GAP_ACK_TYPES = frozenset(
 )
 
 
-def _gap_ack_db(request: Request):
-    import psycopg2
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-
-    db = _db_config(request)
-    if not db:
-        return None, {"ok": False, "error": "PostgreSQL not configured"}
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 10
-    try:
-        conn = psycopg2.connect(**params)
-        return conn, None
-    except Exception as e:
-        return None, {"ok": False, "error": str(e)}
-
-
 @router.get("/research/data/readiness/gap-ack")
 def get_sepa_gap_ack(request: Request) -> Dict[str, Any]:
-    from psycopg2.extras import RealDictCursor
-
-    conn, err = _gap_ack_db(request)
-    if err:
-        return err
+    """Passthrough → Plugin ``GET /market/readiness/source-void`` (Trade FE shape)."""
+    _ = request
     try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT data_type, is_void, acked_gap_count, void_reason, acked_at::text AS acked_at "
-                "FROM public.preference_data_gap_ack ORDER BY data_type"
-            )
-            rows = [dict(r) for r in (cur.fetchall() or [])]
-    finally:
-        conn.close()
-    return {"ok": True, "acks": rows}
+        resp = _plugin_get("/readiness/source-void")
+        acks = resp.get("acks")
+        if acks is None and isinstance(resp.get("voids"), dict):
+            acks = [{"data_type": k, **v} for k, v in sorted(resp["voids"].items())]
+        return {"ok": True, "acks": acks or []}
+    except Exception as e:
+        logger.warning("plugin source-void GET failed: %s", e)
+        return {"ok": False, "error": str(e)}
 
 
 @router.post("/research/data/readiness/gap-ack")
@@ -360,36 +427,16 @@ def post_sepa_gap_ack(
     request: Request,
     body: Dict[str, Any] = Body(default={}),
 ) -> Dict[str, Any]:
+    """Passthrough → Plugin ``POST /market/readiness/source-void``."""
+    _ = request
     data_type = str(body.get("data_type", "")).strip()
     if data_type not in _VALID_GAP_ACK_TYPES:
         return {"ok": False, "error": f"Invalid data_type: {data_type!r}"}
-    is_void = bool(body.get("is_void", False))
-    # gap_count is the current total gap count at acknowledgment time — used as the baseline
-    gap_count = max(0, int(body.get("gap_count") or 0))
-    void_reason = body.get("void_reason") or None
-
-    conn, err = _gap_ack_db(request)
-    if err:
-        return err
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO public.preference_data_gap_ack
-                    (data_type, is_void, acked_gap_count, void_reason, acked_at)
-                VALUES (%s, %s, %s, %s, now())
-                ON CONFLICT (data_type) DO UPDATE
-                    SET is_void = EXCLUDED.is_void,
-                        acked_gap_count = EXCLUDED.acked_gap_count,
-                        void_reason = EXCLUDED.void_reason,
-                        acked_at = now()
-                """,
-                (data_type, is_void, gap_count, void_reason),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-    return {"ok": True, "data_type": data_type, "is_void": is_void, "acked_gap_count": gap_count}
+        return _plugin_post("/readiness/source-void", body if isinstance(body, dict) else {})
+    except Exception as e:
+        logger.warning("plugin source-void POST failed: %s", e)
+        return {"ok": False, "error": str(e)}
 
 
 @router.get("/research/data/readiness/criteria-stats")

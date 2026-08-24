@@ -13,7 +13,7 @@
 | monitor (operations) | 8765 | monitor + ops + docs |
 | account | 8769 | trading + portfolio + strategy |
 | market | 8772 | market |
-| research | 8773 | research |
+| research | 8773 | research — Stock Data Readiness routes are thin passthrough to Market Data Plugin (`/market/readiness/*`) |
 
 历史 9 域表（路径别名仍可用）：
 
