@@ -5,13 +5,15 @@ Phase 4: PostgreSQL-backed with full persistence.
 Falls back to in-memory if DB is unavailable.
 
 DDL for ops_audit_log lives in bifrost_core.persistence.postgres.ddl
-(Wave 2 hygiene) — this module only probes existence and read/write rows.
+(Wave 4: partitioned timestamptz) — this module probes existence and
+converts float epoch ↔ timestamptz at the SQL boundary.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from bifrost_api.ops.models.schemas import AuditEntry
@@ -19,6 +21,22 @@ from bifrost_api.ops.models.schemas import AuditEntry
 logger = logging.getLogger(__name__)
 
 _MAX_MEMORY_ENTRIES = 2000
+
+
+def _epoch_from_db_timestamp(value: Any) -> float:
+    """Convert DB timestamp (timestamptz datetime or legacy float) to float epoch."""
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.timestamp()
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class AuditStore:
@@ -96,10 +114,11 @@ class AuditStore:
 
             conn = psycopg2.connect(self._dsn, connect_timeout=3)
             cur = conn.cursor()
+            # Wave 4: column is timestamptz; API still speaks float epoch.
             cur.execute(
                 f"""INSERT INTO {self._table}
                     (timestamp, operator, source_ip, action, target, command_id, outcome, detail)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                    VALUES (to_timestamp(%s), %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     entry.timestamp,
                     entry.operator,
@@ -143,7 +162,7 @@ class AuditStore:
         conn.close()
         return [
             AuditEntry(
-                timestamp=r[0],
+                timestamp=_epoch_from_db_timestamp(r[0]),
                 operator=r[1],
                 source_ip=r[2],
                 action=r[3],
