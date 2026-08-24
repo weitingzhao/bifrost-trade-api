@@ -1,7 +1,6 @@
-"""Daemon control: POST /control/* (stop, flatten, suspend, resume, retry_ib, release_ib, refresh_*, set_heartbeat_interval, monitor_stop, monitor_release_ib, celery_stop, monitor_connect). Engine has no IB socket; retry_ib/release_ib are legacy queue drains for the daemon."""
+"""Daemon and monitor control endpoints."""
 
 import asyncio
-import json
 import logging
 import os
 import threading
@@ -85,40 +84,6 @@ async def post_monitor_release_ib(request: Request) -> JSONResponse:
         logger.warning("monitor_release_ib operator: %s", e)
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
     return JSONResponse(status_code=200, content={"ok": True, "message": "IB Operator connections released."})
-
-
-CELERY_STOP_REDIS_TIMEOUT = 5  # seconds; avoid hang if Redis is unreachable
-
-@router.post("/control/celery_stop")
-def post_celery_stop() -> JSONResponse:
-    """Set Redis key so Celery worker exits. Worker polls every 2s; process will terminate shortly after.
-    Uses a short Redis timeout so the request does not hang if the broker is unreachable."""
-    try:
-        import redis
-        from bifrost_worker.celery.celery_app import (
-            WORKER_IB_STATUS_KEY,
-            WORKER_IB_STATUS_TTL_SEC,
-            WORKER_STOP_REQUESTED_KEY,
-            broker_url,
-        )
-        r = redis.from_url(
-            broker_url,
-            socket_connect_timeout=CELERY_STOP_REDIS_TIMEOUT,
-            socket_timeout=CELERY_STOP_REDIS_TIMEOUT,
-        )
-        r.set(WORKER_STOP_REQUESTED_KEY, "1")
-        r.setex(
-            WORKER_IB_STATUS_KEY,
-            WORKER_IB_STATUS_TTL_SEC,
-            json.dumps({"connected": False, "client_id": 0}),
-        )
-        return JSONResponse(
-            status_code=200,
-            content={"ok": True, "message": "Celery worker stop requested; process will exit within a few seconds."},
-        )
-    except Exception as e:
-        logger.warning("celery_stop failed: %s", e)
-        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
 
 @router.post("/control/monitor_connect")

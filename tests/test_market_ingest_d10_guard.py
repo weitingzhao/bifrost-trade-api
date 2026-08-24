@@ -25,7 +25,6 @@ def freeze_executor(monkeypatch):
     ex = KubernetesExecutor(
         namespace="bifrost-stg",
         allowed_units=["bifrost-engine", "bifrost-account-sync-daemon"],
-        broker_url="redis://127.0.0.1:6379/0",
         daemon_scale_guard="freeze",
     )
     ex._apps = MagicMock()

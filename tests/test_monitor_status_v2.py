@@ -66,6 +66,7 @@ def _assert_config_shape(body: dict) -> None:
     }
     assert "massive" not in sk
     assert "ib_status" not in sk
+    assert "celery" not in body
 
 
 def test_status_error_payload_shape_v8() -> None:
@@ -119,11 +120,6 @@ def test_assemble_status_v8_config_shape() -> None:
         monitor_lamp="green",
         monitor_block_reasons=[],
         quotes_redis_reader_ok=False,
-        celery_broker_connected=False,
-        celery_workers=[],
-        celery_worker_ib_connected=False,
-        celery_worker_ib_client_id=None,
-        celery_worker_last_updated_ts=None,
         massive={"configured": False},
         ib_ingestor={"connected": False},
         ib_account_agent={"connected": False},

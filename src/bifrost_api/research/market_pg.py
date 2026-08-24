@@ -1,6 +1,6 @@
 """Market PostgreSQL readers for research/ops (Wave 7-C).
 
-Recovered from bifrost-worker data/massive/vendor/reader.py after deletion.
+Retained from the retired Trade ingest reader.
 Reads ``market.*`` tables; SEPA job tables remain in public schema.
 """
 

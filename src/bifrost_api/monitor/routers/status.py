@@ -1,7 +1,6 @@
 """Status endpoints: run status, operations, risk summary."""
 
 import logging
-import os
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -52,12 +51,6 @@ def apply_platform_gateway_ib_heartbeat_overlay(
     daemon_heartbeat["ib_client_id"] = live.get("ib_client_id")
     daemon_heartbeat["ib_transport"] = "platform_gateway"
     return True
-
-# GET /status polls often; Celery control.inspect waits the full timeout when no worker replies.
-# Ops uses longer CELERY_INSPECT_TIMEOUT_SEC in celery_app (e.g. 15s) for worker snapshots.
-_STATUS_CELERY_INSPECT_TIMEOUT_SEC = float(
-    os.environ.get("BIFROST_STATUS_CELERY_INSPECT_TIMEOUT_SEC", "2.0")
-)
 
 STATUS_SCHEMA_VERSION = 9
 
@@ -131,13 +124,6 @@ def _status_error_payload() -> Dict[str, Any]:
             "ib_operator": None,
             "platform_ib_gateway": None,
         },
-        "celery": {
-            "broker_connected": False,
-            "workers": [],
-            "worker_ib_connected": False,
-            "worker_ib_client_id": None,
-            "worker_last_updated_ts": None,
-        },
         "live_ui": {"subscribed_tickers": [], "reference_indices": []},
     }
 
@@ -173,11 +159,6 @@ def _assemble_status_v3(
     monitor_lamp: str,
     monitor_block_reasons: List[str],
     quotes_redis_reader_ok: bool,
-    celery_broker_connected: bool,
-    celery_workers: List[str],
-    celery_worker_ib_connected: bool,
-    celery_worker_ib_client_id: Any,
-    celery_worker_last_updated_ts: Any,
     massive: Any,
     ib_ingestor: Any,
     ib_account_agent: Any,
@@ -240,13 +221,6 @@ def _assemble_status_v3(
             "ib_account_agent": ib_account_agent,
             "ib_operator": monitor_ib_status,
             "platform_ib_gateway": platform_ib_gateway,
-        },
-        "celery": {
-            "broker_connected": celery_broker_connected,
-            "workers": celery_workers,
-            "worker_ib_connected": celery_worker_ib_connected,
-            "worker_ib_client_id": celery_worker_ib_client_id,
-            "worker_last_updated_ts": celery_worker_last_updated_ts,
         },
         "live_ui": {
             "subscribed_tickers": subscribed_tickers,
@@ -430,41 +404,6 @@ def get_status(request: Request) -> Dict[str, Any]:
             except Exception:
                 quotes_redis_reader_ok = False
 
-        celery_broker_connected = False
-        celery_workers: List[str] = []
-        celery_worker_ib_connected = False
-        celery_worker_ib_client_id = None
-        try:
-            from bifrost_worker.celery.celery_app import (
-                get_celery_broker_connected,
-                get_celery_workers_from_presence,
-                get_celery_workers_ping,
-                get_worker_ib_status,
-            )
-
-            celery_broker_connected = get_celery_broker_connected()
-            _ops_cfg = (getattr(reader, "_config", None) or {}).get("ops") or {}
-            _worker_list_mode = str(_ops_cfg.get("worker_list_mode") or "redis_presence").strip().lower()
-            if _worker_list_mode in ("redis_presence", "redis_only"):
-                celery_workers = get_celery_workers_from_presence()
-            else:
-                celery_workers = get_celery_workers_ping(
-                    timeout=_STATUS_CELERY_INSPECT_TIMEOUT_SEC
-                )
-            if not celery_workers and _worker_list_mode == "redis_presence":
-                celery_workers = get_celery_workers_ping(
-                    timeout=_STATUS_CELERY_INSPECT_TIMEOUT_SEC
-                )
-            worker_ib = get_worker_ib_status()
-            celery_worker_ib_connected = bool(
-                worker_ib and worker_ib.get("connected") and len(celery_workers) > 0
-            )
-            celery_worker_ib_client_id = worker_ib.get("client_id") if worker_ib else None
-        except Exception:
-            pass
-
-        celery_worker_last_updated_ts = None
-
         massive = None
         ib_ingestor = None
         ib_account_agent = None
@@ -493,7 +432,7 @@ def get_status(request: Request) -> Dict[str, Any]:
             _status_now = time.time()
 
             _ms = get_polygon_settings(reader._config)
-            # Internal builder for socket.polygon_ws (Trade Celery Massive queue retired P7).
+            # Internal builder for the retired Trade Polygon queue and current socket status.
             massive_info: Dict[str, Any] = {
                 "configured": bool(_ms.get("api_key")),
                 "tier": _ms.get("tier"),
@@ -691,8 +630,6 @@ def get_status(request: Request) -> Dict[str, Any]:
             massive=massive,
             ib_ingestor=ib_ingestor,
             quotes_redis_reader_ok=quotes_redis_reader_ok,
-            celery_broker_connected=celery_broker_connected,
-            celery_workers=celery_workers,
             ib_account_agent=ib_account_agent,
         )
 
@@ -734,11 +671,6 @@ def get_status(request: Request) -> Dict[str, Any]:
             monitor_lamp=monitor_lamp,
             monitor_block_reasons=monitor_block_reasons,
             quotes_redis_reader_ok=quotes_redis_reader_ok,
-            celery_broker_connected=celery_broker_connected,
-            celery_workers=celery_workers,
-            celery_worker_ib_connected=celery_worker_ib_connected,
-            celery_worker_ib_client_id=celery_worker_ib_client_id,
-            celery_worker_last_updated_ts=celery_worker_last_updated_ts,
             massive=massive,
             ib_ingestor=ib_ingestor,
             ib_account_agent=ib_account_agent,

@@ -1,4 +1,4 @@
-"""Bifrost Ops API — unified control plane for Celery workers.
+"""Bifrost Ops API — authentication, audit, and market-ingest control.
 
 Independent FastAPI service (same pattern as other bifrost_api domain apps).
 Reads config from the shared YAML config system.
@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import os
 import time
-import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -36,9 +35,6 @@ class AccessControlAllowPrivateNetworkMiddleware(BaseHTTPMiddleware):
 
 
 DEFAULT_ALLOWED_UNITS = [
-    "bifrost-celery-worker",
-    "bifrost-celery-beat",
-    "bifrost-massive-ws",
     "bifrost-ib-operator",
     "bifrost-ib-market-gateway",
     "bifrost-ib-ingestor",
@@ -63,10 +59,7 @@ def wire_ops_control_plane(
     *,
     register_root_health: bool = True,
 ) -> None:
-    """Wire Celery/K8s ops control plane onto ``app`` (standalone ops or merged monitor)."""
-    from bifrost_core.core.redis_url import effective_redis_dict, format_redis_url
-
-    broker_url = format_redis_url(effective_redis_dict(config, default_db=1))
+    """Wire the K8s Ops control plane onto a standalone or merged monitor app."""
 
     _raw_srv = config.get("server")
     if not isinstance(_raw_srv, dict):
@@ -89,24 +82,7 @@ def wire_ops_control_plane(
 
     allowed_units = _allowed_units_from_config(config)
 
-    from bifrost_worker.celery.celery_app import app as celery_app
-
-    _prev_broker = celery_app.conf.get("broker_url")
-    if _prev_broker != broker_url:
-        logger.info(
-            "Ops: aligning Celery app broker with ops config (was %r, now %r)",
-            _prev_broker,
-            broker_url,
-        )
-    celery_app.conf.broker_url = broker_url
-    celery_app.conf.result_backend = broker_url
-
-    from bifrost_api.ops.services.worker_state import WorkerStateService
-
-    worker_svc = WorkerStateService(celery_app, broker_url, config)
-
     ops_cfg = config.get("ops") or {}
-    use_redis_stop = ops_cfg.get("use_redis_stop", True)
     executor_mode = str(ops_cfg.get("executor_mode") or "kubernetes").strip().lower()
     if executor_mode != "kubernetes":
         raise RuntimeError(
@@ -122,8 +98,6 @@ def wire_ops_control_plane(
     executor = KubernetesExecutor(
         namespace=namespace,
         allowed_units=allowed_units,
-        broker_url=broker_url,
-        use_redis_stop=use_redis_stop,
         daemon_scale_guard=daemon_scale_guard,
     )
     logger.info(
@@ -133,7 +107,6 @@ def wire_ops_control_plane(
         daemon_scale_guard,
     )
 
-    app.state.worker_state_service = worker_svc
     app.state.bifrost_config = config
     app.state.executor = executor
     app.state.audit_log: list = []
@@ -156,27 +129,9 @@ def wire_ops_control_plane(
     if getattr(app.state, "status_cfg_for_read", None) is None:
         app.state.status_cfg_for_read = config if has_postgres else None
 
-    app.state.broker_url = broker_url
-    app.state.redis_host = effective_redis_dict(config, default_db=1)["host"]
-
-    app.state.celery_log_queues: list = []
-    app.state.celery_log_lock = threading.Lock()
-    app.state._celery_log_loop: Any = None
-
-    from bifrost_api.ops.worker_profiles import WorkerProfileRegistry
-
-    app.state.worker_profile_registry = WorkerProfileRegistry.from_config(config)
-    if hasattr(executor, "set_worker_profile_limits"):
-        executor.set_worker_profile_limits({
-            key: profile.max_worker_instances
-            for key, profile in app.state.worker_profile_registry.profiles.items()
-        })
-
     from bifrost_api.ops.routers.workers import router as ops_router
-    from bifrost_api.ops.routers.job_queues import router as job_queues_router
     from bifrost_api.ops.routers.market_ingest import router as market_ingest_router
 
-    app.include_router(job_queues_router)
     app.include_router(market_ingest_router)
     app.include_router(ops_router)
 
@@ -229,9 +184,8 @@ def wire_ops_control_plane(
     @app.on_event("startup")
     async def ops_startup_event() -> None:
         logger.info(
-            "Ops control plane started — allowed units: %s, broker: %s",
+            "Ops control plane started — allowed units: %s",
             allowed_units,
-            broker_url.split("@")[-1] if "@" in broker_url else broker_url,
         )
 
     @app.on_event("shutdown")
@@ -247,7 +201,7 @@ def create_ops_app(
 
     app = FastAPI(
         title="Bifrost Ops API",
-        description="Unified control plane: Celery worker status, scaling, audit.",
+        description="Ops authentication, audit, and Kubernetes market-ingest control.",
         docs_url="/ops/docs",
         redoc_url="/ops/redoc",
         openapi_url="/ops/openapi.json",

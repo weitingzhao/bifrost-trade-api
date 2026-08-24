@@ -26,13 +26,7 @@ UNIT_TO_DEPLOYMENT: dict[str, str] = {
     "bifrost-ib-account-agent.service": "ib-account-agent",
     "bifrost-account-sync-daemon": "account-sync",
     "bifrost-account-sync-daemon.service": "account-sync",
-    "bifrost-celery-worker": "celery-worker",
-    "bifrost-celery-worker.service": "celery-worker",
-    "redis": "redis",
-    "redis.service": "redis",
 }
-
-_WORKER_UNIT_BASE = "bifrost-celery-worker"
 
 
 def deployment_for_unit(unit: str) -> Optional[str]:
@@ -43,10 +37,6 @@ def deployment_for_unit(unit: str) -> Optional[str]:
     direct = UNIT_TO_DEPLOYMENT.get(u)
     if direct:
         return direct
-    # bifrost-celery-worker@profile-1.service → celery-worker
-    prefix = f"{_WORKER_UNIT_BASE}@"
-    if u.startswith(prefix) and u.endswith(".service"):
-        return "celery-worker"
     stem = u.removesuffix(".service")
     return UNIT_TO_DEPLOYMENT.get(stem)
 

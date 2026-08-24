@@ -1,4 +1,4 @@
-"""Log endpoints: daemon, Monitor API, sidecars, and Celery console logs (fetch, clear, trim, stream)."""
+"""Log endpoints for the daemon, Monitor API, and sidecars."""
 
 import asyncio
 import json
@@ -1244,9 +1244,6 @@ async def get_docs_logs_stream(request: Request):
             "X-Accel-Buffering": "no",
         },
     )
-
-
-# --- Celery logs ---
 
 
 # --- Ops API server logs (run_server_ops.py -> Redis stream bifrost:console:{dev|prod}:api_ops) ---

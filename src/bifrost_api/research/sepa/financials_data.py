@@ -210,7 +210,7 @@ def fetch_income_rows_for_sepa_from_pg(
     return ([_map_q(r) for r in q_db], [_map_a(r) for r in a_db])
 
 
-# Celery feed upserts + job runners (worker-owned; re-exported for API/tests).
+# Retired feed upserts and job runners retained for API/test compatibility.
 from bifrost_api.research.financials_feed import (  # noqa: E402
     SOURCE_DEFAULT as FEED_SOURCE_DEFAULT,
     run_feed_stocks_balance_sheets_job,  # noqa: F401

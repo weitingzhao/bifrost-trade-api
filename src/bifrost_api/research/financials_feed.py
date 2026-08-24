@@ -1,4 +1,4 @@
-"""SEPA financials feed runners — retired Celery path stub (Wave 7-C)."""
+"""SEPA financials feed runners — retired Trade ingest path stub (Wave 7-C)."""
 
 from __future__ import annotations
 

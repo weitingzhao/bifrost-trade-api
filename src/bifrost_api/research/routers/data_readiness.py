@@ -211,7 +211,7 @@ def _post_sepa_financials_backfill(
     *,
     kind: str,
 ) -> Dict[str, Any]:
-    """Enqueue Plugin ingest jobs per gap symbol (Massive Celery retired)."""
+    """Enqueue Plugin ingest jobs per gap symbol."""
     _ = request
     plugin_kind = _FIN_FEED_TO_PLUGIN_KIND.get(kind)
     if not plugin_kind:

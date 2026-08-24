@@ -15,6 +15,8 @@
 | market | 8772 | market |
 | research | 8773 | research — Stock Data Readiness routes are thin passthrough to Market Data Plugin (`/market/readiness/*`) |
 
+Trade Celery 已移除；`ops/` 仅保留认证、审计、market-ingest Kubernetes 控制。
+
 历史 9 域表（路径别名仍可用）：
 
 | 域 | 模块 | 端口 | 主要职责 |
