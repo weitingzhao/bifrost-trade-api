@@ -50,9 +50,9 @@ All `market.*` direct SQL has been migrated to Plugin API HTTP calls across thre
 
 ### PLUGIN_URL hygiene (market-data-gs-closeout P4)
 
-`MARKET_DATA_PLUGIN_URL` is set on Trade writers/readers that call Plugin: `api-monitor`, `api-market`, `api-research`, `daemon`, `celery-worker`, `celery-worker-stocks-ib`.
+`MARKET_DATA_PLUGIN_URL` is set on Trade writers/readers that call Plugin: `api-monitor`, `api-market`, `api-research`, `daemon`.
 
-**Skip (no market.* SQL / Plugin client):** `api-docs`, `api-ops`, `api-trading`, `api-strategy`, `api-portfolio`, `api-massive`. Documented in `k8s/base/apis/manifest.yaml`. Celery `*-massive` stay replicas 0.
+**Skip (no market.* SQL / Plugin client):** legacy split `api-docs`, `api-ops`, `api-trading`, `api-strategy`, `api-portfolio`, `api-massive` — all merged or retired; see `k8s/base/apis/manifest.yaml`.
 
 Write-path operator token (P6): Trade writers send `Authorization: Bearer $MARKET_DATA_WRITE_TOKEN` when that env (or `PLATFORM_OPERATOR_TOKEN`) is set. Plugin enforces only when the token is armed in `market-data-secrets` / Trade secrets.
 

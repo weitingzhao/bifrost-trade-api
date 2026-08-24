@@ -24,7 +24,7 @@ Trade Celery 已移除；`ops/` 仅保留认证、审计、market-ingest Kuberne
 | monitor | `bifrost_api.monitor` | 8765 | Daemon 状态、控制命令、心跳 |
 | ~~massive~~ | ~~`bifrost_api.massive`~~ | ~~8766~~ | ~~Polygon 数据查询、期权链~~ — **retired (P7)**: 由 Market Data Plugin `:8790` 替代 |
 | docs | `bifrost_api.docs_api` | 8767 | OpenAPI schema、API 覆盖率 |
-| ops | `bifrost_api.ops` | 8768 | Celery 队列管理、Worker 健康 |
+| ops | `bifrost_api.ops` | 8768 | **merged into monitor** — 认证、审计、market-ingest K8s 控制（Celery 队列已退役 Wave 5） |
 | trading | `bifrost_api.trading` | 8769 | 订单、持仓、交易历史 |
 | strategy | `bifrost_api.strategy` | 8770 | 结构模板、Gate 配置、机会发现 |
 | portfolio | `bifrost_api.portfolio` | 8771 | 多账户、Greeks 聚合 |
