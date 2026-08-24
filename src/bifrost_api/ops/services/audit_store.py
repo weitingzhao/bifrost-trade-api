@@ -1,103 +1,40 @@
-"""Persistent audit store for the Ops control plane.
+"""In-memory audit ring + platform-api sink (Wave 6).
 
-Phase 1: in-memory list (same as before).
-Phase 4: PostgreSQL-backed with full persistence.
-Falls back to in-memory if DB is unavailable.
-
-DDL for ops_audit_log lives in bifrost_core.persistence.postgres.ddl
-(Wave 4: partitioned timestamptz) — this module probes existence and
-converts float epoch ↔ timestamptz at the SQL boundary.
+Trade OLTP no longer persists ops_audit_log. Actuation records ship to
+platform-api POST /api/v1/audit/append; failures fall back to structured logs.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from bifrost_api.ops.models.schemas import AuditEntry
+from bifrost_api.ops.services.platform_audit_client import PlatformAuditClient
 
 logger = logging.getLogger(__name__)
 
-_MAX_MEMORY_ENTRIES = 2000
-
-
-def _epoch_from_db_timestamp(value: Any) -> float:
-    """Convert DB timestamp (timestamptz datetime or legacy float) to float epoch."""
-    if value is None:
-        return 0.0
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.timestamp()
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
+_MAX_MEMORY_ENTRIES = 500
 
 
 class AuditStore:
-    """Dual-mode audit store: PostgreSQL when available, in-memory fallback."""
+    """Ring buffer for recent entries + fire-and-forget Platform audit sink."""
 
-    def __init__(
-        self,
-        dsn: Optional[str] = None,
-        table: str = "ops_audit_log",
-    ) -> None:
+    def __init__(self, platform_client: Optional[PlatformAuditClient] = None) -> None:
         self._memory: List[AuditEntry] = []
         self._lock = threading.Lock()
-        self._dsn = dsn
-        self._table = table
-        self._db_available = False
-        if dsn:
-            self._try_init_db()
+        self._platform = platform_client
 
     @classmethod
-    def from_config(cls, config: dict) -> "AuditStore":
-        pg = config.get("postgres") or {}
-        ops = config.get("ops") or {}
-        audit_cfg = ops.get("audit") or {}
-
-        if not audit_cfg.get("persist", False):
-            logger.info("Ops audit: in-memory mode (persist=false or not set)")
-            return cls(dsn=None)
-
-        host = pg.get("host", "127.0.0.1")
-        port = pg.get("port", 5432)
-        db = pg.get("database", "bifrost_dev")
-        user = pg.get("user", "bifrost")
-        password = pg.get("password", "")
-        dsn = f"host={host} port={port} dbname={db} user={user} password={password}"
-        return cls(dsn=dsn)
-
-    def _try_init_db(self) -> None:
-        try:
-            import psycopg2
-
-            conn = psycopg2.connect(self._dsn, connect_timeout=5)
-            cur = conn.cursor()
-            cur.execute("SELECT to_regclass(%s)", (f"public.{self._table}",))
-            exists = cur.fetchone()[0] is not None
-            cur.close()
-            conn.close()
-            if not exists:
-                logger.warning(
-                    "Ops audit: table public.%s missing (run bifrost-core db-init); "
-                    "falling back to memory",
-                    self._table,
-                )
-                self._db_available = False
-                return
-            self._db_available = True
-            logger.info(
-                "Ops audit: PostgreSQL persistence enabled (table=%s)", self._table
-            )
-        except Exception as e:
-            logger.warning("Ops audit: DB init failed, falling back to memory: %s", e)
-            self._db_available = False
+    def from_config(cls, config: dict) -> AuditStore:
+        platform_client = PlatformAuditClient.from_config(config)
+        logger.info(
+            "Ops audit: platform sink %s (url=%s)",
+            "enabled" if platform_client._enabled else "disabled",
+            platform_client._base_url or "n/a",
+        )
+        return cls(platform_client=platform_client)
 
     def append(self, entry: AuditEntry) -> None:
         with self._lock:
@@ -105,81 +42,34 @@ class AuditStore:
             if len(self._memory) > _MAX_MEMORY_ENTRIES:
                 self._memory = self._memory[-_MAX_MEMORY_ENTRIES:]
 
-        if self._db_available:
-            self._persist(entry)
-
-    def _persist(self, entry: AuditEntry) -> None:
-        try:
-            import psycopg2
-
-            conn = psycopg2.connect(self._dsn, connect_timeout=3)
-            cur = conn.cursor()
-            # Wave 4: column is timestamptz; API still speaks float epoch.
-            cur.execute(
-                f"""INSERT INTO {self._table}
-                    (timestamp, operator, source_ip, action, target, command_id, outcome, detail)
-                    VALUES (to_timestamp(%s), %s, %s, %s, %s, %s, %s, %s)""",
-                (
-                    entry.timestamp,
-                    entry.operator,
-                    entry.source_ip,
-                    entry.action,
-                    entry.target,
-                    entry.command_id,
-                    entry.outcome,
-                    entry.detail,
-                ),
+        if self._platform is not None:
+            self._platform.submit(entry)
+        else:
+            logger.info(
+                "audit_sink_skipped",
+                extra={
+                    "audit_payload": {
+                        "actor": entry.operator,
+                        "action": entry.action,
+                        "target": entry.target,
+                        "status": entry.outcome,
+                    },
+                    "reason": "no_platform_client",
+                },
             )
-            conn.commit()
-            cur.close()
-            conn.close()
-        except Exception as e:
-            logger.debug("Ops audit: DB persist failed: %s", e)
 
     def list_recent(self, limit: int = 100) -> List[AuditEntry]:
-        if self._db_available:
-            try:
-                return self._list_from_db(limit)
-            except Exception as e:
-                logger.debug("Ops audit: DB read failed, using memory: %s", e)
-
         with self._lock:
             entries = sorted(self._memory, key=lambda e: e.timestamp, reverse=True)
             return entries[:limit]
 
-    def _list_from_db(self, limit: int) -> List[AuditEntry]:
-        import psycopg2
-
-        conn = psycopg2.connect(self._dsn, connect_timeout=3)
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT timestamp, operator, source_ip, action, target, command_id, outcome, detail "
-            f"FROM {self._table} ORDER BY timestamp DESC LIMIT %s",
-            (limit,),
-        )
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        return [
-            AuditEntry(
-                timestamp=_epoch_from_db_timestamp(r[0]),
-                operator=r[1],
-                source_ip=r[2],
-                action=r[3],
-                target=r[4],
-                command_id=r[5],
-                outcome=r[6],
-                detail=r[7],
-            )
-            for r in rows
-        ]
-
-    @property
-    def db_available(self) -> bool:
-        return self._db_available
-
     def stats(self) -> Dict[str, Any]:
-        return {
-            "mode": "postgresql" if self._db_available else "memory",
+        base: Dict[str, Any] = {
             "memory_entries": len(self._memory),
         }
+        if self._platform is not None:
+            base.update(self._platform.stats())
+        else:
+            base["mode"] = "logging_only"
+            base["enabled"] = False
+        return base

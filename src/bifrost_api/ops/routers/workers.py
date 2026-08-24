@@ -8,7 +8,7 @@ import threading
 import time
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from bifrost_api.ops.models.schemas import AuditEntry
@@ -97,27 +97,3 @@ def post_ops_shutdown(request: Request) -> Any:
 
     threading.Thread(target=_exit_after_send, daemon=True).start()
     return {"ok": True}
-
-
-@router.get("/ops/audit")
-def list_audit(
-    request: Request,
-    limit: int = Query(100, ge=1, le=500),
-) -> Dict[str, Any]:
-    denied = _require_role(request, "admin")
-    if denied:
-        return denied
-    audit_store = getattr(request.app.state, "audit_store", None)
-    if audit_store is not None:
-        entries = audit_store.list_recent(limit=limit)
-    else:
-        entries = sorted(
-            _audit_log(request),
-            key=lambda entry: entry.timestamp,
-            reverse=True,
-        )[:limit]
-    return {
-        "ok": True,
-        "entries": [entry.model_dump() for entry in entries],
-        "count": len(entries),
-    }
