@@ -1,4 +1,4 @@
-"""Phase A: Strategy structures and strategy_history API for management and monitoring."""
+"""Phase A: Strategy structures API for management and monitoring."""
 
 import logging
 from typing import Any, Dict, List, Optional
@@ -529,25 +529,6 @@ def update_allocation_endpoint(request: Request, allocation_id: int, body: Alloc
     if not ok:
         raise HTTPException(status_code=404, detail="Allocation not found or update failed")
     return {"ok": True}
-
-
-@router.get("/history")
-def get_strategy_history(
-    request: Request,
-    from_ts: Optional[float] = Query(None, description="Filter history with ts >= this (Unix)"),
-    to_ts: Optional[float] = Query(None, description="Filter history with ts <= this (Unix)"),
-    strategy_structure_id: Optional[int] = Query(None, description="Filter by structure id"),
-    limit: int = Query(100, ge=1, le=500, description="Max rows to return"),
-) -> Dict[str, Any]:
-    """Return strategy_history rows for monitoring and strategy usage."""
-    reader = request.app.state.reader
-    items = reader.get_strategy_history(
-        from_ts=from_ts,
-        to_ts=to_ts,
-        strategy_structure_id=strategy_structure_id,
-        limit=limit,
-    )
-    return {"items": items}
 
 
 @router.get("/gate-safety")

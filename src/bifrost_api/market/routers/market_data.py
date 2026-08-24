@@ -2,7 +2,7 @@
 
 import logging
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Query, Request
