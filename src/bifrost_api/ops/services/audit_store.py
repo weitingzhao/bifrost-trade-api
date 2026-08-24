@@ -3,6 +3,9 @@
 Phase 1: in-memory list (same as before).
 Phase 4: PostgreSQL-backed with full persistence.
 Falls back to in-memory if DB is unavailable.
+
+DDL for ops_audit_log lives in bifrost_core.persistence.postgres.ddl
+(Wave 2 hygiene) — this module only probes existence and read/write rows.
 """
 
 from __future__ import annotations
@@ -55,35 +58,25 @@ class AuditStore:
     def _try_init_db(self) -> None:
         try:
             import psycopg2
+
             conn = psycopg2.connect(self._dsn, connect_timeout=5)
             cur = conn.cursor()
-            cur.execute(f"""
-                CREATE TABLE IF NOT EXISTS {self._table} (
-                    id          BIGSERIAL PRIMARY KEY,
-                    timestamp   DOUBLE PRECISION NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW()),
-                    operator    TEXT NOT NULL DEFAULT 'unknown',
-                    source_ip   TEXT,
-                    action      TEXT NOT NULL,
-                    target      TEXT NOT NULL,
-                    command_id  TEXT,
-                    outcome     TEXT NOT NULL,
-                    detail      TEXT,
-                    request_id  TEXT
-                )
-            """)
-            cur.execute(f"""
-                CREATE INDEX IF NOT EXISTS idx_{self._table}_ts
-                ON {self._table} (timestamp DESC)
-            """)
-            cur.execute(f"""
-                CREATE INDEX IF NOT EXISTS idx_{self._table}_outcome
-                ON {self._table} (outcome)
-            """)
-            conn.commit()
+            cur.execute("SELECT to_regclass(%s)", (f"public.{self._table}",))
+            exists = cur.fetchone()[0] is not None
             cur.close()
             conn.close()
+            if not exists:
+                logger.warning(
+                    "Ops audit: table public.%s missing (run bifrost-core db-init); "
+                    "falling back to memory",
+                    self._table,
+                )
+                self._db_available = False
+                return
             self._db_available = True
-            logger.info("Ops audit: PostgreSQL persistence enabled (table=%s)", self._table)
+            logger.info(
+                "Ops audit: PostgreSQL persistence enabled (table=%s)", self._table
+            )
         except Exception as e:
             logger.warning("Ops audit: DB init failed, falling back to memory: %s", e)
             self._db_available = False
@@ -100,6 +93,7 @@ class AuditStore:
     def _persist(self, entry: AuditEntry) -> None:
         try:
             import psycopg2
+
             conn = psycopg2.connect(self._dsn, connect_timeout=3)
             cur = conn.cursor()
             cur.execute(
@@ -136,6 +130,7 @@ class AuditStore:
 
     def _list_from_db(self, limit: int) -> List[AuditEntry]:
         import psycopg2
+
         conn = psycopg2.connect(self._dsn, connect_timeout=3)
         cur = conn.cursor()
         cur.execute(
