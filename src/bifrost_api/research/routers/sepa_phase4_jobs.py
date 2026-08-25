@@ -24,7 +24,7 @@ _PHASE4_RETIRED_MSG = (
 
 
 def _phase4_retired() -> Dict[str, Any]:
-    """Phase4 PG job queue is permanently retired (independent of SEPA_USE_ANALYTICS)."""
+    """Phase4 PG job queue is permanently retired."""
     return {"ok": False, "error": _PHASE4_RETIRED_MSG}
 
 

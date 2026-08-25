@@ -7,8 +7,6 @@ function signatures so ``data_readiness`` / FE paths stay stable.
 Env:
   RESEARCH_API_URL   — default ``http://research-api.research.svc.cluster.local:8795``
   RESEARCH_PROXY     — ``true`` (default) to prefer HTTP; ``false`` uses direct PG
-  SEPA_USE_ANALYTICS — master flag (unchanged); read at process start — Deployment env
-                       changes require pod rollout before routes honor the new value
   ANALYTICS_PG_*     — direct PG fallback / readiness_snapshot get_conn
 """
 
@@ -87,15 +85,8 @@ def latest_eval_date(cur: Any, table: str) -> Optional[date]:
     return date.fromisoformat(str(raw)[:10])
 
 
-def use_analytics() -> bool:
-    """Return True when the analytics path is enabled (feature flag)."""
-    return os.environ.get("SEPA_USE_ANALYTICS", "true").lower() in ("1", "true", "yes")
-
-
 def use_research_proxy() -> bool:
     """Prefer Research API HTTP over direct Golden Source SQL."""
-    if not use_analytics():
-        return False
     return os.environ.get("RESEARCH_PROXY", "true").lower() in ("1", "true", "yes")
 
 

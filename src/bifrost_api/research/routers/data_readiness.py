@@ -5,7 +5,6 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, Request
 
-from bifrost_api.research.analytics_reader import use_analytics
 from bifrost_api.research.sepa.readiness_snapshot import (
     READINESS_DATA_CATALOG,
     compute_data_inventory_stats,
@@ -14,19 +13,6 @@ from bifrost_api.research.sepa.readiness_snapshot import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["research"])
-
-_SRD_RETIRED_MSG = (
-    "SEPA analytics path required; stock_readiness_daily retired; use dw_stock.mart_sepa_* marts."
-)
-
-
-def _require_analytics(extra: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    if use_analytics():
-        return None
-    out: Dict[str, Any] = {"ok": False, "error": _SRD_RETIRED_MSG}
-    if extra:
-        out.update(extra)
-    return out
 
 
 def _readiness_snapshot_deprecated() -> Dict[str, Any]:
@@ -442,9 +428,6 @@ def post_sepa_gap_ack(
 @router.get("/research/data/readiness/criteria-stats")
 def get_sepa_criteria_stats(request: Request) -> Dict[str, Any]:
     _ = request
-    err = _require_analytics()
-    if err:
-        return err
     return _criteria_stats_analytics()
 
 
@@ -626,9 +609,6 @@ def get_fundamental_distribution_symbols(
     if conditions_passed < 0 or conditions_passed > 8:
         return {"ok": False, "error": "conditions_passed must be 0–8"}
 
-    err = _require_analytics()
-    if err:
-        return err
     return _fundamental_distribution_analytics(conditions_passed)
 
 
@@ -705,9 +685,6 @@ def get_technical_distribution_symbols(
     if conditions_passed < 0 or conditions_passed > 11:
         return {"ok": False, "error": "conditions_passed must be 0–11"}
 
-    err = _require_analytics()
-    if err:
-        return err
     return _technical_distribution_analytics(conditions_passed)
 
 @router.get("/research/data/readiness/data-inventory")
@@ -725,16 +702,13 @@ def get_fundamental_conditions_by_symbol(
 ) -> Dict[str, Any]:
     """Return today's SEPA fundamental conditions snapshot for a single symbol.
 
-    Reads from ``dw_stock.mart_sepa_fundamental_eval`` when SEPA_USE_ANALYTICS=true,
+    Reads from ``dw_stock.mart_sepa_fundamental_eval``.
     Requires SEPA analytics marts (stock_readiness_daily retired).
     """
     sym = (symbol or "").strip().upper()
     if not sym:
         return {"ok": False, "error": "symbol is required"}
 
-    err = _require_analytics()
-    if err:
-        return err
     return _fundamental_conditions_analytics(sym)
 
 def _fundamental_conditions_analytics(sym: str) -> Dict[str, Any]:
@@ -785,16 +759,13 @@ def get_symbol_technical_conditions(
 ) -> Dict[str, Any]:
     """Return today's SEPA technical conditions snapshot for a single symbol.
 
-    Reads from ``dw_stock.mart_sepa_technical_eval`` when SEPA_USE_ANALYTICS=true,
+    Reads from ``dw_stock.mart_sepa_technical_eval``.
     Requires SEPA analytics marts (stock_readiness_daily retired).
     """
     sym = (symbol or "").strip().upper()
     if not sym:
         return {"ok": False, "error": "symbol is required"}
 
-    err = _require_analytics()
-    if err:
-        return err
     return _technical_conditions_analytics(sym)
 
 def _technical_conditions_analytics(sym: str) -> Dict[str, Any]:
@@ -1000,9 +971,6 @@ def get_fundamental_filter(
     except Exception:
         eff_limit = 500
 
-    err = _require_analytics()
-    if err:
-        return err
     return _fundamental_filter_analytics(cond_ids, eff_limit)
 
 def _fundamental_filter_analytics(cond_ids: list, limit: int) -> Dict[str, Any]:
@@ -1046,9 +1014,6 @@ def get_technical_filter(
     except Exception:
         eff_limit = 500
 
-    err = _require_analytics()
-    if err:
-        return err
     return _technical_filter_analytics(cond_ids, eff_limit)
 
 def _technical_filter_analytics(cond_ids: list, limit: int) -> Dict[str, Any]:
@@ -1074,7 +1039,7 @@ def get_symbols_readiness_snapshot(
 ) -> Dict[str, Any]:
     """Return the latest readiness row for each requested symbol.
 
-    When SEPA_USE_ANALYTICS=true, reads from dw_stock.mart_sepa_screener_wide.
+    Reads from dw_stock.mart_sepa_screener_wide.
     Requires SEPA analytics marts (stock_readiness_daily retired).
     """
     raw = (symbols or "").strip()
@@ -1085,9 +1050,6 @@ def get_symbols_readiness_snapshot(
     if not syms:
         return {"ok": True, "as_of_date": None, "count": 0, "symbols": []}
 
-    err = _require_analytics()
-    if err:
-        return err
     return _symbols_snapshot_analytics(syms)
 
 def _symbols_snapshot_analytics(syms: list) -> Dict[str, Any]:
@@ -1439,9 +1401,6 @@ _TIER_MAX_SCORE: Dict[str, int] = {
 def get_momentum_distribution(request: Request) -> Dict[str, Any]:
     """Return universe-wide histogram of momentum_score (0..10)."""
     _ = request
-    err = _require_analytics()
-    if err:
-        return err
     try:
         from bifrost_api.research.analytics_reader import get_conn as _a_conn
         from psycopg2.extras import RealDictCursor
@@ -1480,9 +1439,6 @@ def get_momentum_filter(
     raw_ids = [s.strip() for s in (include or "").split(",") if s.strip()]
     cond_ids = [c for c in raw_ids if c in _TECH_MOMENTUM_INDICATOR_IDS]
 
-    err = _require_analytics()
-    if err:
-        return err
     return {
         "ok": True,
         "include": cond_ids,
@@ -1507,9 +1463,6 @@ def get_tier_filter(
     if tier not in _TIER_INDICATOR_IDS:
         return {"ok": False, "error": f"tier must be one of: {list(_TIER_INDICATOR_IDS.keys())}"}
 
-    err = _require_analytics()
-    if err:
-        return err
     valid_ids = _TIER_INDICATOR_IDS[tier]
     raw_ids = [s.strip() for s in (include or "").split(",") if s.strip()]
     cond_ids = [c for c in raw_ids if c in valid_ids]
@@ -1537,9 +1490,6 @@ def get_symbol_technical_tiers(
     if not sym:
         return {"ok": False, "error": "symbol is required"}
 
-    err = _require_analytics()
-    if err:
-        return err
     return {
         "ok": True,
         "symbol": sym,

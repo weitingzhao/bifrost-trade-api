@@ -10,13 +10,11 @@ from bifrost_api.research import analytics_reader as ar
 
 
 def test_use_research_proxy_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SEPA_USE_ANALYTICS", "true")
     monkeypatch.delenv("RESEARCH_PROXY", raising=False)
     assert ar.use_research_proxy() is True
 
 
 def test_fetch_criteria_stats_via_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SEPA_USE_ANALYTICS", "true")
     monkeypatch.setenv("RESEARCH_PROXY", "true")
     monkeypatch.setenv("RESEARCH_API_URL", "http://research.test")
 
@@ -38,7 +36,6 @@ def test_fetch_criteria_stats_via_proxy(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_fetch_screener_wide_unwraps_rows(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SEPA_USE_ANALYTICS", "true")
     monkeypatch.setenv("RESEARCH_PROXY", "true")
     monkeypatch.setenv("RESEARCH_API_URL", "http://research.test")
 
