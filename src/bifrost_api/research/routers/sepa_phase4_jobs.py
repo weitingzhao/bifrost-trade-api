@@ -19,7 +19,7 @@ from bifrost_api.research.sepa.phase4_engine import (
 router = APIRouter(tags=["research"])
 
 _PHASE4_RETIRED_MSG = (
-    "SEPA Phase4 PG job queue retired; use analytics.sepa_screener_wide / Research screener APIs."
+    "SEPA Phase4 PG job queue retired; use dw_stock.mart_sepa_screener_wide / Research screener APIs."
 )
 
 

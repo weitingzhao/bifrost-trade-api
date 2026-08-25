@@ -67,7 +67,7 @@ def insert_job_sepa_phase4(
     *,
     version: str = "sepa_phase4_v1",
 ) -> Optional[int]:
-    """No-op — job_sepa_phase4 retired; use analytics.sepa_screener_wide."""
+    """No-op — job_sepa_phase4 retired; use dw_stock.mart_sepa_screener_wide."""
     return None
 
 

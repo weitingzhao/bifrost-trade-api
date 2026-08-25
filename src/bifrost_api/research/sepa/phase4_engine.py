@@ -13,7 +13,7 @@ from bifrost_api.research.reference_cache_keys import CACHE_TTL_SEPA_FUNDAMENTAL
 
 PHASE4_VERSION = "sepa_phase4_v1"
 PHASE4_RETIRED_MSG = (
-    "SEPA Phase4 PG job queue retired; use analytics.sepa_screener_wide / Research screener APIs."
+    "SEPA Phase4 PG job queue retired; use dw_stock.mart_sepa_screener_wide / Research screener APIs."
 )
 
 

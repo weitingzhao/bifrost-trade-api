@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["research"])
 
 _SRD_RETIRED_MSG = (
-    "SEPA analytics path required; stock_readiness_daily retired; use analytics.sepa_* marts."
+    "SEPA analytics path required; stock_readiness_daily retired; use dw_stock.mart_sepa_* marts."
 )
 
 
@@ -34,7 +34,7 @@ def _readiness_snapshot_deprecated() -> Dict[str, Any]:
         "ok": True,
         "status": "deprecated",
         "message": (
-            "Readiness snapshot is computed by dbt CronJob (analytics.sepa_*). "
+            "Readiness snapshot is computed by dbt CronJob (dw_stock.mart_sepa_*). "
             "stock_readiness_daily table has been retired."
         ),
     }
