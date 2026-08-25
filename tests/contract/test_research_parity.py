@@ -1,4 +1,4 @@
-"""Contract: research API health + SEPA router import chain."""
+"""Contract: research API health + OpenAPI without retired SEPA online routes."""
 
 from __future__ import annotations
 
@@ -20,6 +20,11 @@ _SERVER = {
     "research_port": 8773,
     "skip_monitor_ib": True,
 }
+
+_RETIRED_PATH_PREFIXES = (
+    "/research/screening/sepa/",
+    "/research/max-pain",
+)
 
 
 def _client() -> TestClient:
@@ -49,8 +54,11 @@ def test_research_openapi_reachable() -> None:
     assert len(paths) >= 1
 
 
-def test_research_sepa_engine_importable() -> None:
-    from bifrost_api.research.sepa.phase1_engine import Phase1Config, evaluate_phase1_batch
-
-    assert Phase1Config is not None
-    assert callable(evaluate_phase1_batch)
+def test_research_openapi_omits_retired_sepa_online_routes() -> None:
+    r = _client().get("/openapi.json")
+    assert r.status_code == 200
+    paths = r.json().get("paths") or {}
+    for path in paths:
+        for prefix in _RETIRED_PATH_PREFIXES:
+            assert not str(path).startswith(prefix), f"retired path still registered: {path}"
+        assert "phase4" not in str(path).lower(), f"phase4 path still registered: {path}"

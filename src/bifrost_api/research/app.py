@@ -1,4 +1,4 @@
-"""Research domain FastAPI app — option discovery (IB) and max pain reports only."""
+"""Research domain FastAPI app — option discovery, screener, greeks, data readiness."""
 
 import logging
 import os
@@ -26,10 +26,10 @@ def create_research_app(
     resolved_config_path: Optional[str] = None,
     merged_config: Optional[dict] = None,
 ) -> FastAPI:
-    """Build the Research API app (option discovery + max pain)."""
+    """Build the Research API app (option discovery, screener, greeks, data readiness)."""
     app = FastAPI(
         title="Bifrost Research API",
-        description="Option discovery (IB-backed) and max pain reports.",
+        description="Option discovery (IB-backed), screener, greeks, and SEPA data readiness.",
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
@@ -61,23 +61,13 @@ def create_research_app(
     app.state.bifrost_research_port = int(_scfg["research_port"])
 
     from bifrost_api.research.routers.option_discovery import router as option_discovery_router
-    from bifrost_api.research.routers.max_pain import router as max_pain_router
     from bifrost_api.research.routers.screener import router as screener_router
     from bifrost_api.research.routers.greeks import router as greeks_router
-    from bifrost_api.research.routers.sepa_screening import router as sepa_screening_router
-    from bifrost_api.research.routers.sepa_crs import router as sepa_crs_router
-    from bifrost_api.research.routers.sepa_fundamentals import router as sepa_fundamentals_router
-    from bifrost_api.research.routers.sepa_phase4_jobs import router as sepa_phase4_jobs_router
     from bifrost_api.research.routers.data_readiness import router as data_readiness_router
 
     app.include_router(option_discovery_router)
-    app.include_router(max_pain_router)
     app.include_router(screener_router)
     app.include_router(greeks_router)
-    app.include_router(sepa_screening_router)
-    app.include_router(sepa_crs_router)
-    app.include_router(sepa_fundamentals_router)
-    app.include_router(sepa_phase4_jobs_router)
     app.include_router(data_readiness_router)
 
     from bifrost_api.ops.services.audit_store import AuditStore

@@ -1,4 +1,4 @@
-"""Tests for the slim Research FastAPI app (option discovery + max pain only)."""
+"""Tests for the slim Research FastAPI app (option discovery, screener, greeks, readiness)."""
 
 from __future__ import annotations
 

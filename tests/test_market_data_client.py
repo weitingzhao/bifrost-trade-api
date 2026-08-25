@@ -15,11 +15,6 @@ from bifrost_api.research.market_pg import (
     get_option_open_interest_daily,
     get_option_snapshots_eod_per_day,
     get_option_snapshots_latest,
-    get_short_interest_recent,
-    get_short_volume_recent,
-    get_spy_close_series,
-    get_stock_day_close_series_for_crs,
-    get_stock_day_series_for_sepa,
     get_strikes_for_expiry_from_contracts_db,
 )
 
@@ -114,43 +109,6 @@ def test_plugin_base_url_from_env(mock_urlopen: MagicMock, monkeypatch: pytest.M
 
 
 # ─── market_pg wrapper integration tests ─────────────────────────────────────
-
-
-@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_stock_day_series_for_sepa_plugin_mode(mock_urlopen: MagicMock):
-    payload = {
-        "data": {
-            "AAPL": [{"symbol": "AAPL", "bar_time": "2025-01-02", "open": 150.0, "high": 155.0, "low": 149.0, "close": 153.0, "volume": 1000000, "source": "massive"}]
-        }
-    }
-    mock_urlopen.return_value = _FakeResponse(payload)
-
-    result = get_stock_day_series_for_sepa({"postgres": {"host": "localhost"}}, ["AAPL"], lookback_days=400)
-
-    assert "AAPL" in result
-    mock_urlopen.assert_called_once()
-
-
-@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_stock_day_close_series_for_crs_plugin_mode(mock_urlopen: MagicMock):
-    payload = {"data": {"TSLA": [{"symbol": "TSLA", "bar_time": "2025-01-02", "close": 250.0}]}}
-    mock_urlopen.return_value = _FakeResponse(payload)
-
-    result = get_stock_day_close_series_for_crs({"postgres": {"host": "localhost"}}, ["TSLA"])
-
-    assert "TSLA" in result
-    mock_urlopen.assert_called_once()
-
-
-@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_spy_close_series_plugin_mode(mock_urlopen: MagicMock):
-    payload = {"closes": [450.0, 451.5]}
-    mock_urlopen.return_value = _FakeResponse(payload)
-
-    result = get_spy_close_series({"postgres": {"host": "localhost"}})
-
-    assert result == [450.0, 451.5]
-    mock_urlopen.assert_called_once()
 
 
 # ─── Option HTTP client unit tests ───────────────────────────────────────────
@@ -416,36 +374,4 @@ def test_fetch_short_volume_empty(mock_urlopen: MagicMock):
     assert result == {}
 
 
-# ─── Short interest / short volume market_pg wrapper tests ───────────────────
-
-
-@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_short_interest_recent_plugin_mode(mock_urlopen: MagicMock):
-    payload = {
-        "ok": True,
-        "data": {"AAPL": [{"symbol": "AAPL", "settlement_date": "2026-08-01", "short_interest": 50000}]},
-        "count": 1,
-    }
-    mock_urlopen.return_value = _FakeResponse(payload)
-
-    result = get_short_interest_recent({"postgres": {"host": "localhost"}}, ["AAPL"], settlements=6)
-
-    assert "AAPL" in result
-    assert result["AAPL"][0]["short_interest"] == 50000
-    mock_urlopen.assert_called_once()
-
-
-@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_short_volume_recent_plugin_mode(mock_urlopen: MagicMock):
-    payload = {
-        "ok": True,
-        "data": {"NVDA": [{"symbol": "NVDA", "trade_date": "2026-08-13", "short_volume": 12000}]},
-        "count": 1,
-    }
-    mock_urlopen.return_value = _FakeResponse(payload)
-
-    result = get_short_volume_recent({"postgres": {"host": "localhost"}}, ["NVDA"], trade_days=60)
-
-    assert "NVDA" in result
-    assert result["NVDA"][0]["short_volume"] == 12000
-    mock_urlopen.assert_called_once()
+# (short interest / volume market_pg wrappers retired with online SEPA engines)

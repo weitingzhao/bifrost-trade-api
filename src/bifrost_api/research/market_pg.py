@@ -1,7 +1,7 @@
 """Market PostgreSQL readers for research/ops (Wave 7-C).
 
 Retained from the retired Trade ingest reader.
-Reads ``market.*`` tables; SEPA job tables remain in public schema.
+Reads ``market.*`` via Market Data Plugin HTTP client.
 """
 
 from __future__ import annotations
@@ -57,64 +57,6 @@ def _expiry_to_date_param(expiry: str) -> Optional[str]:
     return None
 
 
-# ── SEPA Phase4 job queue (RETIRED — table dropped in bifrost-core 0.10.6) ────
-
-
-def insert_job_sepa_phase4(
-    status_config: dict,
-    job_id: str,
-    request_payload: Optional[Dict[str, Any]] = None,
-    *,
-    version: str = "sepa_phase4_v1",
-) -> Optional[int]:
-    """No-op — job_sepa_phase4 retired; use dw_stock.mart_sepa_screener_wide."""
-    return None
-
-
-def get_job_sepa_phase4(
-    status_config: dict,
-    job_id: str,
-) -> Optional[Dict[str, Any]]:
-    """No-op — job_sepa_phase4 retired."""
-    return None
-
-
-def get_job_sepa_phase4_result(
-    status_config: dict,
-    job_id: str,
-    *,
-    offset: int = 0,
-    limit: int = 200,
-) -> Optional[Dict[str, Any]]:
-    """No-op — job_sepa_phase4 retired."""
-    return None
-
-
-def update_job_sepa_phase4(
-    status_config: dict,
-    job_id: str,
-    **fields: Any,
-) -> bool:
-    """No-op — job_sepa_phase4 retired."""
-    return False
-
-
-def list_job_sepa_phase4(
-    status_config: dict,
-    *,
-    limit: int = 50,
-    offset: int = 0,
-    status_filter: Optional[str] = None,
-    created_from: Optional[str] = None,
-    created_to: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    """No-op — job_sepa_phase4 retired."""
-    return []
-
-
-def delete_job_sepa_phase4(status_config: dict, job_id: str) -> bool:
-    """No-op — job_sepa_phase4 retired."""
-    return False
 
 
 # ── Migrated to Plugin API (market-data plugin HTTP client) ───────────────────
@@ -194,46 +136,6 @@ def get_option_snapshots_eod_per_day(
         logger.warning("get_option_snapshots_eod_per_day failed: %s", e)
         return []
 
-
-def get_stock_day_series_for_sepa(
-    status_config: dict,
-    symbols: List[str],
-    *,
-    lookback_days: int = 400,
-    source: str = "massive",
-) -> Dict[str, List[Dict[str, Any]]]:
-    """Batch-read market.stock_daily rows for SEPA phase-1 technical screening.
-
-    Returns an ascending bar series per symbol with keys:
-    ``symbol, bar_time, open, high, low, close, volume, source``.
-    ``source`` is accepted for API compatibility but ignored.
-    """
-    syms = [str(s or "").strip().upper() for s in symbols if str(s or "").strip()]
-    if not syms:
-        return {}
-    try:
-        return market_data_client.fetch_stock_bars_daily(syms, days=lookback_days)
-    except Exception as e:
-        logger.warning("get_stock_day_series_for_sepa failed: %s", e)
-        return {}
-
-
-def get_stock_day_close_series_for_crs(
-    status_config: dict,
-    symbols: List[str],
-    *,
-    lookback_days: int = 420,
-    source: str = "massive",
-) -> Dict[str, List[Dict[str, Any]]]:
-    """Batch-read market.stock_daily close series for CRS calculation."""
-    syms = [str(s or "").strip().upper() for s in symbols if str(s or "").strip()]
-    if not syms:
-        return {}
-    try:
-        return market_data_client.fetch_stock_bars_daily_close(syms, days=lookback_days)
-    except Exception as e:
-        logger.warning("get_stock_day_close_series_for_crs failed: %s", e)
-        return {}
 
 
 def _right_from_ref_contract_type(ct: str) -> str:
@@ -341,91 +243,6 @@ def replace_option_expiration_cache(
     except Exception as e:
         logger.warning("replace_option_expiration_cache failed: %s", e)
 
-
-def get_sepa_fundamentals_cache_snapshot(
-    status_config: dict,
-    symbol: str,
-    *,
-    rule_version: str,
-) -> Optional[Dict[str, Any]]:
-    """RETIRED: research_sepa_fundamentals_cache dropped; use analytics marts."""
-    _ = (status_config, symbol, rule_version)
-    logger.debug("get_sepa_fundamentals_cache_snapshot retired")
-    return None
-
-
-def upsert_sepa_fundamentals_cache(
-    status_config: dict,
-    symbol: str,
-    payload: Dict[str, Any],
-    *,
-    rule_version: str,
-    source: str = "massive",
-    ttl_sec: int = 21600,
-) -> bool:
-    """RETIRED: research_sepa_fundamentals_cache dropped; use analytics marts."""
-    _ = (status_config, symbol, payload, rule_version, source, ttl_sec)
-    logger.debug("upsert_sepa_fundamentals_cache retired")
-    return False
-
-
-# ── Tier 2–4 batch readers (technical_engine) ────────────────────────────────
-
-
-def get_spy_close_series(
-    status_config: dict,
-    *,
-    lookback_days: int = 420,
-    source: str = "massive",
-) -> List[float]:
-    """Read SPY daily closes (ascending) from market.stock_daily. Shared by all symbols."""
-    try:
-        return market_data_client.fetch_spy_close_series(days=lookback_days)
-    except Exception as e:
-        logger.warning("get_spy_close_series failed: %s", e)
-        return []
-
-
-def get_short_interest_recent(
-    status_config: dict,
-    symbols: List[str],
-    *,
-    settlements: int = 6,
-    source: str = "massive",
-) -> Dict[str, List[Dict[str, Any]]]:
-    """Batch-read recent short interest rows per symbol (settlement_date DESC).
-
-    ``source`` kept for API compat.
-    """
-    syms = sorted({str(s or "").strip().upper() for s in symbols if str(s or "").strip()})
-    if not syms:
-        return {}
-    try:
-        return market_data_client.fetch_short_interest(syms, settlements=settlements)
-    except Exception as e:
-        logger.warning("get_short_interest_recent failed: %s", e)
-        return {}
-
-
-def get_short_volume_recent(
-    status_config: dict,
-    symbols: List[str],
-    *,
-    trade_days: int = 60,
-    source: str = "massive",
-) -> Dict[str, List[Dict[str, Any]]]:
-    """Batch-read recent short volume rows per symbol (trade_date DESC).
-
-    ``source`` kept for API compat.
-    """
-    syms = sorted({str(s or "").strip().upper() for s in symbols if str(s or "").strip()})
-    if not syms:
-        return {}
-    try:
-        return market_data_client.fetch_short_volume(syms, trade_days=trade_days)
-    except Exception as e:
-        logger.warning("get_short_volume_recent failed: %s", e)
-        return {}
 
 
 def get_option_trades(

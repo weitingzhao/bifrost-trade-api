@@ -56,11 +56,6 @@ def key_peers(symbol: str) -> str:
     return f"{MASSIVE_INGESTOR_CACHE_PREFIX}:peers:{normalize_symbol(symbol)}"
 
 
-def key_sepa_fundamentals(symbol: str, rule_version: str = "sepa_fundamentals_v1") -> str:
-    rv = (rule_version or "sepa_fundamentals_v1").strip()
-    return f"{MASSIVE_INGESTOR_CACHE_PREFIX}:sepa:fundamentals:{normalize_symbol(symbol)}:{rv}"
-
-
 def invalidate_ticker_cache(rds: Any, symbol: str) -> None:
     if not rds:
         return
