@@ -33,7 +33,8 @@ router = APIRouter(tags=["status"])
 _status_cache_lock = threading.Lock()
 _status_cache: Dict[str, Any] = {}
 _status_cache_ts: float = 0.0
-_STATUS_CACHE_TTL = 2.0
+# Keep warm across Platform matrix probes (default HTTP timeout 8s).
+_STATUS_CACHE_TTL = 15.0
 
 
 def apply_platform_gateway_ib_heartbeat_overlay(
@@ -303,10 +304,33 @@ def get_status(request: Request) -> Dict[str, Any]:
         except Exception:
             caret_syms = []
         reference_indices = augment_reference_indices_with_caret_symbols(reference_indices, caret_syms)
-        accounts = reader.get_accounts_from_tables()
-        if accounts is None:
+        # Prefer light accounts on /status: skip correlated position↔exec SQL that
+        # routinely exceeds platform probe HTTP timeout (8s). Full detail remains on
+        # dedicated portfolio APIs / ?include_accounts=1.
+        accounts: list = []
+        accounts_fetched_at = None
+        try:
+            accounts_fetched_at = reader.get_accounts_fetched_at()
+        except Exception:
+            accounts_fetched_at = None
+        include_full = (
+            getattr(request.app.state, "status_include_accounts", False) is True
+            or request.query_params.get("include_accounts") == "1"
+        )
+        try:
+            if include_full and hasattr(reader, "get_accounts_from_tables"):
+                accounts = reader.get_accounts_from_tables(include_position_exec_times=True) or []
+            elif hasattr(reader, "get_accounts_from_tables"):
+                accounts = reader.get_accounts_from_tables(include_position_exec_times=False) or []
+        except TypeError:
+            # Older core without kwargs — skip rather than wedge /status.
+            try:
+                if include_full:
+                    accounts = reader.get_accounts_from_tables() or []
+            except Exception:
+                accounts = []
+        except Exception:
             accounts = []
-        accounts_fetched_at = reader.get_accounts_fetched_at()
         ib_config = reader.get_ib_config() or {}
         open_orders = reader.get_open_orders()
 
@@ -455,7 +479,12 @@ def get_status(request: Request) -> Dict[str, Any]:
                 except Exception:
                     _massive_r = None
             if _rurl:
-                _r = redis_mod.from_url(_rurl, decode_responses=True)
+                _r = redis_mod.from_url(
+                    _rurl,
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2,
+                )
                 _mh = hgetall_polygon_ws_status(_r, r_massive=_massive_r)
                 if _mh:
                     _now = time.time()
@@ -520,7 +549,12 @@ def get_status(request: Request) -> Dict[str, Any]:
             _ah: Dict[str, str] = {}
             if _ib_rurl and _ib_rurl != _rurl:
                 try:
-                    _ib_r = redis_mod.from_url(_ib_rurl, decode_responses=True)
+                    _ib_r = redis_mod.from_url(
+                        _ib_rurl,
+                        decode_responses=True,
+                        socket_connect_timeout=2,
+                        socket_timeout=2,
+                    )
                 except Exception:
                     _ib_r = _r
             elif rq is not None and getattr(rq, "ib_redis_client", None) is not None:
