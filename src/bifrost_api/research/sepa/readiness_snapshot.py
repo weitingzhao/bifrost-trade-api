@@ -147,7 +147,7 @@ def fetch_sepa_readiness_summary(status_config: dict) -> Dict[str, Any]:
         if isinstance(out, dict) and out.get("ok") is not False and "data_catalog" not in out:
             out = {**out, "data_catalog": READINESS_DATA_CATALOG}
         return out if isinstance(out, dict) else {"ok": False, "error": "invalid plugin response"}
-    except Exception as e:
+            except Exception as e:
         logger.warning("plugin readiness summary failed: %s", e)
         return {"ok": False, "error": f"Market Data Plugin summary unavailable: {e}"}
 
@@ -275,7 +275,7 @@ def get_sepa_price_gap_symbols(
         for g in gaps:
             s = g.get("symbol") if isinstance(g, dict) else None
             if s:
-                symbols.append(str(s).strip().upper())
+            symbols.append(str(s).strip().upper())
         batches: List[List[str]] = [
             symbols[i : i + batch_size] for i in range(0, len(symbols), batch_size)
         ]
