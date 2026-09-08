@@ -262,13 +262,11 @@ def create_app(
         config_router,
         core_router,
         daemon_router,
-        logs_router,
         messages_router,
         status_router,
     )
 
     app.include_router(core_router)
-    app.include_router(logs_router)
     app.include_router(messages_router)
     app.include_router(status_router)
     app.include_router(daemon_router)
