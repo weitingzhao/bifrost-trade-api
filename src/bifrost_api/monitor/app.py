@@ -15,14 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from bifrost_core.config.startup import (
-    config_profile_from_resolved_path,
-    docs_api_console_stream_key,
-    monitor_api_console_stream_key,
-    ops_api_console_stream_key,
-    portfolio_api_console_stream_key,
-    trading_api_console_stream_key,
-)
+from bifrost_core.config.startup import config_profile_from_resolved_path
 from bifrost_core.ib_operator.client import IbOperatorClient
 from bifrost_core.monitor.reader import StatusReader
 from bifrost_core.observability.prometheus import instrument_app
@@ -221,11 +214,6 @@ def create_app(
         if resolved_config_path
         else None
     )
-    app.state.ops_log_stream_key = ops_api_console_stream_key(app.state.bifrost_config_profile)
-    app.state.monitor_log_stream_key = monitor_api_console_stream_key(app.state.bifrost_config_profile)
-    app.state.docs_log_stream_key = docs_api_console_stream_key(app.state.bifrost_config_profile)
-    app.state.trading_log_stream_key = trading_api_console_stream_key(app.state.bifrost_config_profile)
-    app.state.portfolio_log_stream_key = portfolio_api_console_stream_key(app.state.bifrost_config_profile)
     _fe = (merged_config or {}).get("frontend") or {}
 
     def _fe_str(key: str) -> Optional[str]:
