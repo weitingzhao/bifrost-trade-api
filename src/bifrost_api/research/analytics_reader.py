@@ -162,10 +162,10 @@ def fetch_criteria_stats() -> Dict[str, Any]:
 def _fetch_criteria_stats_direct() -> Dict[str, Any]:
     with get_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            try:
-                cur.execute("SELECT domain, stats FROM dw_stock.mart_sepa_criteria_stats")
-            except Exception:
-                cur.execute("SELECT domain, stats FROM dw_stock.mart_sepa_criteria_stats")
+            # No retry: a failed statement aborts the transaction, so re-running it
+            # on this cursor can only replace the real error with "current
+            # transaction is aborted" -- which is all the Screener ever showed.
+            cur.execute("SELECT domain, stats FROM dw_stock.mart_sepa_criteria_stats")
             rows = cur.fetchall() or []
     result: Dict[str, Any] = {}
     for row in rows:

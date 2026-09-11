@@ -52,3 +52,32 @@ def test_fetch_screener_wide_unwraps_rows(monkeypatch: pytest.MonkeyPatch) -> No
         rows = ar.fetch_screener_wide(symbols=["aapl"])
 
     assert rows == [{"symbol": "AAPL"}]
+
+
+def test_direct_criteria_stats_surfaces_the_first_error() -> None:
+    """The direct-PG fallback must raise the real error, not a masked one.
+
+    It used to catch any failure and re-run the identical SELECT on the same
+    cursor. In PostgreSQL the first failure aborts the transaction, so the retry
+    can never succeed -- it only replaced "relation ... does not exist" with
+    "current transaction is aborted, commands ignored until end of transaction
+    block", which is what the Stock Screener showed on 2026-09-11 while the real
+    cause (a dbt CASCADE had dropped the view) stayed hidden.
+    """
+    cur = MagicMock()
+    cur.__enter__.return_value = cur
+    cur.__exit__.return_value = False
+    cur.execute.side_effect = [
+        RuntimeError('relation "dw_stock.mart_sepa_criteria_stats" does not exist'),
+        RuntimeError("current transaction is aborted, commands ignored until end of transaction block"),
+    ]
+    conn = MagicMock()
+    conn.cursor.return_value = cur
+    get_conn = MagicMock()
+    get_conn.return_value.__enter__.return_value = conn
+    get_conn.return_value.__exit__.return_value = False
+
+    with patch.object(ar, "get_conn", get_conn):
+        with pytest.raises(RuntimeError, match="does not exist"):
+            ar._fetch_criteria_stats_direct()
+    assert cur.execute.call_count == 1
