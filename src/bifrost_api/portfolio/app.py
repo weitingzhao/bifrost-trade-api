@@ -60,9 +60,15 @@ def create_portfolio_app(
 
     app.state.audit_store = AuditStore.from_config(_cfg_holder)
 
-    from bifrost_api.portfolio.routers import portfolio_model_router, portfolio_config_router
+    from bifrost_api.portfolio.routers import (
+        portfolio_config_router,
+        portfolio_model_router,
+        portfolio_short_legs_router,
+    )
+
     app.include_router(portfolio_model_router)
     app.include_router(portfolio_config_router)
+    app.include_router(portfolio_short_legs_router)
 
     @app.get("/health")
     def portfolio_health() -> Any:
