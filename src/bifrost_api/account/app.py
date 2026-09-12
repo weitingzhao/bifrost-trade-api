@@ -74,12 +74,22 @@ def create_account_app(
     app.state.audit_store = AuditStore.from_config(_cfg_holder)
 
     from bifrost_api.trading.routers import executions_router
-    from bifrost_api.portfolio.routers import portfolio_config_router, portfolio_model_router
+    from bifrost_api.portfolio.routers import (
+        portfolio_config_router,
+        portfolio_model_router,
+        portfolio_short_legs_router,
+    )
     from bifrost_api.strategy.routers import strategies_router
 
     app.include_router(executions_router)
+    # Phase B merged the portfolio domain in here, and this app -- not
+    # `create_portfolio_app` -- is what serves /api/portfolio in every deployed
+    # environment. A portfolio router added only to the other factory is dead
+    # code with a green test suite; `tests/test_account_app_portfolio_routes.py`
+    # is what stops that happening twice.
     app.include_router(portfolio_model_router)
     app.include_router(portfolio_config_router)
+    app.include_router(portfolio_short_legs_router)
     # Phase B Wave B3: strategy CRUD absorbed into account-service
     app.include_router(strategies_router)
 
