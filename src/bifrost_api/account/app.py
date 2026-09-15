@@ -79,7 +79,7 @@ def create_account_app(
         portfolio_model_router,
         portfolio_short_legs_router,
     )
-    from bifrost_api.strategy.routers import strategies_router
+    from bifrost_api.strategy.routers import plans_router, strategies_router
 
     app.include_router(executions_router)
     # Phase B merged the portfolio domain in here, and this app -- not
@@ -92,6 +92,7 @@ def create_account_app(
     app.include_router(portfolio_short_legs_router)
     # Phase B Wave B3: strategy CRUD absorbed into account-service
     app.include_router(strategies_router)
+    app.include_router(plans_router)
 
     @app.get("/health")
     def account_health() -> Any:

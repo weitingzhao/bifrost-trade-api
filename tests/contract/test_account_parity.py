@@ -33,3 +33,23 @@ def test_account_openapi_includes_merged_paths() -> None:
     assert any("/executions" in p or p.startswith("/executions") for p in paths)
     assert any("portfolio" in p or "position-categories" in p for p in paths)
     assert any("/strategies" in p or p.startswith("/strategies") for p in paths)
+
+
+def test_account_openapi_carries_every_plan_route() -> None:
+    """`/api/strategy/*` is served by this app, so the plan routes must be here.
+
+    Named one by one: a router mounted on the wrong factory passes a loose
+    "any /strategies path" check and 404s in every environment.
+    """
+    paths = _client().get("/account/openapi.json").json()["paths"]
+    for path, method in (
+        ("/strategies/plans", "get"),
+        ("/strategies/plans", "post"),
+        ("/strategies/plans/{strategy_plan_id}", "get"),
+        ("/strategies/plans/{strategy_plan_id}", "put"),
+        ("/strategies/plans/{strategy_plan_id}/intend", "post"),
+        ("/strategies/plans/{strategy_plan_id}/link-fill", "post"),
+        ("/strategies/plans/{strategy_plan_id}/cancel", "post"),
+    ):
+        assert path in paths, path
+        assert method in paths[path], f"{method.upper()} {path}"

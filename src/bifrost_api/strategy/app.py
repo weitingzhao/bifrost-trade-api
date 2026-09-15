@@ -56,8 +56,9 @@ def create_strategy_app(
     reader._config["server"] = _cfg_holder["server"]
     app.state.bifrost_strategy_port = int(_cfg_holder["server"]["strategy_port"])
 
-    from bifrost_api.strategy.routers import strategies_router
+    from bifrost_api.strategy.routers import plans_router, strategies_router
     app.include_router(strategies_router)
+    app.include_router(plans_router)
 
     from bifrost_api.ops.services.audit_store import AuditStore
 
