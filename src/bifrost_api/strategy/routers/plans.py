@@ -56,21 +56,32 @@ def list_plans_endpoint(
     limit: int = Query(PLANS_LIMIT_DEFAULT, ge=1, le=PLANS_LIMIT_MAX),
 ) -> Dict[str, Any]:
     """Plans, newest first. `status` filters the stored status; each row also
-    carries `effective_status`, where an intent past its expiry reads expired."""
-    items = strategy_plan_module.list_plans(
-        _read_config(request),
-        status=status,
-        symbol=symbol,
-        account_id=account_id,
-        limit=limit,
-    )
+    carries `effective_status`, where an intent past its expiry reads expired.
+
+    A read that fails is a 500. An empty list means the account has no plans and
+    nothing else -- it must never stand in for a query that did not run."""
+    try:
+        items = strategy_plan_module.list_plans(
+            _read_config(request),
+            status=status,
+            symbol=symbol,
+            account_id=account_id,
+            limit=limit,
+        )
+    except Exception as e:
+        logger.warning("list_plans failed: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to read strategy plans") from e
     return {"items": items, "count": len(items)}
 
 
 @router.get("/plans/{strategy_plan_id}")
 def get_plan_endpoint(request: Request, strategy_plan_id: int) -> Dict[str, Any]:
-    """One plan by id. 404 when there is no such row."""
-    row = strategy_plan_module.get_plan(_read_config(request), strategy_plan_id)
+    """One plan by id. 404 when there is no such row, 500 when the read fails."""
+    try:
+        row = strategy_plan_module.get_plan(_read_config(request), strategy_plan_id)
+    except Exception as e:
+        logger.warning("get_plan failed: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to read strategy plan") from e
     if row is None:
         raise HTTPException(status_code=404, detail="Strategy plan not found")
     return row

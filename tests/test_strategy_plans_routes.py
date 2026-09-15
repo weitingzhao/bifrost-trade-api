@@ -71,6 +71,26 @@ def test_reads_without_postgres_are_empty_not_broken() -> None:
     assert r.json() == {"items": [], "count": 0}
 
 
+def test_a_read_that_fails_is_500_not_an_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty list is a statement about the account, never about the query.
+
+    With `strategy_plan` missing from an environment, a swallowed read error
+    returned `{"items": [], "count": 0}` and that passed as an acceptance check
+    for a schema which had never been applied.
+    """
+
+    def _broken(*_a: Any, **_kw: Any) -> Any:
+        raise RuntimeError('relation "strategy_plan" does not exist')
+
+    monkeypatch.setattr(strategy_plan_module, "list_plans", _broken)
+    monkeypatch.setattr(strategy_plan_module, "get_plan", _broken)
+    client = _account_client(control_via_db={"sink": "postgres"})
+    listed = client.get("/strategies/plans")
+    assert listed.status_code == 500
+    assert listed.json()["detail"] == "Failed to read strategy plans"
+    assert client.get("/strategies/plans/1").status_code == 500
+
+
 def test_a_rule_refusal_becomes_409_with_the_reason(monkeypatch: pytest.MonkeyPatch) -> None:
     reason = "Write a target, a stop or an exit-by date."
 
