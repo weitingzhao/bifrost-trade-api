@@ -92,12 +92,17 @@ def get_option_snapshots_latest(
     status_config: dict,
     contract_keys: List[str],
     source: str = "massive",
+    *,
+    raise_errors: bool = False,
 ) -> List[Dict[str, Any]]:
     """Latest snapshot per contract_key from Plugin API.
 
     Accepts IB keys (``SYM|OPT|…``) and Polygon tickers (``O:…``). Always returns
     IB-shaped ``contract_key`` so Discovery/Screener ``parse_contract_key`` works.
     ``source`` is accepted for API compatibility but ignored.
+
+    A failed fetch returns ``[]`` — indistinguishable from "no rows" — unless
+    ``raise_errors`` is set, in which case the error propagates.
     """
     if not contract_keys:
         return []
@@ -107,6 +112,8 @@ def get_option_snapshots_latest(
     try:
         return market_data_client.fetch_option_chain_latest(keys)
     except Exception as e:
+        if raise_errors:
+            raise
         logger.warning("get_option_snapshots_latest failed: %s", e)
         return []
 
@@ -161,14 +168,21 @@ def is_us_equity_regular_session_et(now: Optional[datetime] = None) -> bool:
     return time_of_day(9, 30) <= t < time_of_day(16, 0)
 
 
-def get_option_expirations_from_contracts_db(status_config: dict, symbol: str) -> List[str]:
-    """Distinct expirations (YYYYMMDD) from market.option_contract for an underlying."""
+def get_option_expirations_from_contracts_db(
+    status_config: dict, symbol: str, *, raise_errors: bool = False
+) -> List[str]:
+    """Distinct expirations (YYYYMMDD) from market.option_contract for an underlying.
+
+    A failed fetch returns ``[]`` unless ``raise_errors`` is set.
+    """
     sym = (symbol or "").strip().upper()
     if not sym:
         return []
     try:
         return market_data_client.fetch_option_expirations_yyyymmdd(sym)
     except Exception as e:
+        if raise_errors:
+            raise
         logger.warning("get_option_expirations_from_contracts_db failed: %s", e)
         return []
 

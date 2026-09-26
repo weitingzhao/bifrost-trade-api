@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import json
+import urllib.error
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
@@ -77,12 +79,20 @@ def test_fetch_stock_bars_daily_close(mock_urlopen: MagicMock):
 
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
 def test_fetch_spy_close_series(mock_urlopen: MagicMock):
-    payload = {"closes": [450.0, 451.5, 449.8, 452.3]}
+    """The plugin answers ``{ok, values, count}`` (stocks_db.py ``/bars/daily/spy-close``)."""
+    payload = {"ok": True, "values": [450.0, 451.5, 449.8, 452.3], "count": 4}
     mock_urlopen.return_value = _FakeResponse(payload)
 
     result = market_data_client.fetch_spy_close_series(days=420)
 
     assert result == [450.0, 451.5, 449.8, 452.3]
+
+
+@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
+def test_fetch_spy_close_series_legacy_closes_key(mock_urlopen: MagicMock):
+    mock_urlopen.return_value = _FakeResponse({"closes": [450.0, 451.5]})
+
+    assert market_data_client.fetch_spy_close_series(days=420) == [450.0, 451.5]
 
 
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
@@ -98,7 +108,7 @@ def test_fetch_stock_bars_daily_empty_response(mock_urlopen: MagicMock):
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
 def test_plugin_base_url_from_env(mock_urlopen: MagicMock, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MARKET_DATA_PLUGIN_URL", "http://custom-host:9999/market")
-    payload = {"closes": [100.0]}
+    payload = {"ok": True, "values": [100.0], "count": 1}
     mock_urlopen.return_value = _FakeResponse(payload)
 
     market_data_client.fetch_spy_close_series(days=100)
@@ -116,10 +126,11 @@ def test_plugin_base_url_from_env(mock_urlopen: MagicMock, monkeypatch: pytest.M
 
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
 def test_fetch_option_chain_latest(mock_urlopen: MagicMock):
-    payload = {"data": [
+    """The plugin answers ``{ok, rows, count}`` (options.py ``/chain/latest``)."""
+    payload = {"ok": True, "rows": [
         {"contract_key": "AAPL|OPT|20260919|150.0|C", "iv": 0.35, "delta": 0.55},
         {"contract_key": "AAPL|OPT|20260919|155.0|C", "iv": 0.32, "delta": 0.48},
-    ]}
+    ], "count": 2}
     mock_urlopen.return_value = _FakeResponse(payload)
 
     result = market_data_client.fetch_option_chain_latest(["AAPL|OPT|20260919|150.0|C", "AAPL|OPT|20260919|155.0|C"])
@@ -127,6 +138,24 @@ def test_fetch_option_chain_latest(mock_urlopen: MagicMock):
     assert len(result) == 2
     assert result[0]["iv"] == 0.35
     assert result[1]["contract_key"] == "AAPL|OPT|20260919|155.0|C"
+
+
+@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
+def test_fetch_option_chain_latest_legacy_data_key(mock_urlopen: MagicMock):
+    payload = {"data": [{"contract_key": "AAPL|OPT|20260919|150.0|C", "iv": 0.35}]}
+    mock_urlopen.return_value = _FakeResponse(payload)
+
+    result = market_data_client.fetch_option_chain_latest(["AAPL|OPT|20260919|150.0|C"])
+
+    assert [r["contract_key"] for r in result] == ["AAPL|OPT|20260919|150.0|C"]
+
+
+@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
+def test_fetch_option_chain_latest_tables_missing(mock_urlopen: MagicMock):
+    payload = {"ok": True, "rows": [], "count": 0, "note": "required tables missing"}
+    mock_urlopen.return_value = _FakeResponse(payload)
+
+    assert market_data_client.fetch_option_chain_latest(["AAPL|OPT|20260919|150.0|C"]) == []
 
 
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
@@ -139,8 +168,8 @@ def test_fetch_option_chain_latest_empty_keys(mock_urlopen: MagicMock):
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
 def test_fetch_option_chain_latest_chunking(mock_urlopen: MagicMock):
     """Keys exceeding batch size are sent in multiple requests."""
-    batch1_payload = {"data": [{"contract_key": f"K{i}", "iv": 0.3} for i in range(120)]}
-    batch2_payload = {"data": [{"contract_key": "K120", "iv": 0.25}]}
+    batch1_payload = {"ok": True, "rows": [{"contract_key": f"K{i}", "iv": 0.3} for i in range(120)], "count": 120}
+    batch2_payload = {"ok": True, "rows": [{"contract_key": "K120", "iv": 0.25}], "count": 1}
     mock_urlopen.side_effect = [_FakeResponse(batch1_payload), _FakeResponse(batch2_payload)]
 
     keys = [f"K{i}" for i in range(121)]
@@ -152,9 +181,10 @@ def test_fetch_option_chain_latest_chunking(mock_urlopen: MagicMock):
 
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
 def test_fetch_option_chain_eod(mock_urlopen: MagicMock):
-    payload = {"data": [
+    """The plugin answers ``{ok, rows, count}`` (options.py ``/chain/eod``)."""
+    payload = {"ok": True, "rows": [
         {"snap_day": "2026-08-01", "iv": 0.33, "underlying_price": 150.0, "contract_key": "K1"},
-    ]}
+    ], "count": 1}
     mock_urlopen.return_value = _FakeResponse(payload)
 
     result = market_data_client.fetch_option_chain_eod(["K1"], since="2026-07-01T00:00:00")
@@ -165,7 +195,7 @@ def test_fetch_option_chain_eod(mock_urlopen: MagicMock):
 
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
 def test_fetch_option_chain_eod_no_since(mock_urlopen: MagicMock):
-    payload = {"data": [{"snap_day": "2026-08-01", "iv": 0.33, "contract_key": "K1"}]}
+    payload = {"ok": True, "rows": [{"snap_day": "2026-08-01", "iv": 0.33, "contract_key": "K1"}], "count": 1}
     mock_urlopen.return_value = _FakeResponse(payload)
 
     result = market_data_client.fetch_option_chain_eod(["K1"])
@@ -177,16 +207,31 @@ def test_fetch_option_chain_eod_no_since(mock_urlopen: MagicMock):
 
 
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
+def test_fetch_option_chain_eod_legacy_data_key(mock_urlopen: MagicMock):
+    mock_urlopen.return_value = _FakeResponse({"data": [{"snap_day": "2026-08-01", "contract_key": "K1"}]})
+
+    assert len(market_data_client.fetch_option_chain_eod(["K1"])) == 1
+
+
+@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
 def test_fetch_option_oi(mock_urlopen: MagicMock):
-    payload = {"data": [
+    """The plugin answers ``{symbol, expiry, rows, count}`` (options.py ``/oi``)."""
+    payload = {"symbol": "AAPL", "expiry": "2026-09-19", "rows": [
         {"option_ticker": "O:AAPL260919C00150000", "open_interest": 5000, "trade_date": "2026-08-13"},
-    ]}
+    ], "count": 1}
     mock_urlopen.return_value = _FakeResponse(payload)
 
     result = market_data_client.fetch_option_oi("AAPL", expiry="20260919", limit=50, date_from="2026-08-01", date_to="2026-08-13")
 
     assert len(result) == 1
     assert result[0]["open_interest"] == 5000
+
+
+@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
+def test_fetch_option_oi_legacy_data_key(mock_urlopen: MagicMock):
+    mock_urlopen.return_value = _FakeResponse({"data": [{"option_ticker": "O:AAPL260919C00150000", "open_interest": 5000}]})
+
+    assert len(market_data_client.fetch_option_oi("AAPL")) == 1
 
 
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
@@ -237,7 +282,7 @@ def test_fetch_option_expirations_empty(mock_urlopen: MagicMock):
 
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
 def test_get_option_snapshots_latest_plugin_mode(mock_urlopen: MagicMock):
-    payload = {"data": [{"contract_key": "AAPL|OPT|20260919|150.0|C", "iv": 0.35}]}
+    payload = {"ok": True, "rows": [{"contract_key": "AAPL|OPT|20260919|150.0|C", "iv": 0.35}], "count": 1}
     mock_urlopen.return_value = _FakeResponse(payload)
 
     result = get_option_snapshots_latest({"postgres": {"host": "localhost"}}, ["AAPL|OPT|20260919|150.0|C"])
@@ -249,7 +294,7 @@ def test_get_option_snapshots_latest_plugin_mode(mock_urlopen: MagicMock):
 
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
 def test_get_option_snapshots_eod_plugin_mode(mock_urlopen: MagicMock):
-    payload = {"data": [{"snap_day": "2026-08-01", "iv": 0.33, "contract_key": "K1"}]}
+    payload = {"ok": True, "rows": [{"snap_day": "2026-08-01", "iv": 0.33, "contract_key": "K1"}], "count": 1}
     mock_urlopen.return_value = _FakeResponse(payload)
 
     from datetime import datetime
@@ -261,7 +306,7 @@ def test_get_option_snapshots_eod_plugin_mode(mock_urlopen: MagicMock):
 
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
 def test_get_option_open_interest_daily_plugin_mode(mock_urlopen: MagicMock):
-    payload = {"data": [{"option_ticker": "O:AAPL260919C00150000", "open_interest": 5000}]}
+    payload = {"symbol": "AAPL", "expiry": "2026-09-19", "rows": [{"option_ticker": "O:AAPL260919C00150000", "open_interest": 5000}], "count": 1}
     mock_urlopen.return_value = _FakeResponse(payload)
 
     result = get_option_open_interest_daily({"postgres": {"host": "localhost"}}, "AAPL", expiry="20260919")
@@ -269,6 +314,34 @@ def test_get_option_open_interest_daily_plugin_mode(mock_urlopen: MagicMock):
     assert len(result) == 1
     assert result[0]["open_interest"] == 5000
     mock_urlopen.assert_called_once()
+
+
+def _http_500() -> urllib.error.HTTPError:
+    return urllib.error.HTTPError("http://plugin/market/options/chain/latest", 500, "Internal Server Error", {}, io.BytesIO(b""))  # type: ignore[arg-type]
+
+
+@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
+def test_get_option_snapshots_latest_swallows_errors_by_default(mock_urlopen: MagicMock):
+    mock_urlopen.side_effect = _http_500()
+
+    assert get_option_snapshots_latest({}, ["AAPL|OPT|20260919|150.0|C"]) == []
+
+
+@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
+def test_get_option_snapshots_latest_raise_errors(mock_urlopen: MagicMock):
+    mock_urlopen.side_effect = _http_500()
+
+    with pytest.raises(urllib.error.HTTPError):
+        get_option_snapshots_latest({}, ["AAPL|OPT|20260919|150.0|C"], raise_errors=True)
+
+
+@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
+def test_get_option_expirations_raise_errors(mock_urlopen: MagicMock):
+    mock_urlopen.side_effect = TimeoutError("timed out")
+
+    assert get_option_expirations_from_contracts_db({}, "AAPL") == []
+    with pytest.raises(TimeoutError):
+        get_option_expirations_from_contracts_db({}, "AAPL", raise_errors=True)
 
 
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")

@@ -158,6 +158,12 @@ def _get_iv_history_series(
     return sorted(series)
 
 
+def _fetch_error(e: Exception) -> str:
+    """Short reason for a failed plugin call, e.g. ``HTTPError: HTTP Error 500: …``."""
+    msg = str(e).strip()
+    return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
+
+
 def _iv_percentile(iv: float, sorted_series: List[float]) -> Optional[float]:
     """Rank of iv in sorted historical series (0–100); None if insufficient data."""
     if len(sorted_series) < 5:
@@ -193,9 +199,14 @@ def _scan_csp(
 
     spot = _get_spot(sym, request)
 
-    all_exps_raw = get_option_expirations_from_contracts_db(db, sym)
+    # A failed plugin call and an empty answer used to read the same ("No snapshot
+    # data"), so an outage looked like missing data. The warning names which.
+    try:
+        all_exps_raw = get_option_expirations_from_contracts_db(db, sym, raise_errors=True)
+    except Exception as e:
+        return None, f"Expirations fetch failed (Market Data Plugin /options/expirations/yyyymmdd): {_fetch_error(e)}"
     if not all_exps_raw:
-        return None, "No snapshot data — run Market Data Plugin sync first"
+        return None, "No option contracts on file — run Market Data Plugin sync first"
 
     all_exps = [_norm_expiry_key(e) for e in all_exps_raw]
     all_exps = [e for e in all_exps if len(e) == 8 and e.isdigit()]
@@ -233,7 +244,10 @@ def _scan_csp(
             all_keys.append(k)
             key_meta[k] = (exp, dte)
 
-    rows = get_option_snapshots_latest(db, all_keys, source=src)
+    try:
+        rows = get_option_snapshots_latest(db, all_keys, source=src, raise_errors=True)
+    except Exception as e:
+        return None, f"Snapshot fetch failed (Market Data Plugin /options/chain/latest): {_fetch_error(e)}"
     if not rows:
         return None, "No snapshot data — run Market Data Plugin sync first"
 

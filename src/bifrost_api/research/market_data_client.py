@@ -58,6 +58,19 @@ def _post_json(path: str, body: dict[str, Any], timeout: int = 30) -> dict[str, 
         return json.loads(resp.read())
 
 
+def _rows(data: dict[str, Any]) -> List[Dict[str, Any]]:
+    """Row list of a plugin list endpoint.
+
+    The plugin's option routes answer ``{"ok": true, "rows": [...], "count": N}``;
+    reading ``data`` there returned ``[]`` for every call. ``data`` is kept as a
+    fallback for older plugin builds.
+    """
+    rows = data.get("rows")
+    if rows is None:
+        rows = data.get("data")
+    return rows or []
+
+
 def fetch_stock_bars_daily(symbols: List[str], days: int = 400) -> Dict[str, List[Dict[str, Any]]]:
     """GET /stocks/db/bars/daily -> {symbol: [bars]}"""
     data = _get_json("/stocks/db/bars/daily", {"symbols": ",".join(symbols), "days": str(days)})
@@ -71,16 +84,19 @@ def fetch_stock_bars_daily_close(symbols: List[str], days: int = 420) -> Dict[st
 
 
 def fetch_spy_close_series(days: int = 420) -> List[float]:
-    """GET /stocks/db/bars/daily/spy-close -> [float]"""
+    """GET /stocks/db/bars/daily/spy-close -> {ok, values: [float], count}"""
     data = _get_json("/stocks/db/bars/daily/spy-close", {"days": str(days)})
-    return data.get("closes", [])
+    values = data.get("values")
+    if values is None:
+        values = data.get("closes")
+    return values or []
 
 
 # ─── Option endpoints ─────────────────────────────────────────────────────────
 
 
 def fetch_option_chain_latest(keys: List[str]) -> List[Dict[str, Any]]:
-    """GET /options/chain/latest?keys=KEY1,KEY2,... → [{contract_key, iv, delta, ...}]
+    """GET /options/chain/latest?keys=KEY1,KEY2,... → rows [{contract_key, iv, delta, ...}]
 
     Chunks into batches of _OPTION_CHAIN_BATCH_SIZE if needed.
     Plugin API accepts both IB and Polygon key formats.
@@ -91,12 +107,12 @@ def fetch_option_chain_latest(keys: List[str]) -> List[Dict[str, Any]]:
     for i in range(0, len(keys), _OPTION_CHAIN_BATCH_SIZE):
         batch = keys[i : i + _OPTION_CHAIN_BATCH_SIZE]
         data = _get_json("/options/chain/latest", {"keys": ",".join(batch)}, timeout=45)
-        out.extend(data.get("data", []))
+        out.extend(_rows(data))
     return out
 
 
 def fetch_option_chain_eod(keys: List[str], since: Optional[str] = None) -> List[Dict[str, Any]]:
-    """GET /options/chain/eod?keys=...&since=... → [{snap_day, iv, underlying_price, ...}]
+    """GET /options/chain/eod?keys=...&since=... → rows [{snap_day, iv, underlying_price, ...}]
 
     Chunks into batches of _OPTION_CHAIN_BATCH_SIZE if needed.
     """
@@ -109,7 +125,7 @@ def fetch_option_chain_eod(keys: List[str], since: Optional[str] = None) -> List
         if since:
             params["since"] = since
         data = _get_json("/options/chain/eod", params, timeout=45)
-        out.extend(data.get("data", []))
+        out.extend(_rows(data))
     return out
 
 
@@ -120,7 +136,7 @@ def fetch_option_oi(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """GET /options/oi?symbol=...&expiry=...&... → [{option_ticker, open_interest, ...}]"""
+    """GET /options/oi?symbol=...&expiry=...&... → {symbol, expiry, rows: [{option_ticker, open_interest, ...}], count}"""
     params: Dict[str, str] = {"symbol": symbol, "limit": str(limit)}
     if expiry:
         params["expiry"] = expiry
@@ -129,7 +145,7 @@ def fetch_option_oi(
     if date_to:
         params["date_to"] = date_to
     data = _get_json("/options/oi", params)
-    return data.get("data", [])
+    return _rows(data)
 
 
 def fetch_option_expirations_yyyymmdd(symbol: str) -> List[str]:
