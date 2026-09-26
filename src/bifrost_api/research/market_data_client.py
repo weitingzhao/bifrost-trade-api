@@ -455,26 +455,6 @@ def fetch_sepa_short_interest_latest(
     return out
 
 
-def fetch_sepa_short_volume_recent(
-    symbols: List[str],
-    max_days: int = 10,
-) -> Dict[str, List[Dict[str, Any]]]:
-    """GET /stocks/fundamentals/sepa/short-volume-recent → {symbol: [rows]}"""
-    if not symbols:
-        return {}
-    out: Dict[str, List[Dict[str, Any]]] = {}
-    for i in range(0, len(symbols), _SEPA_BATCH_SIZE):
-        batch = symbols[i : i + _SEPA_BATCH_SIZE]
-        data = _get_json(
-            "/stocks/fundamentals/sepa/short-volume-recent",
-            {"symbols": ",".join(batch), "max_days": str(max_days)},
-            timeout=45,
-        )
-        for sym, rows in (data.get("data") or {}).items():
-            out.setdefault(sym, []).extend(rows)
-    return out
-
-
 def fetch_sepa_gaps(
     report_type: str,
     limit: int = 2000,

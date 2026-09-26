@@ -114,6 +114,31 @@ _SHORT_VOLUME_FIELDS: Dict[str, Tuple[str, ...]] = {
 }
 
 
+def _as_float(v: Any) -> Optional[float]:
+    try:
+        return float(v) if v is not None and v != "" else None
+    except (TypeError, ValueError):
+        return None
+
+
+def short_volume_ratio(flat: Dict[str, Any]) -> Optional[float]:
+    """Short volume as a ratio of total volume, from a row unpacked with ``_SHORT_VOLUME_FIELDS``.
+
+    The vendor's own ``short_volume_ratio`` is a percent — AAPL on 2026-09-25 is
+    58.33, against a computed 0.5833 — while the Stock Inspector renders this field
+    times 100, so passing the vendor's number through showed 5833.0%. Computed
+    from the two volumes, falling back to the vendor's percent over 100: the rule
+    the plugin's /stocks/fundamentals/db/short-volume (0.41.8) and Research's
+    ``stg_short_volume`` use, so the three readers give one number.
+    """
+    short = _as_float(flat.get("short_volume"))
+    total = _as_float(flat.get("total_volume"))
+    if short and total:
+        return short / total
+    pct = _as_float(flat.get("short_volume_ratio"))
+    return pct / 100 if pct is not None else None
+
+
 def _json_scalar(v: Any) -> Any:
     if isinstance(v, dict) and "value" in v:
         return v.get("value")
@@ -470,34 +495,6 @@ def fetch_short_interest_latest_batch(
         for r in rows:
             d = {k: v for k, v in r.items() if k != "data"}
             flat = unpack_financial_data(r.get("data"), _SHORT_INTEREST_FIELDS)
-            enriched.append({**d, **flat})
-        out[sym] = enriched
-    return out
-
-
-def fetch_short_volume_recent_batch(
-    cur: Any = None,
-    symbols: Optional[List[str]] = None,
-    *,
-    max_days: int = 10,
-) -> Dict[str, List[Dict[str, Any]]]:
-    """Batch-read latest N short-volume rows per symbol.
-
-    Returns symbol -> list of dicts (ascending trade_date).
-    ``cur`` kept for signature compat but ignored.
-    """
-    from bifrost_api.research.market_data_client import fetch_sepa_short_volume_recent
-
-    syms = symbols or []
-    if not syms:
-        return {}
-    raw = fetch_sepa_short_volume_recent(syms, max_days=max_days)
-    out: Dict[str, List[Dict[str, Any]]] = {}
-    for sym, rows in raw.items():
-        enriched: List[Dict[str, Any]] = []
-        for r in rows:
-            d = {k: v for k, v in r.items() if k != "data"}
-            flat = unpack_financial_data(r.get("data"), _SHORT_VOLUME_FIELDS)
             enriched.append({**d, **flat})
         out[sym] = enriched
     return out

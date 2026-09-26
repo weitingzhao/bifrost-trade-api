@@ -1164,6 +1164,7 @@ def get_symbol_statements(
             _RATIOS_FIELDS,
             _SHORT_INTEREST_FIELDS,
             _SHORT_VOLUME_FIELDS,
+            short_volume_ratio,
             unpack_financial_data,
         )
         from bifrost_api.research.market_data_client import fetch_sepa_financials
@@ -1241,7 +1242,7 @@ def get_symbol_statements(
             short_volume.append({
                 "trade_date": r.get("period_date"),
                 "short_volume": flat.get("short_volume"),
-                "short_volume_ratio": flat.get("short_volume_ratio"),
+                "short_volume_ratio": short_volume_ratio(flat),
                 "total_volume": flat.get("total_volume"),
             })
 
