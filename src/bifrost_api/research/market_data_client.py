@@ -250,12 +250,6 @@ def fetch_chain_by_expiry(
 # ─── Readiness data endpoints ────────────────────────────────────────────────
 
 
-def fetch_readiness_bar_aggregate(window_days: int = 420) -> Dict[str, Dict[str, Any]]:
-    """GET /readiness/bar-aggregate → {SYM: {bar_rows, first_bar_date, ...}}."""
-    resp = _get_json("/readiness/bar-aggregate", {"window_days": str(window_days)}, timeout=60)
-    return resp.get("symbols", {})
-
-
 def fetch_readiness_latest_bar(
     lookback_days: int = 90,
     symbols: Optional[List[str]] = None,

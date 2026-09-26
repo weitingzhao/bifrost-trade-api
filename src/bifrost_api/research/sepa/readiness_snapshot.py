@@ -108,17 +108,15 @@ READINESS_DATA_CATALOG: Dict[str, Any] = {
         },
         {
             "id": "v_sepa_symbol_price_readiness",
-            "object": "Plugin API /readiness/bar-aggregate",
-            "role": "Per-symbol bar counts and price_ready computed at query time via Plugin API.",
+            "object": "Plugin API /readiness/summary (price_readiness_live)",
+            "role": (
+                "Price readiness counted by the plugin from stock_daily per symbol: at least 240 "
+                "bars in 420 days, last bar within 7 days, no null close or volume."
+            ),
             "depends_on": ["stock_day"],
             "data_points": [
-                "symbol",
-                "bar_rows",
-                "first_bar_date",
-                "last_bar_date",
-                "null_close_rows",
-                "null_volume_rows",
-                "price_ready (derived)",
+                "total_symbols",
+                "price_ready",
             ],
         },
     ],
