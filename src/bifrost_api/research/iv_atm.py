@@ -6,7 +6,6 @@ the per-expiry ATM IV history lives in Research (``/analytics/options/atm-iv``).
 
 from __future__ import annotations
 
-from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 OPTION_SNAPSHOT_STRIKES_AROUND_ATM = 10  # strikes to each side of ATM (total 2*N+1 or capped)
@@ -99,75 +98,3 @@ def atm_iv_from_expiry_items(
     elif best_put is not None:
         atm_iv = best_put
     return atm_iv, best_call, best_put, best_strike
-
-
-def median_float(vals: List[float]) -> Optional[float]:
-    if not vals:
-        return None
-    s = sorted(vals)
-    m = len(s) // 2
-    if len(s) % 2:
-        return s[m]
-    return (s[m - 1] + s[m]) / 2.0
-
-
-def trade_date_to_date(val: Any) -> Optional[date]:
-    """Normalize snap_day / trade_date from DB or API to date."""
-    if val is None:
-        return None
-    if isinstance(val, datetime):
-        return val.date()
-    if isinstance(val, date):
-        return val
-    if isinstance(val, str):
-        try:
-            return datetime.strptime(val[:10], "%Y-%m-%d").date()
-        except ValueError:
-            return None
-    return None
-
-
-def eod_atm_report_rows_for_expiration(
-    exp: str,
-    key_exp_wide: Dict[str, str],
-    by_day: Dict[Any, List[Dict[str, Any]]],
-) -> List[Dict[str, Any]]:
-    """One row per snap_day with ATM IV (for report_option_atm_iv_daily upsert)."""
-    out: List[Dict[str, Any]] = []
-    for _sd in sorted(by_day.keys()):
-        day_rows = by_day[_sd]
-        rows_exp = [
-            r
-            for r in day_rows
-            if key_exp_wide.get(str(r.get("contract_key") or "")) == exp
-        ]
-        spots: List[float] = []
-        for r in rows_exp:
-            up = r.get("underlying_price")
-            if up is not None:
-                try:
-                    v = float(up)
-                except (TypeError, ValueError):
-                    continue
-                if v > 0:
-                    spots.append(v)
-        day_spot = median_float(spots)
-        if day_spot is None or day_spot <= 0:
-            continue
-        exp_iv = build_exp_iv_map(rows_exp, key_exp_wide, day_spot)
-        items = exp_iv.get(exp, [])
-        atm_d, ivc, ivp, stk = atm_iv_from_expiry_items(items)
-        if atm_d is None:
-            continue
-        td = trade_date_to_date(_sd)
-        if td is None:
-            continue
-        out.append({
-            "trade_date": td,
-            "atm_iv": float(atm_d),
-            "iv_call": ivc,
-            "iv_put": ivp,
-            "strike": stk,
-            "underlying_price": day_spot,
-        })
-    return out
