@@ -12,8 +12,9 @@ from __future__ import annotations
 import io
 import json
 import urllib.error
+import urllib.parse
 from datetime import date
-from typing import Any, Dict
+from typing import Any, Dict, List
 from unittest.mock import MagicMock, patch
 
 from bifrost_api.research.routers.screener import ScreenerRequest, _scan_csp
@@ -44,13 +45,19 @@ def _request(spot: float = _SPOT) -> MagicMock:
 
 
 def _plugin(routes: Dict[str, Any]):
-    """urlopen stand-in answering by path; a route value that is an exception is raised."""
+    """urlopen stand-in answering by path.
+
+    A route value that is an exception is raised; a callable is called with the
+    request's decoded query and its return value is the answer.
+    """
 
     def _urlopen(req, timeout=None):
         path = req.full_url.split("/market", 1)[1].split("?", 1)[0]
         answer = routes[path]
         if isinstance(answer, BaseException):
             raise answer
+        if callable(answer):
+            answer = answer(urllib.parse.parse_qs(urllib.parse.urlsplit(req.full_url).query))
         return _FakeResponse(answer)
 
     return _urlopen
@@ -88,6 +95,40 @@ def test_rows_shape_yields_contracts(mock_urlopen: MagicMock):
     assert group["contract_count"] == 2
     assert {c["strike"] for c in group["contracts"]} == {95.0, 90.0}
     assert all(c["expiration"] == _EXPIRY and c["dte"] == 20 for c in group["contracts"])
+
+
+@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
+def test_window_wider_than_one_chain_batch_screens_every_expiry(mock_urlopen: MagicMock):
+    # 8 expiries in DTE 7–120 × 21 put strikes = 168 keys: more than one 120-key
+    # batch. The screener used to ask only the first 120, so everything after
+    # the 6th expiry was never screened and nothing said so.
+    in_window = [
+        "20261009", "20261016", "20261023", "20261030",
+        "20261106", "20261120", "20261218", "20270115",
+    ]
+    outside = ["20261002", "20270219"]  # 6 and 146 DTE
+    batches: List[List[str]] = []
+
+    def _chain(query: Dict[str, List[str]]) -> Dict[str, Any]:
+        keys = query["keys"][0].split(",")
+        batches.append(keys)
+        rows = [{**_chain_row(0.0), "contract_key": k} for k in keys]
+        return {"ok": True, "rows": rows, "count": len(rows)}
+
+    mock_urlopen.side_effect = _plugin({
+        "/options/expirations/yyyymmdd": {"ok": True, "expirations": sorted(in_window + outside), "count": 10},
+        "/options/chain/latest": _chain,
+    })
+
+    body = ScreenerRequest(symbols=["XYZ"], dte_min=7, dte_max=120)
+    group, warn = _scan_csp("XYZ", body, {}, "massive", _TODAY, _request())
+
+    assert [len(b) for b in batches] == [120, 48]
+    assert warn is None
+    assert group is not None
+    assert group["contract_count"] == 168
+    assert {c["expiration"] for c in group["contracts"]} == set(in_window)
+    assert {c["dte"] for c in group["contracts"] if c["expiration"] == "20270115"} == {111}
 
 
 @patch("bifrost_api.research.market_data_client.urllib.request.urlopen")

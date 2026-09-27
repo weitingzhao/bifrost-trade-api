@@ -244,8 +244,10 @@ def _scan_csp(
             all_keys.append(k)
             key_meta[k] = (exp, dte)
 
+    # Every key in the window: 21 strikes × 6+ expiries passes the default
+    # 120-key cap, which used to drop the later expiries without a word.
     try:
-        rows = get_option_snapshots_latest(db, all_keys, source=src, raise_errors=True)
+        rows = get_option_snapshots_latest(db, all_keys, source=src, raise_errors=True, max_keys=None)
     except Exception as e:
         return None, f"Snapshot fetch failed (Market Data Plugin /options/chain/latest): {_fetch_error(e)}"
     if not rows:

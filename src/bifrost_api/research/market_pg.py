@@ -94,6 +94,7 @@ def get_option_snapshots_latest(
     source: str = "massive",
     *,
     raise_errors: bool = False,
+    max_keys: Optional[int] = 120,
 ) -> List[Dict[str, Any]]:
     """Latest snapshot per contract_key from Plugin API.
 
@@ -101,12 +102,17 @@ def get_option_snapshots_latest(
     IB-shaped ``contract_key`` so Discovery/Screener ``parse_contract_key`` works.
     ``source`` is accepted for API compatibility but ignored.
 
+    Only the first ``max_keys`` keys are asked for, silently. ``None`` asks for
+    all of them; the client splits the request into batches of 120.
+
     A failed fetch returns ``[]`` — indistinguishable from "no rows" — unless
     ``raise_errors`` is set, in which case the error propagates.
     """
     if not contract_keys:
         return []
-    keys = [k for k in contract_keys if k and str(k).strip()][:120]
+    keys = [k for k in contract_keys if k and str(k).strip()]
+    if max_keys is not None:
+        keys = keys[:max_keys]
     if not keys:
         return []
     try:
