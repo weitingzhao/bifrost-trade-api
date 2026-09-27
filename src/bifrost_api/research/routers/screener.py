@@ -5,7 +5,7 @@ present so that CC / Spread / Iron Condor can be added as additional branches.
 """
 
 import math
-from datetime import date, datetime, timezone, timedelta
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -81,7 +81,9 @@ def _composite_score(
     """Weighted composite score 0–100.
 
     Weights: annualized 30%, prob_itm 25%, safety_margin 20%, iv_pct 15%, liquidity 10%.
-    An unmeasured IV percentile or spread scores neutral (0.5), neither best nor worst.
+    iv_pct is the name's IV30 percentile (``_read_iv_percentile``), the same for
+    every contract of a name. An unmeasured IV percentile or spread scores
+    neutral (0.5), neither best nor worst.
     """
 
     def clip(v: float, lo: float, hi: float) -> float:
@@ -143,46 +145,64 @@ def _get_spot(sym: str, request: Request) -> Optional[float]:
     return None
 
 
-def _get_iv_history_series(
-    db: dict, symbol: str, all_exps: List[str], source: str
-) -> List[float]:
-    """Average daily ATM IV per trade_date over the past year — sorted ascending.
-
-    Uses report_option_atm_iv_daily via the public reader function.
-    Groups all expirations' ATM IVs by trade_date and returns one average per day.
-    """
-    from bifrost_api.research.market_pg import get_report_option_atm_iv_daily
-
-    since = (datetime.now(timezone.utc) - timedelta(days=365)).date()
-    rows = get_report_option_atm_iv_daily(db, symbol, all_exps, source, since)
-
-    by_date: Dict[Any, List[float]] = {}
-    for row in rows:
-        td = row.get("trade_date")
-        av = row.get("atm_iv")
-        if td is None or av is None:
-            continue
-        try:
-            by_date.setdefault(td, []).append(float(av))
-        except (TypeError, ValueError):
-            pass
-
-    series = [sum(vs) / len(vs) for vs in by_date.values() if vs]
-    return sorted(series)
-
-
 def _fetch_error(e: Exception) -> str:
     """Short reason for a failed plugin call, e.g. ``HTTPError: HTTP Error 500: …``."""
     msg = str(e).strip()
     return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
 
 
-def _iv_percentile(iv: float, sorted_series: List[float]) -> Optional[float]:
-    """Rank of iv in sorted historical series (0–100); None if insufficient data."""
-    if len(sorted_series) < 5:
-        return None
-    rank = sum(1 for v in sorted_series if v <= iv)
-    return round(rank / len(sorted_series) * 100.0, 1)
+# A reading older than this describes another week's regime. Research writes one
+# row a session after the close, so a Friday row is 4 days old on the Tuesday
+# after a holiday Monday; a name the chain store stopped covering keeps
+# answering its last row (one went 27 days in 2026-08/09).
+IV_PERCENTILE_MAX_AGE_DAYS = 5
+
+
+def _read_iv_percentile(sym: str, today: date) -> Tuple[Dict[str, Any], Optional[str]]:
+    """The name's IV30 percentile over its last 252 sessions, as Research stores it.
+
+    It ranks the name, not the strike: a contract's own IV against ATM history
+    scores skew (every OTM put reads rich) and term structure, which safety
+    margin and prob ITM already reward. It used to come from a stub that
+    answered nothing, so every contract scored the neutral 0.5.
+
+    Returns the reading and, when the percentile is not used, the reason.
+    """
+    from bifrost_api.research.analytics_reader import fetch_iv_percentile_latest
+
+    reading: Dict[str, Any] = {
+        "iv30": None,
+        "iv_percentile": None,
+        "iv_percentile_as_of": None,
+        "iv_percentile_sessions": None,
+    }
+    source = "Research /analytics/options/iv-percentile"
+    try:
+        row = fetch_iv_percentile_latest(sym)
+    except Exception as e:
+        return reading, f"IV percentile read failed ({source}): {_fetch_error(e)}"
+    if row is None:
+        return reading, "IV percentile unmeasured: Research holds no IV30 for this name"
+
+    iv30, pct = row.get("iv_current"), row.get("iv_percentile_1y")
+    reading["iv30"] = round(float(iv30), 4) if iv30 is not None else None
+    reading["iv_percentile_sessions"] = row.get("lookback_days")
+    try:
+        as_of = date.fromisoformat(str(row.get("trade_date"))[:10])
+    except ValueError:
+        return reading, f"IV percentile unmeasured: {source} answered no trade_date"
+    reading["iv_percentile_as_of"] = as_of.isoformat()
+
+    age = (today - as_of).days
+    if age > IV_PERCENTILE_MAX_AGE_DAYS:
+        return reading, f"IV percentile unmeasured: Research's newest IV30 reading is {as_of.isoformat()}, {age} days old"
+    if pct is None:
+        return reading, (
+            f"IV percentile unmeasured: Research withholds it on "
+            f"{reading['iv_percentile_sessions']} sessions of IV30 history"
+        )
+    reading["iv_percentile"] = round(float(pct), 1)
+    return reading, None
 
 
 # ---------------------------------------------------------------------------
@@ -266,8 +286,8 @@ def _scan_csp(
     if not rows:
         return None, "No snapshot data — run Market Data Plugin sync first"
 
-    # IV percentile history
-    iv_history = _get_iv_history_series(db, sym, all_exps, src)
+    iv_reading, iv_note = _read_iv_percentile(sym, today)
+    iv_pct = iv_reading["iv_percentile"]
 
     contracts: List[Dict[str, Any]] = []
     ivs_for_avg: List[float] = []
@@ -359,7 +379,6 @@ def _scan_csp(
         if body.min_annualized_return is not None and annualized is not None and annualized < body.min_annualized_return:
             continue
 
-        iv_pct = _iv_percentile(iv_f, iv_history) if iv_f is not None else None
         sc = _composite_score(annualized, prob_itm, safety_margin, iv_pct, spread_pct)
 
         oi_raw = row.get("open_interest")
@@ -407,17 +426,21 @@ def _scan_csp(
         "best_score": contracts[0]["score"],
         "avg_iv": avg_iv,
         "contract_count": len(contracts),
+        **iv_reading,
         "contracts": contracts,
     }
+    notes: List[str] = []
     # A contract with no bid/ask cannot be held to max_spread_pct: it is kept,
     # and the name says the filter was not applied to it rather than passing it silently.
     unquoted = sum(1 for c in contracts if c["spread_pct"] is None)
     if body.max_spread_pct is not None and unquoted:
-        return group, (
+        notes.append(
             f"max_spread_pct not applied to {unquoted} of {len(contracts)} contracts: "
             "no bid/ask on file (the chain store keeps no NBBO), so no spread to test"
         )
-    return group, None
+    if iv_note:
+        notes.append(iv_note)
+    return group, "; ".join(notes) or None
 
 
 # ---------------------------------------------------------------------------

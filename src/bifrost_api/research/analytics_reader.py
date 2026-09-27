@@ -427,6 +427,25 @@ def fetch_screener_wide(
             return [dict(r) for r in (cur.fetchall() or [])]
 
 
+def fetch_iv_percentile_latest(symbol: str) -> Optional[Dict[str, Any]]:
+    """One name's newest ``features.option_metric_iv_percentile_daily`` row, from Research.
+
+    The row ranks the name's IV30 against its last 252 sessions (``iv_percentile_1y``,
+    withheld under Research's floor, with ``lookback_days`` saying how many it had).
+    None when Research holds no row for the name (404); any other failure raises,
+    so a caller can tell an outage from a name with no IV history. Research only:
+    there is no direct-PG path for a ``features.*`` read.
+    """
+    try:
+        data = _proxy_get("/analytics/options/iv-percentile", {"symbol": symbol.strip().upper()})
+    except httpx.HTTPStatusError as exc:
+        if exc.response is not None and exc.response.status_code == 404:
+            return None
+        raise
+    rows = data.get("rows") or []
+    return dict(rows[0]) if rows and isinstance(rows[0], dict) else None
+
+
 def fetch_screening_ranked(*, limit: int = 500) -> List[Dict[str, Any]]:
     if use_research_proxy():
         try:

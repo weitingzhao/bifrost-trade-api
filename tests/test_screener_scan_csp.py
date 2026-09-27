@@ -6,7 +6,8 @@ drive ``_scan_csp`` through the HTTP client with the plugin's actual payloads,
 and pin that a failed fetch is reported as a failure, not as missing data.
 
 They also pin three readings the engine used to invent or drop: a spread with
-no bid/ask, a DTE counted from the UTC date, and the quote's snapshot time.
+no bid/ask, a DTE counted from the UTC date, and the quote's snapshot time;
+and the IV percentile, which came from a stub and scored every contract neutral.
 All values are invented.
 """
 
@@ -17,11 +18,13 @@ import json
 import urllib.error
 import urllib.parse
 from datetime import date, datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List, Optional
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
+from bifrost_api.research import analytics_reader
 from bifrost_api.research.routers.screener import (
     ScreenerRequest,
     _composite_score,
@@ -34,6 +37,31 @@ from bifrost_api.research.routers.screener import (
 _TODAY = date(2026, 9, 26)
 _EXPIRY = "20261016"  # 20 DTE from _TODAY
 _SPOT = 100.0
+
+# Bound before the autouse fixture replaces it on the module.
+_REAL_FETCH = analytics_reader.fetch_iv_percentile_latest
+
+
+def _iv_row(**overrides: Any) -> Dict[str, Any]:
+    """A row as Research's /analytics/options/iv-percentile answers it."""
+    row = {
+        "symbol": "XYZ",
+        "trade_date": "2026-09-25",
+        "iv_current": 0.52,
+        "iv_percentile_1y": 80.0,
+        "iv_rank_1y": 64.0,
+        "lookback_days": 252,
+        "computed_at": "2026-09-26T02:40:00+00:00",
+    }
+    row.update(overrides)
+    return row
+
+
+@pytest.fixture(autouse=True)
+def research_iv() -> Iterator[MagicMock]:
+    """Research's IV percentile read, answering a fresh row unless a test says otherwise."""
+    with patch.object(analytics_reader, "fetch_iv_percentile_latest", return_value=_iv_row()) as fetch:
+        yield fetch
 
 
 class _FakeResponse:
@@ -396,3 +424,148 @@ def test_post_screener_counts_dte_from_the_new_york_date(mock_urlopen: MagicMock
     assert c["dte"] == 20
     assert c["annualized"] == pytest.approx(120.0 / (strike * 100.0) * 365.0 / 20, abs=1e-4)
     assert c["prob_itm"] == pytest.approx(_prob_itm_put(_SPOT, strike, 20, iv), abs=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# IV percentile: the name's IV30 against its year, read from Research
+# ---------------------------------------------------------------------------
+
+
+def _scan_one(mock_urlopen: MagicMock, rows: List[Dict[str, Any]], body: Optional[ScreenerRequest] = None):
+    mock_urlopen.side_effect = _plugin({
+        "/options/expirations/yyyymmdd": _EXPIRATIONS,
+        "/options/chain/latest": {"ok": True, "rows": rows, "count": len(rows)},
+    })
+    return _scan_csp("XYZ", body or ScreenerRequest(symbols=["XYZ"]), {}, "massive", _TODAY, _request())
+
+
+@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
+def test_every_contract_carries_the_names_iv30_percentile(mock_urlopen: MagicMock, research_iv: MagicMock):
+    # Two strikes at different IVs: the percentile ranks the name, not the strike,
+    # so a skewed OTM put does not read as rich vol.
+    group, warn = _scan_one(mock_urlopen, [_chain_row(95.0, iv=0.35), _chain_row(85.0, iv=0.60)])
+
+    research_iv.assert_called_once_with("XYZ")
+    assert warn is None
+    assert group is not None
+    assert group["iv30"] == 0.52
+    assert group["iv_percentile"] == 80.0
+    assert group["iv_percentile_as_of"] == "2026-09-25"
+    assert group["iv_percentile_sessions"] == 252
+    assert {c["iv_percentile"] for c in group["contracts"]} == {80.0}
+
+
+@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
+def test_measured_percentile_moves_the_score_by_its_weight(mock_urlopen: MagicMock, research_iv: MagicMock):
+    rows = [_chain_row(95.0)]
+    rich, _ = _scan_one(mock_urlopen, rows)
+    research_iv.return_value = _iv_row(iv_percentile_1y=None, lookback_days=75)
+    neutral, _ = _scan_one(mock_urlopen, rows)
+
+    assert rich is not None and neutral is not None
+    # 15% weight × (0.80 − the neutral 0.50) × 100.
+    assert rich["contracts"][0]["score"] - neutral["contracts"][0]["score"] == pytest.approx(4.5, abs=0.1)
+
+
+@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
+def test_withheld_percentile_scores_neutral_and_says_how_short(mock_urlopen: MagicMock, research_iv: MagicMock):
+    research_iv.return_value = _iv_row(iv_percentile_1y=None, lookback_days=75)
+
+    group, warn = _scan_one(mock_urlopen, [_chain_row(95.0)])
+
+    assert group is not None
+    assert group["iv_percentile"] is None and group["iv30"] == 0.52
+    assert group["contracts"][0]["iv_percentile"] is None
+    assert warn == "IV percentile unmeasured: Research withholds it on 75 sessions of IV30 history"
+
+
+@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
+def test_name_without_iv_history_says_so(mock_urlopen: MagicMock, research_iv: MagicMock):
+    research_iv.return_value = None
+
+    group, warn = _scan_one(mock_urlopen, [_chain_row(95.0)])
+
+    assert group is not None and group["iv_percentile"] is None and group["iv_percentile_as_of"] is None
+    assert warn == "IV percentile unmeasured: Research holds no IV30 for this name"
+
+
+@pytest.mark.parametrize(
+    ("trade_date", "used"),
+    [
+        ("2026-09-21", True),  # 5 days: a Friday read on the Wednesday
+        ("2026-09-20", False),  # 6 days
+        ("2026-08-28", False),  # a name the chain store stopped covering
+    ],
+)
+@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
+def test_stale_reading_is_withheld_and_dated(
+    mock_urlopen: MagicMock, research_iv: MagicMock, trade_date: str, used: bool
+):
+    research_iv.return_value = _iv_row(trade_date=trade_date)
+
+    group, warn = _scan_one(mock_urlopen, [_chain_row(95.0)])
+
+    assert group is not None
+    assert group["iv_percentile_as_of"] == trade_date
+    if used:
+        assert group["iv_percentile"] == 80.0 and warn is None
+    else:
+        age = (_TODAY - date.fromisoformat(trade_date)).days
+        assert group["iv_percentile"] is None
+        assert warn == f"IV percentile unmeasured: Research's newest IV30 reading is {trade_date}, {age} days old"
+
+
+@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
+def test_research_failure_still_screens_and_names_the_failure(mock_urlopen: MagicMock, research_iv: MagicMock):
+    research_iv.side_effect = httpx.ConnectError("connection refused")
+
+    group, warn = _scan_one(mock_urlopen, [_chain_row(95.0)])
+
+    assert group is not None and group["contract_count"] == 1
+    assert group["contracts"][0]["iv_percentile"] is None
+    assert warn == (
+        "IV percentile read failed (Research /analytics/options/iv-percentile): ConnectError: connection refused"
+    )
+
+
+@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
+def test_spread_and_iv_notes_are_both_kept(mock_urlopen: MagicMock, research_iv: MagicMock):
+    research_iv.return_value = None
+
+    group, warn = _scan_one(
+        mock_urlopen, [_unquoted_row(95.0)], ScreenerRequest(symbols=["XYZ"], max_spread_pct=0.05)
+    )
+
+    assert group is not None and warn is not None
+    spread_note, iv_note = warn.split("; ")
+    assert spread_note.startswith("max_spread_pct not applied to 1 of 1 contracts")
+    assert iv_note == "IV percentile unmeasured: Research holds no IV30 for this name"
+
+
+# ---------------------------------------------------------------------------
+# The Research read itself
+# ---------------------------------------------------------------------------
+
+
+def _status_error(code: int) -> httpx.HTTPStatusError:
+    req = httpx.Request("GET", "http://research.test/analytics/options/iv-percentile")
+    return httpx.HTTPStatusError(f"HTTP {code}", request=req, response=httpx.Response(code, request=req))
+
+
+def test_fetch_iv_percentile_latest_asks_for_one_name_and_returns_its_row():
+    with patch.object(analytics_reader, "_proxy_get", return_value={"rows": [_iv_row()], "count": 1}) as get:
+        row = _REAL_FETCH(" xyz ")
+
+    get.assert_called_once_with("/analytics/options/iv-percentile", {"symbol": "XYZ"})
+    assert row == _iv_row()
+
+
+def test_fetch_iv_percentile_latest_reads_404_as_no_history():
+    with patch.object(analytics_reader, "_proxy_get", side_effect=_status_error(404)):
+        assert _REAL_FETCH("XYZ") is None
+
+
+def test_fetch_iv_percentile_latest_raises_on_other_failures():
+    with patch.object(analytics_reader, "_proxy_get", side_effect=_status_error(503)):
+        with pytest.raises(httpx.HTTPStatusError):
+            _REAL_FETCH("XYZ")
