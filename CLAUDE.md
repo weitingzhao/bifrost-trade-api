@@ -9,7 +9,7 @@
 | 项 | 值 |
 |---|---|
 | 域 / 载荷 | Trade (OLTP) · Satellite 执行载荷 · 9 个逻辑域 → 4 个 deployment（monitor / account / market / research） |
-| 运行位置 | K3s `bifrost-{dev,stg,prod}`；DEV inner loop 的 API 是 `192.168.10.73:30882`（STG `:30881`，PROD `:30880`） |
+| 运行位置 | K3s `bifrost-{dev,stg,prod}`；DEV inner loop 的 API 是 `192.168.10.73:30882`（STG `:30880`，PROD `:30881`） |
 | 发布链 | GitHub main → `bifrost-deliver-{stg,prod}`；Argo `bifrost-stg/prod` 手动同步；PROD 清单只走 git + Argo |
 | 仓库可见性 | GitHub **PUBLIC**（12 个 repo 全部公开）—— `.env`、Secret YAML、dump、kubeconfig、账户内容永不入库 |
 | 硬边界 | D10 交易执行冻结（BLOCKED）· D13 三域边界 · 平台/业务解耦（Flywheel A/B） |
