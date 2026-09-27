@@ -15,7 +15,6 @@ from bifrost_api.research.market_pg import (
     get_option_expiration_cache_snapshot,
     get_option_expirations_from_contracts_db,
     get_option_open_interest_daily,
-    get_option_snapshots_eod_per_day,
     get_option_snapshots_latest,
     get_strikes_for_expiry_from_contracts_db,
 )
@@ -289,18 +288,6 @@ def test_get_option_snapshots_latest_plugin_mode(mock_urlopen: MagicMock):
 
     assert len(result) == 1
     assert result[0]["iv"] == 0.35
-    mock_urlopen.assert_called_once()
-
-
-@patch("bifrost_api.research.market_data_client.urllib.request.urlopen")
-def test_get_option_snapshots_eod_plugin_mode(mock_urlopen: MagicMock):
-    payload = {"ok": True, "rows": [{"snap_day": "2026-08-01", "iv": 0.33, "contract_key": "K1"}], "count": 1}
-    mock_urlopen.return_value = _FakeResponse(payload)
-
-    from datetime import datetime
-    result = get_option_snapshots_eod_per_day({"postgres": {"host": "localhost"}}, ["K1"], since_ts=datetime(2026, 7, 1))
-
-    assert len(result) == 1
     mock_urlopen.assert_called_once()
 
 

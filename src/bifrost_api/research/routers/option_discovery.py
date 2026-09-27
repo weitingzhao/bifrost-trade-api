@@ -3,21 +3,16 @@
 import hashlib
 import json
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Query, Request
 from fastapi.responses import JSONResponse
 
 from bifrost_api.research.iv_atm import (
-    assemble_volatility_cone_points,
     atm_iv_from_expiry_items,
-    build_cone_key_maps,
     build_exp_iv_map,
-    daily_atm_ivs_for_expiration,
-    group_hist_rows_by_snap_day,
     parse_contract_key,
-    rollup_daily_ivs_by_expiration,
     strikes_around_spot,
 )
 from bifrost_core.monitor.redis_url import redis_url_from_config
@@ -925,111 +920,3 @@ def get_iv_term_structure(
 
     points.sort(key=lambda p: p["dte_days"])
     return {"ok": True, "symbol": sym, "underlying_price": last_price, "points": points}
-
-
-@router.get("/research/iv-volatility-cone", response_model=None)
-def get_iv_volatility_cone(
-    request: Request,
-    symbol: str = Query(..., description="Underlying symbol"),
-    expirations: str = Query(
-        ...,
-        description="Comma-separated expiration dates (YYYYMMDD or YYYY-MM-DD), max 12",
-    ),
-    source: str = Query("massive", description="Snapshot source: massive | ib"),
-    lookback_days: int = Query(90, ge=1, le=90, description="Calendar days of history (max 90)"),
-) -> Dict[str, Any]:
-    """ATM IV percentile bands per expiration from historical option_snapshots (IV volatility cone)."""
-    from datetime import datetime
-
-    from bifrost_api.research.market_pg import (
-        get_option_snapshots_eod_per_day,
-        get_option_snapshots_latest,
-        get_report_option_atm_iv_daily,
-    )
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "symbol": symbol, "points": [], "error": "PostgreSQL not configured"}
-
-    sym = (symbol or "").strip().upper()
-    if not sym:
-        return {"ok": False, "symbol": sym, "points": [], "error": "symbol is required"}
-
-    src = (source or "massive").strip().lower()
-    if src not in ("massive", "ib"):
-        src = "massive"
-
-    exp_list: List[str] = []
-    for raw in (expirations or "").split(","):
-        e = _norm_expiry_key(raw)
-        if len(e) == 8 and e.isdigit():
-            exp_list.append(e)
-    exp_list = exp_list[:12]
-    if len(exp_list) < 2:
-        return {"ok": False, "symbol": sym, "points": [], "error": "Need at least 2 valid expirations"}
-
-    reader = getattr(request.app.state, "reader", None)
-    last_price: Optional[float] = None
-    if reader and hasattr(reader, "get_stock_day_fallback_price"):
-        fallback = reader.get_stock_day_fallback_price(sym)
-        if fallback and fallback[0] is not None and fallback[0] > 0:
-            last_price = float(fallback[0])
-    if not last_price:
-        return {"ok": False, "symbol": sym, "points": [], "error": "No underlying price available for ATM strike selection"}
-
-    narrow_keys, wide_keys, key_exp_narrow, key_exp_wide = build_cone_key_maps(sym, exp_list, last_price)
-    if not narrow_keys or not wide_keys:
-        return {"ok": False, "symbol": sym, "points": [], "error": "Cannot compute ATM strikes"}
-
-    since_ts = datetime.now(timezone.utc) - timedelta(days=lookback_days)
-    since_date = since_ts.date()
-
-    latest_rows = get_option_snapshots_latest(db, narrow_keys, source=src)
-    exp_iv_cur_all = build_exp_iv_map(latest_rows, key_exp_narrow, last_price)
-
-    report_rows = get_report_option_atm_iv_daily(db, sym, exp_list, src, since_date)
-    rollup_ivs = rollup_daily_ivs_by_expiration(report_rows, exp_list, min_trade_date=since_date)
-
-    min_samples_for_bands = 5
-    needs_eod = any(len(rollup_ivs.get(exp, [])) < min_samples_for_bands for exp in exp_list)
-    if needs_eod:
-        hist_rows = get_option_snapshots_eod_per_day(db, wide_keys, source=src, since_ts=since_ts)
-        by_day = group_hist_rows_by_snap_day(hist_rows)
-    else:
-        by_day = {}
-
-    per_exp_daily_ivs: Dict[str, List[float]] = {}
-    rollup_used = True
-    for exp in exp_list:
-        r_series = rollup_ivs.get(exp, [])
-        if len(r_series) >= min_samples_for_bands:
-            per_exp_daily_ivs[exp] = r_series
-        else:
-            per_exp_daily_ivs[exp] = daily_atm_ivs_for_expiration(exp, key_exp_wide, by_day)
-            rollup_used = False
-
-    points, band_warns = assemble_volatility_cone_points(
-        exp_list,
-        last_price,
-        exp_iv_cur_all,
-        per_exp_daily_ivs,
-        min_samples_for_bands=min_samples_for_bands,
-    )
-    out: Dict[str, Any] = {
-        "ok": True,
-        "symbol": sym,
-        "underlying_price": last_price,
-        "lookback_days": lookback_days,
-        "points": points,
-        "rollup_used": rollup_used,
-    }
-    if band_warns:
-        nexp = len(band_warns)
-        examples = "; ".join(f"{e}: samples={cnt}" for e, cnt in band_warns[:3])
-        more = f" (+{nexp - 3} more expirations)" if nexp > 3 else ""
-        out["warning"] = (
-            f"p10–p90 bands need ≥{min_samples_for_bands} daily ATM IV points per expiration in the lookback; "
-            f"{nexp} expiration(s) below that ({examples}{more}). "
-            "See Hist. samples column. Current ATM line still uses latest snapshots."
-        )
-    return out

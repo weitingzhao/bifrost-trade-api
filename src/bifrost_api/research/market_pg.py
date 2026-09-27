@@ -124,32 +124,6 @@ def get_option_snapshots_latest(
         return []
 
 
-def get_option_snapshots_eod_per_day(
-    status_config: dict,
-    contract_keys: List[str],
-    source: str = "massive",
-    since_ts: Optional[datetime] = None,
-    chunk_size: int = 100,
-) -> List[Dict[str, Any]]:
-    """Latest snapshot per calendar day (America/New_York) per contract_key.
-
-    Returns IB-shaped ``contract_key``. ``source`` kept for API compat.
-    """
-    if not contract_keys:
-        return []
-    keys = [k for k in contract_keys if k and str(k).strip()]
-    if not keys:
-        return []
-    try:
-        since_iso: Optional[str] = None
-        if since_ts is not None:
-            since_iso = since_ts.isoformat() if since_ts.year > 1970 else None
-        return market_data_client.fetch_option_chain_eod(keys, since=since_iso)
-    except Exception as e:
-        logger.warning("get_option_snapshots_eod_per_day failed: %s", e)
-        return []
-
-
 
 def _right_from_ref_contract_type(ct: str) -> str:
     u = (ct or "").upper()
@@ -272,18 +246,6 @@ def get_option_trades(
 ) -> List[Dict[str, Any]]:
     """option_trades public table retired with Massive — return empty."""
     _ = (status_config, symbol, limit)
-    return []
-
-
-def get_report_option_atm_iv_daily(
-    status_config: dict,
-    symbol: str,
-    expirations: List[str],
-    source: str,
-    since_date: date_type,
-) -> List[Dict[str, Any]]:
-    """report_option_atm_iv_daily dropped — use Plugin analytics."""
-    _ = (status_config, symbol, expirations, source, since_date)
     return []
 
 

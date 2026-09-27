@@ -93,3 +93,13 @@ class TestResearchOpenApi:
         paths = spec.get("paths") or {}
         assert "/research/massive/stream" not in paths
 
+
+
+class TestRetiredRoutes:
+    def test_iv_volatility_cone_is_retired(self):
+        # Its callers moved to the market-data plugin (program market-data-expand)
+        # and it read a stub that answered nothing; the per-expiry ATM IV history
+        # is Research's /analytics/options/atm-iv. The IV term structure stays.
+        paths = set(_make_client(merged_config={"server": {}}).app.openapi()["paths"])
+        assert "/research/iv-term-structure" in paths
+        assert "/research/iv-volatility-cone" not in paths
