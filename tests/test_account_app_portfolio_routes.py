@@ -15,10 +15,12 @@ from bifrost_api.portfolio.routers import portfolio_short_legs_router
 
 
 def _paths(*routers) -> set:
+    # The OpenAPI path table, not `app.routes`: from FastAPI 0.14x an included
+    # router sits in `app.routes` as one wrapper with no `.path`.
     app = FastAPI()
     for r in routers:
         app.include_router(r)
-    return {route.path for route in app.routes}
+    return set(app.openapi()["paths"])
 
 
 def test_every_portfolio_router_is_mounted_on_the_account_app() -> None:

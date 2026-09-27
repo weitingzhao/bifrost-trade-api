@@ -29,6 +29,12 @@ PLAN_ROUTES = {
 }
 
 
+def _paths(app: FastAPI) -> set:
+    # The OpenAPI path table, not `app.routes`: from FastAPI 0.14x an included
+    # router sits in `app.routes` as one wrapper with no `.path`.
+    return set(app.openapi()["paths"])
+
+
 def _account_client(control_via_db: Any = None) -> TestClient:
     reader = MagicMock()
     reader._config = full_server_config()
@@ -52,9 +58,8 @@ def test_every_plan_route_is_mounted_on_the_account_app() -> None:
 
     bare = FastAPI()
     bare.include_router(plans_router)
-    assert PLAN_ROUTES <= {route.path for route in bare.routes}
-    mounted = {route.path for route in _account_client().app.routes}
-    assert PLAN_ROUTES <= mounted
+    assert PLAN_ROUTES <= _paths(bare)
+    assert PLAN_ROUTES <= _paths(_account_client().app)
 
 
 def test_writes_without_postgres_say_so_rather_than_pretending() -> None:
