@@ -7,6 +7,7 @@ present so that CC / Spread / Iron Condor can be added as additional branches.
 import math
 from datetime import date, datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
@@ -14,6 +15,17 @@ from pydantic import BaseModel
 router = APIRouter(tags=["research"])
 
 RISK_FREE_RATE = 0.045
+MARKET_TZ = ZoneInfo("America/New_York")
+
+
+def _market_today(now: Optional[datetime] = None) -> date:
+    """Today's date in New York, where expiries are dated.
+
+    The container runs on UTC, so ``date.today()`` turns over at 20:00 ET (19:00
+    in winter) and read every DTE one day short until midnight ET, overstating
+    the annualised return.
+    """
+    return (now or datetime.now(timezone.utc)).astimezone(MARKET_TZ).date()
 
 
 # ---------------------------------------------------------------------------
@@ -64,11 +76,12 @@ def _composite_score(
     prob_itm: float,
     safety_margin: float,
     iv_percentile: Optional[float],
-    spread_pct: float,
+    spread_pct: Optional[float],
 ) -> float:
     """Weighted composite score 0–100.
 
     Weights: annualized 30%, prob_itm 25%, safety_margin 20%, iv_pct 15%, liquidity 10%.
+    An unmeasured IV percentile or spread scores neutral (0.5), neither best nor worst.
     """
 
     def clip(v: float, lo: float, hi: float) -> float:
@@ -78,7 +91,7 @@ def _composite_score(
     p = clip(1.0 - prob_itm / 0.30, 0.0, 1.0)
     s = clip(safety_margin / 0.20, 0.0, 1.0)
     v = clip(iv_percentile / 100.0, 0.0, 1.0) if iv_percentile is not None else 0.5
-    liq = clip(1.0 - spread_pct / 0.30, 0.0, 1.0)
+    liq = clip(1.0 - spread_pct / 0.30, 0.0, 1.0) if spread_pct is not None else 0.5
     return (0.30 * a + 0.25 * p + 0.20 * s + 0.15 * v + 0.10 * liq) * 100.0
 
 
@@ -279,7 +292,9 @@ def _scan_csp(
         if contract_spot <= 0:
             continue
 
-        # Option premium (day_close from Massive chain; NBBO not stored)
+        # Option premium. The Massive chain store keeps no NBBO under the Options
+        # Starter entitlement, so a row usually has no bid/ask and the premium is
+        # the session close; premium_basis says which one was used.
         bid_f = float(row["bid"]) if row.get("bid") is not None else None
         ask_f = float(row["ask"]) if row.get("ask") is not None else None
         mid_raw = row.get("mid")
@@ -289,21 +304,24 @@ def _scan_csp(
             mid_f = None
         if mid_f is None and bid_f is not None and ask_f is not None:
             mid_f = (bid_f + ask_f) / 2.0
+        premium_basis = "mid"
         if mid_f is None and row.get("day_close") is not None:
             try:
                 mid_f = float(row["day_close"])
+                premium_basis = "close"
             except (TypeError, ValueError):
                 mid_f = None
         if mid_f is None or mid_f <= 0:
             continue
 
-        # Spread pct (relative to mid)
-        if bid_f is not None and ask_f is not None and mid_f > 0:
-            spread_pct = (ask_f - bid_f) / mid_f
+        # Spread pct (relative to mid). Without both sides there is no spread:
+        # it is null, not 0, which scored as the tightest market there is.
+        if bid_f is not None and ask_f is not None:
+            spread_pct: Optional[float] = (ask_f - bid_f) / mid_f
         else:
-            spread_pct = 0.0
+            spread_pct = None
 
-        if body.max_spread_pct is not None and spread_pct > body.max_spread_pct:
+        if body.max_spread_pct is not None and spread_pct is not None and spread_pct > body.max_spread_pct:
             continue
 
         # IV
@@ -368,11 +386,13 @@ def _scan_csp(
             "bid": round(bid_f, 4) if bid_f is not None else None,
             "ask": round(ask_f, 4) if ask_f is not None else None,
             "mid": round(mid_f, 4),
-            "spread_pct": round(spread_pct, 4),
+            "premium_basis": premium_basis,
+            "spread_pct": round(spread_pct, 4) if spread_pct is not None else None,
             "open_interest": int(oi_raw) if oi_raw is not None else None,
             "delta": round(float(delta_raw), 4) if delta_raw is not None else None,
             "iv_percentile": iv_pct,
             "long_strike": None,
+            "snapshot_ts": row.get("snapshot_ts"),
         })
 
     if not contracts:
@@ -389,6 +409,14 @@ def _scan_csp(
         "contract_count": len(contracts),
         "contracts": contracts,
     }
+    # A contract with no bid/ask cannot be held to max_spread_pct: it is kept,
+    # and the name says the filter was not applied to it rather than passing it silently.
+    unquoted = sum(1 for c in contracts if c["spread_pct"] is None)
+    if body.max_spread_pct is not None and unquoted:
+        return group, (
+            f"max_spread_pct not applied to {unquoted} of {len(contracts)} contracts: "
+            "no bid/ask on file (the chain store keeps no NBBO), so no spread to test"
+        )
     return group, None
 
 
@@ -427,7 +455,7 @@ def post_screener(request: Request, body: ScreenerRequest) -> Dict[str, Any]:
     if not symbols_clean:
         return {"ok": False, "error": "symbols list is empty", "groups": []}
 
-    today = date.today()
+    today = _market_today()
     groups: List[Dict[str, Any]] = []
     symbols_failed: List[str] = []
     warnings: Dict[str, str] = {}
