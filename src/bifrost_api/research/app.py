@@ -64,11 +64,13 @@ def create_research_app(
     from bifrost_api.research.routers.screener import router as screener_router
     from bifrost_api.research.routers.greeks import router as greeks_router
     from bifrost_api.research.routers.data_readiness import router as data_readiness_router
+    from bifrost_api.research.routers.feedback import router as feedback_router
 
     app.include_router(option_discovery_router)
     app.include_router(screener_router)
     app.include_router(greeks_router)
     app.include_router(data_readiness_router)
+    app.include_router(feedback_router)
 
     from bifrost_api.ops.services.audit_store import AuditStore
 
