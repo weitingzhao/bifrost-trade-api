@@ -10,7 +10,7 @@ test:
 	pytest -m 'not ib and not db'
 
 lint:
-	ruff check src/ tests/
+	ruff check .
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; true
