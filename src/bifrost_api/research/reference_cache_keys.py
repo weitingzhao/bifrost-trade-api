@@ -1,8 +1,7 @@
 """Redis keys for Polygon reference-data cache (page/API hot reads).
 
 Namespace mirrors IB ingestor style: data under ``massive:ingestor:cache:*``
-(Redis prefix ``massive:`` is a permanent wire contract);
-do not mix with ``massive:channel`` / ``massive:meta:*`` (realtime).
+(Redis prefix ``massive:`` is a permanent wire contract).
 """
 
 from __future__ import annotations

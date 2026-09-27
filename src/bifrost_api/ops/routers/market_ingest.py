@@ -13,7 +13,6 @@ from fastapi.responses import JSONResponse
 
 from bifrost_api.ops.ib_operator_rpc import ib_operator_disconnect_all_sync
 from bifrost_api.ops.market_ingest_config import (
-    is_polygon_ws_service_id,
     market_ingest_service_by_id,
     market_ingest_services_from_config,
 )
@@ -37,7 +36,7 @@ from bifrost_api.ops.market_ingest_health_clear import (
     ingest_redis_health_writer_recent,
     read_health_stack_profile,
 )
-from bifrost_core.core.redis_url import ib_redis_url_from_config, massive_redis_url_from_config
+from bifrost_core.core.redis_url import ib_redis_url_from_config
 from bifrost_api.ops.models.schemas import MarketIngestAction, MarketIngestControlRequest
 from bifrost_api.ops.routers.workers import _audit, _require_role
 
@@ -49,13 +48,6 @@ _ENSURE_START_STOP_TIMEOUT_SEC = 30
 _ENSURE_START_START_TIMEOUT_SEC = 45
 _RECENT_CONTROL_WRITE_GRACE_SEC = 120.0
 
-_STG_K8S_SOCKET_INGEST_IDS = frozenset({
-    "polygon_ws",
-    "ib_ingestor",
-    "ib_operator",
-    "ib_account_agent",
-})
-
 _PLATFORM_IB_INGEST_IDS = frozenset({"ib_ingestor", "ib_operator", "ib_account_agent"})
 _D10_SCALE_UP_ACTIONS = frozenset({
     MarketIngestAction.START,
@@ -63,20 +55,11 @@ _D10_SCALE_UP_ACTIONS = frozenset({
     MarketIngestAction.RESET,
 })
 
-
-def _stg_k8s_control_reject_message(service_id: str) -> str:
-    sid = (service_id or "").strip()
-    if sid in _PLATFORM_IB_INGEST_IDS:
-        return (
-            "STG IB Broker rows are served by Platform IB Gateway (data/ib-gateway Deployment @ redis-ib). "
-            "Ops start/stop/restart is not available here — use Ops Console → IB Gateway or "
-            "kubectl rollout restart deployment/ib-gateway -n data."
-        )
-    return (
-        "STG socket ingest runs in K8s Deployments, not Ops subprocess on this host. "
-        "Restart with kubectl rollout restart deployment/<name> -n bifrost-stg "
-        "(e.g. polygon-ws-ingestor; retired alias massive-ws)."
-    )
+_STG_IB_GATEWAY_CONTROL_REJECT_MESSAGE = (
+    "STG IB Broker rows are served by Platform IB Gateway (data/ib-gateway Deployment @ redis-ib). "
+    "Ops start/stop/restart is not available here — use Ops Console → IB Gateway or "
+    "kubectl rollout restart deployment/ib-gateway -n data."
+)
 
 
 def _d10_daemon_scale_reject_message() -> str:
@@ -221,7 +204,6 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
     rows = market_ingest_services_from_config(cfg)
     exc = _executor(request)
     rurl = meta_redis_url_from_ops_config(cfg)
-    massive_rurl = massive_redis_url_from_config(cfg)
     ib_rurl = ib_redis_url_from_config(cfg)
     ops_profile = _effective_ops_control_profile(request)
     out: List[Dict[str, Any]] = []
@@ -237,20 +219,19 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
         redis_control_host: Optional[str] = None
         redis_control_updated_at: Optional[float] = None
         row_sid = (row.get("id") or "").strip()
-        svc_rurl = massive_rurl if is_polygon_ws_service_id(row_sid) and massive_rurl else rurl
-        if svc_rurl:
+        if rurl:
             # Dev/Prod HOST is stored on the service health hash so Prod can use the same
             # Redis node it already updates (bifrost:health:*), avoiding bifrost:ops:lease:*.
             lk = meta_key
             if lk:
-                redis_control_env = await asyncio.to_thread(read_control_env, svc_rurl, lk)
-                redis_control_host = await asyncio.to_thread(read_control_host, svc_rurl, lk)
-                redis_control_updated_at = await asyncio.to_thread(read_control_updated_at, svc_rurl, lk)
+                redis_control_env = await asyncio.to_thread(read_control_env, rurl, lk)
+                redis_control_host = await asyncio.to_thread(read_control_host, rurl, lk)
+                redis_control_updated_at = await asyncio.to_thread(read_control_updated_at, rurl, lk)
             # Orphan detection: lease present but health gone → service died, clear stale lease.
             # Requires meta_key to check health hash; skip if meta_key empty.
             if redis_control_env is not None and row_sid != "trading_engine" and meta_key:
                 is_live = await asyncio.to_thread(
-                    ingest_redis_health_looks_live, svc_rurl, meta_key, row_sid
+                    ingest_redis_health_looks_live, rurl, meta_key, row_sid
                 )
                 control_age = (
                     time.time() - redis_control_updated_at
@@ -266,21 +247,21 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
                     and not _process_counts_as_running(active)
                 ):
                     try:
-                        await asyncio.to_thread(clear_control_env, svc_rurl, lk)
+                        await asyncio.to_thread(clear_control_env, rurl, lk)
                     except Exception as _ce:
                         logger.debug("GET /services: clear orphaned lease %s: %s", row_sid, _ce)
                     redis_control_env = None
                     redis_control_host = None
                     redis_control_updated_at = None
         runtime_externally_managed = False
-        if svc_rurl and meta_key and not _process_counts_as_running(active):
+        if rurl and meta_key and not _process_counts_as_running(active):
             looks_live = await asyncio.to_thread(
-                ingest_redis_health_looks_live, svc_rurl, meta_key, row_sid
+                ingest_redis_health_looks_live, rurl, meta_key, row_sid
             )
             writer_recent = await asyncio.to_thread(
-                ingest_redis_health_writer_recent, svc_rurl, meta_key
+                ingest_redis_health_writer_recent, rurl, meta_key
             )
-            stack = await asyncio.to_thread(read_health_stack_profile, svc_rurl, meta_key)
+            stack = await asyncio.to_thread(read_health_stack_profile, rurl, meta_key)
             if not stack:
                 ops_cfg = cfg.get("ops") if isinstance(cfg.get("ops"), dict) else {}
                 stack = normalize_control_profile(ops_cfg.get("control_profile"))
@@ -295,7 +276,7 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
         platform_gateway_managed = await asyncio.to_thread(
             platform_gateway_managed_for_service,
             ib_rurl,
-            svc_rurl,
+            rurl,
             meta_key,
             row_sid,
         )
@@ -309,8 +290,7 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
         display = derive_ingest_display_state(
             service_id=row_sid,
             process_active=active,
-            config=cfg,
-            redis_url=svc_rurl,
+            redis_url=rurl,
             ib_redis_url=ib_rurl,
             meta_key=meta_key,
             runtime_externally_managed=runtime_externally_managed,
@@ -381,8 +361,8 @@ async def market_ingest_control(
         )
     sid = svc["id"]
     ops_profile = _effective_ops_control_profile(request)
-    if ops_profile == "stg" and sid in _STG_K8S_SOCKET_INGEST_IDS:
-        msg = _stg_k8s_control_reject_message(sid)
+    if ops_profile == "stg" and sid in _PLATFORM_IB_INGEST_IDS:
+        msg = _STG_IB_GATEWAY_CONTROL_REJECT_MESSAGE
         _audit(
             request,
             f"market_ingest_{body.action.value}",
@@ -417,19 +397,17 @@ async def market_ingest_control(
 
     meta_key = (svc.get("redis_meta_key") or "").strip()
     rurl = meta_redis_url_from_ops_config(cfg)
-    massive_rurl = massive_redis_url_from_config(cfg)
-    svc_rurl = massive_rurl if is_polygon_ws_service_id(sid) and massive_rurl else rurl
     # Dev/Prod HOST lives in each service health hash. Linux Prod has proven writes to
     # bifrost:health:* work, while bifrost:ops:lease:* may be unavailable/filtered.
     lease_key = meta_key
     claimed: Optional[str] = None
-    if svc_rurl and lease_key:
-        claimed = await asyncio.to_thread(read_control_env, svc_rurl, lease_key)
+    if rurl and lease_key:
+        claimed = await asyncio.to_thread(read_control_env, rurl, lease_key)
     if ops_profile and claimed and claimed != ops_profile:
         # Orphan detection: if meta_key available, check whether health is still live.
         # If health hash is gone/stale the service died and the lease is orphaned → auto-clear.
-        if svc_rurl and meta_key:
-            looks_live = await asyncio.to_thread(ingest_redis_health_looks_live, svc_rurl, meta_key, sid)
+        if rurl and meta_key:
+            looks_live = await asyncio.to_thread(ingest_redis_health_looks_live, rurl, meta_key, sid)
             if not looks_live:
                 logger.info(
                     "market_ingest: clearing orphaned %s lease (health hash gone/stale) for %s",
@@ -437,7 +415,7 @@ async def market_ingest_control(
                     sid,
                 )
                 try:
-                    await asyncio.to_thread(clear_control_env, svc_rurl, lease_key)
+                    await asyncio.to_thread(clear_control_env, rurl, lease_key)
                     claimed = None
                 except Exception as ce:
                     logger.warning("market_ingest: failed to clear orphaned lease for %s: %s", sid, ce)
@@ -469,14 +447,14 @@ async def market_ingest_control(
             MarketIngestAction.START,
             MarketIngestAction.RESTART,
         )
-        and svc_rurl
+        and rurl
         and meta_key
         and ops_profile
         and claimed is None
     ):
         looks_live = await asyncio.to_thread(
             ingest_redis_health_looks_live,
-            svc_rurl,
+            rurl,
             meta_key,
             sid,
         )
@@ -501,14 +479,14 @@ async def market_ingest_control(
     # START: write Redis lease immediately so HOST column shows on first frontend poll,
     # then dispatch systemctl start to background (avoids nginx proxy_read_timeout).
     if action == MarketIngestAction.START:
-        if sid != "trading_engine" and svc_rurl and ops_profile:
+        if sid != "trading_engine" and rurl and ops_profile:
             _lk = lease_key
             try:
-                await asyncio.to_thread(write_control_env, svc_rurl, _lk, ops_profile)
+                await asyncio.to_thread(write_control_env, rurl, _lk, ops_profile)
             except Exception as _le:
                 logger.warning("market_ingest start: pre-write lease failed for %s: %s", sid, _le)
         background_tasks.add_task(
-            _ensure_start_background, exc, unit, sid, svc_rurl, meta_key, ops_profile
+            _ensure_start_background, exc, unit, sid, rurl, meta_key, ops_profile
         )
         _audit(
             request,
@@ -525,12 +503,12 @@ async def market_ingest_control(
     # STOP: clear Redis lease + health immediately so HOST clears on first frontend poll,
     # then dispatch systemctl stop to background (avoids nginx proxy_read_timeout).
     if action == MarketIngestAction.STOP:
-        if svc_rurl:
+        if rurl:
             try:
                 if ops_profile:
-                    await asyncio.to_thread(clear_control_env, svc_rurl, lease_key)
+                    await asyncio.to_thread(clear_control_env, rurl, lease_key)
                 if meta_key:
-                    await asyncio.to_thread(clear_ingest_health_after_stop, svc_rurl, meta_key, sid)
+                    await asyncio.to_thread(clear_ingest_health_after_stop, rurl, meta_key, sid)
             except Exception as _ce:
                 logger.warning("market_ingest stop: pre-clear redis failed for %s: %s", sid, _ce)
         background_tasks.add_task(_ensure_stop_background, exc, unit)
@@ -564,7 +542,7 @@ async def market_ingest_control(
                         "ib_operator reset: disconnect_all RPC failed (%s); continuing with restart",
                         rpc_err,
                     )
-            # polygon_ws / ib_ingestor / ib_operator: ordered release + restart via systemd.
+            # ib_ingestor / ib_operator: ordered release + restart via systemd.
             result = await exc._systemctl("restart", unit)  # noqa: SLF001
             if extra:
                 result = {**result, **extra} if isinstance(result, dict) else {"result": result, **extra}
@@ -597,7 +575,7 @@ async def market_ingest_control(
             headers={"X-Accel-Buffering": "no"},
         )
 
-    if svc_rurl and meta_key:
+    if rurl and meta_key:
         try:
             if (
                 ops_profile
@@ -608,9 +586,9 @@ async def market_ingest_control(
                 )
             ):
                 if sid == "trading_engine":
-                    await asyncio.to_thread(write_trading_engine_ops_lease, svc_rurl, meta_key, ops_profile)
+                    await asyncio.to_thread(write_trading_engine_ops_lease, rurl, meta_key, ops_profile)
                 else:
-                    await asyncio.to_thread(write_control_env, svc_rurl, lease_key, ops_profile)
+                    await asyncio.to_thread(write_control_env, rurl, lease_key, ops_profile)
         except Exception as e:
             logger.warning(
                 "market_ingest redis post-action failed: %s %s %s",
@@ -667,7 +645,6 @@ async def market_ingest_clear_conflict_leases(request: Request) -> Any:
     cfg = _config(request)
     rows = market_ingest_services_from_config(cfg)
     rurl = meta_redis_url_from_ops_config(cfg)
-    massive_rurl = massive_redis_url_from_config(cfg)
     if not rurl:
         return JSONResponse(status_code=503, content={"ok": False, "error": "Redis URL not configured for Ops."})
 
@@ -679,9 +656,8 @@ async def market_ingest_clear_conflict_leases(request: Request) -> Any:
         if not meta_key:
             continue
         lk = meta_key
-        row_rurl = massive_rurl if is_polygon_ws_service_id(row_sid) and massive_rurl else rurl
         try:
-            await asyncio.to_thread(clear_control_env, row_rurl, lk)
+            await asyncio.to_thread(clear_control_env, rurl, lk)
             cleared.append(row_sid)
         except Exception as e:
             errors.append(f"{row_sid}: {e}")

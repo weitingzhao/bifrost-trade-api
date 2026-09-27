@@ -5,12 +5,9 @@ from __future__ import annotations
 from typing import Optional
 
 # systemd unit stem (with or without .service) → K8s Deployment name
-# Wave B: Polygon WS target is Plugin NS ``polygon-ws-ingestor``.
 UNIT_TO_DEPLOYMENT: dict[str, str] = {
     "bifrost-engine": "daemon",
     "bifrost-engine.service": "daemon",
-    "polygon-ws-ingestor": "polygon-ws-ingestor",
-    "polygon-ws-ingestor.service": "polygon-ws-ingestor",
     "bifrost-ib-operator": "ib-operator",
     "bifrost-ib-operator.service": "ib-operator",
     "bifrost-ib-market-gateway": "ib-market-gateway",

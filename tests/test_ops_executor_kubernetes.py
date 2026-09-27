@@ -29,7 +29,6 @@ def executor(monkeypatch):
         namespace="bifrost-stg",
         allowed_units=[
             "bifrost-ib-ingestor",
-            "polygon-ws-ingestor",
             "bifrost-engine",
             "bifrost-account-sync-daemon",
         ],
@@ -248,7 +247,7 @@ async def test_systemctl_is_active_running(executor):
 @pytest.mark.asyncio
 async def test_systemctl_is_active_scaled_zero(executor):
     executor._read_deployment = AsyncMock(return_value=_fake_deployment(0, 0))
-    state = await executor.systemctl_is_active("polygon-ws-ingestor.service")
+    state = await executor.systemctl_is_active("bifrost-account-sync-daemon.service")
     assert state == "inactive"
 
 

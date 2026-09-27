@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
-from bifrost_api.ops.market_ingest_config import (
-    canonical_ingest_service_id,
-    is_polygon_ws_service_id,
-)
+from bifrost_api.ops.market_ingest_config import canonical_ingest_service_id
 from bifrost_api.ops.market_ingest_health_clear import (
     ingest_health_is_platform_gateway,
     ingest_redis_health_looks_live,
@@ -15,7 +12,6 @@ from bifrost_api.ops.market_ingest_health_clear import (
 )
 
 _PLATFORM_IB_INGEST_IDS = frozenset({"ib_ingestor", "ib_operator", "ib_account_agent"})
-_PLUGIN_MANAGED_INGEST_IDS = frozenset({"polygon_ws"})
 
 
 def _process_counts_as_running(active: str) -> bool:
@@ -23,28 +19,10 @@ def _process_counts_as_running(active: str) -> bool:
     return a in ("active", "activating")
 
 
-def massive_ws_policy_disabled(config: dict) -> bool:
-    """True when Polygon WS ingest is intentionally off (REST-only / Starter tier).
-
-    Reads YAML ``massive:`` block (key name unchanged — Wave B does not rename config).
-    """
-    massive = config.get("massive") or {}
-    feats = massive.get("features") or {}
-    tier = str(massive.get("tier") or "starter").strip().lower()
-    if "ws_enabled" in feats:
-        return not bool(feats["ws_enabled"])
-    return tier == "starter"
-
-
-# Preferred alias (Wave B); keep ``massive_ws_policy_disabled`` for callers/tests.
-polygon_ws_policy_disabled = massive_ws_policy_disabled
-
-
 def derive_ingest_display_state(
     *,
     service_id: str,
     process_active: str,
-    config: dict,
     redis_url: Optional[str],
     ib_redis_url: Optional[str],
     meta_key: str,
@@ -57,31 +35,6 @@ def derive_ingest_display_state(
     sid = canonical_ingest_service_id(service_id)
     mk = (meta_key or "").strip()
     health_url = ib_redis_url or redis_url
-
-    if is_polygon_ws_service_id(sid) and massive_ws_policy_disabled(config):
-        return {
-            "runtime_status": "policy-off",
-            "display_active": "ws-disabled (REST-only)",
-        }
-
-    if sid in _PLUGIN_MANAGED_INGEST_IDS:
-        if health_url and mk:
-            is_live = ingest_redis_health_looks_live(health_url, mk, sid)
-            writer_recent = ingest_redis_health_writer_recent(health_url, mk)
-            if is_live:
-                return {
-                    "runtime_status": "active",
-                    "display_active": "managed@plugin-market-data (redis-massive)",
-                }
-            if writer_recent:
-                return {
-                    "runtime_status": "degraded",
-                    "display_active": "managed@plugin-market-data (starting)",
-                }
-        return {
-            "runtime_status": "inactive",
-            "display_active": "managed@plugin-market-data (offline)",
-        }
 
     if sid == "trading_engine" and not _process_counts_as_running(process_active):
         looks_live = bool(redis_url and mk and ingest_redis_health_looks_live(redis_url, mk, sid))

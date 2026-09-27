@@ -22,9 +22,7 @@ from bifrost_core.core.redis_health_keys import (
     hgetall_ib_account_agent_health,
     redis_hash_field_truthy,
     hgetall_ib_ingestor_health,
-    hgetall_polygon_ws_status,
 )
-from bifrost_core.monitor.redis_url import massive_redis_url_from_config
 
 logger = logging.getLogger(__name__)
 
@@ -118,8 +116,6 @@ def _status_error_payload() -> Dict[str, Any]:
         ),
         "market_data": {"quotes_redis_reader_ok": False},
         "socket": {
-            # legacy socket.massive removed — official key only.
-            "polygon_ws": None,
             "ib_ingestor": None,
             "ib_account_agent": None,
             "ib_operator": None,
@@ -160,7 +156,6 @@ def _assemble_status_v3(
     monitor_lamp: str,
     monitor_block_reasons: List[str],
     quotes_redis_reader_ok: bool,
-    massive: Any,
     ib_ingestor: Any,
     ib_account_agent: Any,
     platform_ib_gateway: Any = None,
@@ -216,8 +211,6 @@ def _assemble_status_v3(
         ),
         "market_data": {"quotes_redis_reader_ok": quotes_redis_reader_ok},
         "socket": {
-            # Official key only (legacy socket.massive removed).
-            "polygon_ws": massive,
             "ib_ingestor": ib_ingestor,
             "ib_account_agent": ib_account_agent,
             "ib_operator": monitor_ib_status,
@@ -428,7 +421,6 @@ def get_status(request: Request) -> Dict[str, Any]:
             except Exception:
                 quotes_redis_reader_ok = False
 
-        massive = None
         ib_ingestor = None
         ib_account_agent = None
         platform_ib_gateway = None
@@ -436,8 +428,6 @@ def get_status(request: Request) -> Dict[str, Any]:
         _r: Any = None
         _ib_rurl: Optional[str] = None
         _ib_r: Any = None
-        _massive_rurl: Optional[str] = None
-        _massive_r: Any = None
         try:
             from bifrost_core.config.startup import get_effective_ib_config
             from bifrost_core.monitor.integrations.ib_socket_status import build_ib_socket_status
@@ -447,7 +437,6 @@ def get_status(request: Request) -> Dict[str, Any]:
                 detect_ib_transport,
                 is_platform_ib_gateway_health,
             )
-            from bifrost_api.research.polygon_http import get_polygon_settings
             from bifrost_core.monitor.redis_url import ib_redis_url_from_config, redis_url_from_config
             import redis as redis_mod
 
@@ -455,29 +444,8 @@ def get_status(request: Request) -> Dict[str, Any]:
             _probe_stale_mult = float(_ib_eff_status.get("ib_probe_stale_multiplier") or 2.5)
             _status_now = time.time()
 
-            _ms = get_polygon_settings(reader._config)
-            # Internal builder for the retired Trade Polygon queue and current socket status.
-            massive_info: Dict[str, Any] = {
-                "configured": bool(_ms.get("api_key")),
-                "tier": _ms.get("tier"),
-                "pending_jobs": 0,
-                "last_snapshot_age_s": None,
-                "retired": True,
-                "note": "Trade Massive job queue retired — use market-data plugin",
-            }
             _rurl = redis_url_from_config(reader._config)
             _ib_rurl = ib_redis_url_from_config(reader._config)
-            _massive_rurl = massive_redis_url_from_config(reader._config)
-            if _massive_rurl and _massive_rurl != _rurl:
-                try:
-                    _massive_r = redis_mod.from_url(
-                        _massive_rurl,
-                        decode_responses=True,
-                        socket_connect_timeout=2,
-                        socket_timeout=2,
-                    )
-                except Exception:
-                    _massive_r = None
             if _rurl:
                 _r = redis_mod.from_url(
                     _rurl,
@@ -485,59 +453,6 @@ def get_status(request: Request) -> Dict[str, Any]:
                     socket_connect_timeout=2,
                     socket_timeout=2,
                 )
-                _mh = hgetall_polygon_ws_status(_r, r_massive=_massive_r)
-                if _mh:
-                    _now = time.time()
-                    massive_info["ws_connected"] = redis_hash_field_truthy(_mh, "connected")
-                    _wm = (_mh.get("ws_mode") or "").strip()
-                    if _wm:
-                        massive_info["ws_mode"] = _wm
-                    _lm = _mh.get("last_msg_ts")
-                    if _lm is not None:
-                        try:
-                            massive_info["last_msg_age_s"] = max(
-                                0.0, _now - float(_lm)
-                            )
-                        except (TypeError, ValueError):
-                            massive_info["last_msg_age_s"] = None
-                    else:
-                        massive_info["last_msg_age_s"] = None
-                    _ua = _mh.get("updated_at")
-                    if _ua is not None:
-                        try:
-                            massive_info["health_updated_age_s"] = max(
-                                0.0, _now - float(_ua)
-                            )
-                        except (TypeError, ValueError):
-                            massive_info["health_updated_age_s"] = None
-                    else:
-                        massive_info["health_updated_age_s"] = None
-                    try:
-                        _sh_iv = float(_mh.get("service_heartbeat_interval_sec") or 0)
-                    except (TypeError, ValueError):
-                        _sh_iv = 0.0
-                    if _sh_iv > 0:
-                        massive_info["service_heartbeat_interval_sec"] = _sh_iv
-                        try:
-                            _sh_last = float(_mh.get("last_service_heartbeat_at") or 0)
-                        except (TypeError, ValueError):
-                            _sh_last = 0.0
-                        if _sh_last > 0:
-                            massive_info["last_service_heartbeat_at"] = _sh_last
-                            massive_info["next_service_heartbeat_in_s"] = max(
-                                0.0, _sh_last + _sh_iv - _now
-                            )
-                    try:
-                        massive_info["ws_reconnects"] = int(_mh.get("reconnects") or 0)
-                    except (TypeError, ValueError):
-                        massive_info["ws_reconnects"] = int(_mh.get("reconnects") or 0)
-                else:
-                    massive_info["ws_connected"] = False
-                    massive_info["last_msg_age_s"] = None
-            else:
-                massive_info["ws_connected"] = None
-                massive_info["last_msg_age_s"] = None
-            massive = massive_info
 
             _ib_cfg = _ib_eff_status if isinstance(_ib_eff_status, dict) else {}
             _aa_unreachable = (
@@ -623,7 +538,6 @@ def get_status(request: Request) -> Dict[str, Any]:
                     mode=_mode,
                 )
         except Exception:
-            massive = None
             ib_ingestor = None
             ib_account_agent = None
             platform_ib_gateway = None
@@ -661,7 +575,6 @@ def get_status(request: Request) -> Dict[str, Any]:
             daemon_block_reasons=daemon_block_reasons,
             monitor_lamp=monitor_lamp,
             monitor_block_reasons=monitor_block_reasons,
-            massive=massive,
             ib_ingestor=ib_ingestor,
             quotes_redis_reader_ok=quotes_redis_reader_ok,
             ib_account_agent=ib_account_agent,
@@ -705,7 +618,6 @@ def get_status(request: Request) -> Dict[str, Any]:
             monitor_lamp=monitor_lamp,
             monitor_block_reasons=monitor_block_reasons,
             quotes_redis_reader_ok=quotes_redis_reader_ok,
-            massive=massive,
             ib_ingestor=ib_ingestor,
             ib_account_agent=ib_account_agent,
             platform_ib_gateway=platform_ib_gateway,

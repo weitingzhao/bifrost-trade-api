@@ -3,7 +3,6 @@
 from bifrost_api.ops.market_ingest_config import DEFAULT_MARKET_INGEST_SERVICES
 from bifrost_api.ops.market_ingest_display import (
     derive_ingest_display_state,
-    massive_ws_policy_disabled,
     platform_gateway_managed_for_service,
 )
 from bifrost_api.ops.market_ingest_health_clear import ingest_health_is_platform_gateway
@@ -76,66 +75,10 @@ def test_platform_gateway_uses_ib_redis_not_live_redis() -> None:
         mod._conn = orig
 
 
-def test_polygon_ws_policy_off_when_ws_disabled() -> None:
-    cfg = {"massive": {"tier": "developer", "features": {"ws_enabled": False}}}
-    assert massive_ws_policy_disabled(cfg) is True
-    out = derive_ingest_display_state(
-        service_id="polygon_ws",
-        process_active="inactive",
-        config=cfg,
-        redis_url="redis://live/0",
-        ib_redis_url=None,
-        meta_key="bifrost:health:ws_massive_option",
-        runtime_externally_managed=False,
-        platform_gateway_managed=False,
-        ops_control_profile="stg",
-        runtime_kind="kubernetes",
-    )
-    assert out["runtime_status"] == "policy-off"
-    assert "REST-only" in out["display_active"]
-
-
-def test_yaml_massive_ws_id_normalizes_to_polygon_ws() -> None:
-    from bifrost_api.ops.market_ingest_config import (
-        canonical_ingest_service_id,
-        is_polygon_ws_service_id,
-        market_ingest_services_from_config,
-    )
-
-    assert canonical_ingest_service_id("massive_ws") == "polygon_ws"
-    assert is_polygon_ws_service_id("massive_ws") is True
-    assert is_polygon_ws_service_id("polygon_ws") is True
-    rows = market_ingest_services_from_config(
-        {
-            "ops": {
-                "market_ingest_services": [
-                    {
-                        "id": "massive_ws",
-                        "label": "Legacy YAML id",
-                        "systemd_unit": "bifrost-massive-ws.service",
-                        "redis_meta_key": "bifrost:health:ws_massive_option",
-                    },
-                ],
-            },
-        },
-    )
-    ids = [r["id"] for r in rows]
-    assert "polygon_ws" in ids
-    assert "massive_ws" not in ids
-
-
-def test_default_services_use_official_polygon_ws_id() -> None:
-    by_id = {r["id"]: r for r in DEFAULT_MARKET_INGEST_SERVICES}
-    assert "polygon_ws" in by_id
-    assert "massive_ws" not in by_id
-    assert by_id["polygon_ws"]["redis_meta_key"] == "bifrost:health:ws_massive_option"
-
-
 def test_trading_engine_stg_policy_off() -> None:
     out = derive_ingest_display_state(
         service_id="trading_engine",
         process_active="inactive",
-        config={},
         redis_url=None,
         ib_redis_url=None,
         meta_key="bifrost:health:daemon_strategy_trading",

@@ -16,7 +16,6 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
-from bifrost_api.ops.market_ingest_config import is_polygon_ws_service_id
 from bifrost_core.core.message_center import publish_ib_service_stopped_messages
 from bifrost_core.core.redis_health_keys import (
     ENGINE_OPS_ACTIVE_REDIS_FIELD,
@@ -143,8 +142,6 @@ def ingest_redis_health_looks_live(redis_url: str, meta_key: str, service_id: st
 
 
 def _hash_looks_connected(m: Dict[str, str], sid: str) -> bool:
-    if is_polygon_ws_service_id(sid):
-        return redis_hash_field_truthy(m, "connected")
     if sid in ("ib_ingestor", "ib_market"):
         return redis_hash_field_truthy(m, "connected")
     if sid == "ib_operator":
@@ -165,20 +162,11 @@ def _hash_looks_connected(m: Dict[str, str], sid: str) -> bool:
 
 
 def clear_ingest_health_after_stop(redis_url: str, meta_key: str, service_id: str) -> None:
-    """HSET disconnected snapshot on the ingest health hash (does not delete the key).
-
-    Plugin-managed services (polygon_ws) are not cleared by Trade Ops —
-    the Plugin process owns the health hash lifecycle on redis-massive.
-    """
+    """HSET disconnected snapshot on the ingest health hash (does not delete the key)."""
     key = (meta_key or "").strip()
     if not key:
         return
     sid = (service_id or "").strip()
-    if is_polygon_ws_service_id(sid):
-        logger.info(
-            "clear_ingest_health_after_stop: skipping %s — Plugin-managed service", sid
-        )
-        return
     now = time.time()
     r = _conn(redis_url)
     try:

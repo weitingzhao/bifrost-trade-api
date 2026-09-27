@@ -102,12 +102,10 @@ def get_polygon_settings(config: Dict[str, Any]) -> Dict[str, Any]:
     trades_default = tier == "developer"
     trades_enabled = bool(feats.get("trades_enabled", trades_default))
     rest_base = (m.get("rest_base") or "https://api.polygon.io").rstrip("/")
-    ws_url = (m.get("ws_url") or "wss://socket.polygon.io/options").strip()
     daily_years = _daily_full_backfill_years_from_config(m, tier)
     return {
         "api_key": api_key,
         "rest_base": rest_base,
-        "ws_url": ws_url,
         "tier": tier,
         "trades_enabled": trades_enabled,
         "daily_full_backfill_years": daily_years,
