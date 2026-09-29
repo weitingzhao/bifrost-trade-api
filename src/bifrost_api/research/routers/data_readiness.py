@@ -1085,7 +1085,54 @@ def get_symbol_fundamental_raw_data(
 
     Used by the Stock Inspector sidebar to display the underlying EPS/revenue data
     behind each SEPA fundamental condition and highlight which rows feed each condition.
+
+    ``quarterly`` (last 10) and ``annual`` (last 5) are newest first, read from the
+    plugin's income statements in either vendor format; ``metrics`` are the inspector
+    columns of ``dw_stock.mart_sepa_fundamental_eval``, empty when that read fails.
+    Every answer carries the three keys, since the inspector reads them unguarded.
     """
+    _ = request
+    sym = (symbol or "").strip().upper()
+    empty: Dict[str, Any] = {"quarterly": [], "annual": [], "metrics": {}}
+    if not sym:
+        return {"ok": False, "error": "symbol is required", **empty}
+    try:
+        from bifrost_api.research.market_data_client import fetch_sepa_financials
+        from bifrost_api.research.sepa.financials_data import REPORT_INCOME, income_rows_for_inspector
+
+        # Headroom over 10 / 5: a series that also holds the other vendor format,
+        # or a restated period, loses rows before the cut.
+        q_raw = fetch_sepa_financials([sym], REPORT_INCOME, period_type="quarterly", limit=16).get(sym, [])
+        a_raw = fetch_sepa_financials([sym], REPORT_INCOME, period_type="annual", limit=8).get(sym, [])
+        quarterly, annual = income_rows_for_inspector(q_raw, a_raw, quarters=10, years=5)
+    except Exception as e:
+        logger.warning("symbol fundamental raw data failed for %s: %s", sym, e)
+        return {"ok": False, "error": str(e), "symbol": sym, **empty}
+
+    return {
+        "ok": True,
+        "symbol": sym,
+        "quarterly": quarterly,
+        "annual": annual,
+        "metrics": _fundamental_metrics(sym),
+    }
+
+
+def _fundamental_metrics(sym: str) -> Dict[str, Any]:
+    """Inspector metrics from dw_stock.mart_sepa_fundamental_eval; ``{}`` when unavailable."""
+    from bifrost_api.research.analytics_reader import FUND_METRIC_COLUMNS, fetch_fundamental_eval_single
+    from bifrost_api.research.sepa.financials_data import _as_float
+
+    try:
+        row = fetch_fundamental_eval_single(sym)
+    except Exception as e:
+        logger.warning("analytics fundamental metrics failed for %s: %s", sym, e)
+        return {}
+    if not row:
+        return {}
+    return {col: _as_float(row.get(col)) for col in FUND_METRIC_COLUMNS}
+
+
 @router.get("/research/data/readiness/symbol-option-pcr")
 def get_symbol_option_pcr(
     request: Request,

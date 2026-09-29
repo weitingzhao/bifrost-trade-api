@@ -10,6 +10,7 @@ W2-P2: replaced ~33 direct SQL queries with HTTP calls.
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -160,6 +161,146 @@ def unpack_financial_data(
                 break
         out[dest] = val
     return out
+
+
+def is_legacy_financial_data(data: Any) -> bool:
+    """True for the legacy vendor shape, where each field is ``{value, unit, label, ...}``.
+
+    The v1 standardized shape is flat scalars. Both sit in ``stock_financials.data``
+    while the plugin moves to v1, and they do not splice period over period: v1
+    restates EPS for later splits, the legacy rows are as reported.
+    """
+    if not isinstance(data, dict):
+        return False
+    return any(isinstance(v, dict) and "value" in v for v in data.values())
+
+
+def _one_format(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop legacy rows from a series that also has v1 rows, so one table never mixes the two."""
+    has_v1 = any(
+        isinstance(r.get("data"), dict) and r.get("data") and not is_legacy_financial_data(r.get("data"))
+        for r in rows
+    )
+    if not has_v1:
+        return list(rows)
+    return [r for r in rows if not is_legacy_financial_data(r.get("data"))]
+
+
+def _as_int(v: Any) -> Optional[int]:
+    try:
+        return int(v) if v is not None and v != "" else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_date(v: Any) -> Optional[date]:
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    if isinstance(v, str) and len(v) >= 10:
+        try:
+            return date.fromisoformat(v[:10])
+        except ValueError:
+            return None
+    return None
+
+
+_QUARTER_DAYS = 365.25 / 4
+
+
+def derive_fiscal_quarter(
+    fiscal_year: Any,
+    period_end: Any,
+    fiscal_year_ends: Dict[int, date],
+) -> Optional[int]:
+    """Fiscal quarter of a quarterly row whose ``fiscal_quarter`` column is empty.
+
+    The legacy vendor response carries the quarter only as ``fiscal_period``, which
+    the plugin does not store, so every legacy row has ``fiscal_quarter`` NULL
+    (read 2026-09-29, quarterly and annual alike); v1 rows carry it. Counted back
+    from the fiscal-year end: that year's annual row, else the neighbouring year's
+    moved by a year (the current fiscal year has no annual row until it closes).
+    """
+    fy = _as_int(fiscal_year)
+    pe = _as_date(period_end)
+    if fy is None or pe is None:
+        return None
+    end = fiscal_year_ends.get(fy)
+    if end is None and fy - 1 in fiscal_year_ends:
+        end = fiscal_year_ends[fy - 1] + timedelta(days=365)
+    if end is None and fy + 1 in fiscal_year_ends:
+        end = fiscal_year_ends[fy + 1] - timedelta(days=365)
+    if end is None:
+        return None
+    quarter = 4 - round((end - pe).days / _QUARTER_DAYS)
+    return quarter if 1 <= quarter <= 4 else None
+
+
+def _newest_first(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return sorted(rows, key=lambda r: str(r.get("period_date") or ""), reverse=True)
+
+
+def income_rows_for_inspector(
+    quarterly: List[Dict[str, Any]],
+    annual: List[Dict[str, Any]],
+    *,
+    quarters: int = 10,
+    years: int = 5,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """EPS / revenue rows, newest first, for the Stock Inspector's Source Data tables.
+
+    ``quarterly`` / ``annual`` are income-statement rows as the plugin's
+    ``/stocks/fundamentals/sepa/financials`` returns them. Reads the legacy nested
+    and the v1 flat ``data`` through ``_INCOME_FIELDS``; a series holding both keeps
+    only v1. Rows are unique on the table's row key — (fiscal_year, fiscal_quarter)
+    and fiscal_year — which the inspector keys its rows and highlights by.
+    """
+    fiscal_year_ends: Dict[int, date] = {}
+    for r in annual:
+        fy = _as_int(r.get("fiscal_year"))
+        pe = _as_date(r.get("period_date"))
+        if fy is not None and pe is not None:
+            fiscal_year_ends[fy] = pe
+
+    q_out: List[Dict[str, Any]] = []
+    q_seen: set = set()
+    for r in _newest_first(_one_format(quarterly)):
+        fy = _as_int(r.get("fiscal_year"))
+        fq = _as_int(r.get("fiscal_quarter")) or derive_fiscal_quarter(
+            fy, r.get("period_date"), fiscal_year_ends
+        )
+        if fq is not None:
+            if (fy, fq) in q_seen:
+                continue
+            q_seen.add((fy, fq))
+        flat = unpack_financial_data(r.get("data"), _INCOME_FIELDS)
+        q_out.append({
+            "fiscal_year": fy,
+            "fiscal_quarter": fq,
+            "eps": _as_float(flat.get("basic_earnings_per_share")),
+            "revenues": _as_float(flat.get("revenue")),
+        })
+        if len(q_out) >= quarters:
+            break
+
+    a_out: List[Dict[str, Any]] = []
+    a_seen: set = set()
+    for r in _newest_first(_one_format(annual)):
+        fy = _as_int(r.get("fiscal_year"))
+        if fy in a_seen:
+            continue
+        a_seen.add(fy)
+        flat = unpack_financial_data(r.get("data"), _INCOME_FIELDS)
+        a_out.append({
+            "fiscal_year": fy,
+            "eps": _as_float(flat.get("basic_earnings_per_share")),
+            "revenues": _as_float(flat.get("revenue")),
+        })
+        if len(a_out) >= years:
+            break
+
+    return q_out, a_out
 
 
 def fetch_income_rows_for_sepa_from_pg(

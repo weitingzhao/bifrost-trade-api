@@ -52,6 +52,28 @@ FUND_CONDITION_COLUMNS = [
     "rev_acc_fy",
 ]
 
+# The mart's "Raw metrics for inspector" columns: the numbers the conditions above test.
+FUND_METRIC_COLUMNS = [
+    "eps_q0",
+    "eps_q0_yoy_base",
+    "eps_g0",
+    "eps_g1",
+    "eps_g2",
+    "rev_q0",
+    "rev_q0_yoy_base",
+    "rev_g0",
+    "rev_g1",
+    "rev_g2",
+    "eps_fy0",
+    "eps_fy3",
+    "rev_fy0",
+    "rev_fy3",
+    "eps_fy_g0",
+    "eps_fy_g1",
+    "rev_fy_g0",
+    "rev_fy_g1",
+]
+
 TECH_CONDITION_COLUMNS = [
     "avg_volume_50_gt_threshold",
     "close_ge_low52_x_1_3",
