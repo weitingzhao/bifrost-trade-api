@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Request
 
@@ -897,45 +897,6 @@ _TECH_VALID_CONDITION_IDS = frozenset(
     )
 )
 
-_TECH_MOMENTUM_INDICATOR_IDS = frozenset(
-    (
-        "rsi_14_in_band",
-        "macd_hist_positive",
-        "roc_3m_positive",
-        "roc_6m_positive",
-        "roc_12m_positive",
-        "multi_period_rs_4w_positive",
-        "multi_period_rs_13w_positive",
-        "multi_period_rs_26w_positive",
-        "slope_sma200_positive",
-        "up_down_volume_50d_gt_1",
-    )
-)
-
-_TECH_STRUCTURE_INDICATOR_IDS = frozenset(
-    (
-        "realized_vol_contraction",
-        "bb_squeeze",
-        "obv_slope_30d_positive",
-        "adx_14_ge_25",
-        "aroon_oscillator_ge_50",
-        "tight_closes_5d",
-        "vcp_contraction_3m",
-        "pocket_pivot_count",
-        "rsl_new_high",
-        "base_metrics",
-    )
-)
-
-_TECH_SENTIMENT_INDICATOR_IDS = frozenset(
-    (
-        "days_to_cover_ge_5",
-        "short_volume_ratio_le_30pct_recent",
-        "short_volume_ratio_trend_4w_falling",
-    )
-)
-
-
 @router.get("/research/data/readiness/fundamental-condition-catalog")
 def get_fundamental_condition_catalog() -> Dict[str, Any]:
     """Return static catalog of all fundamental condition IDs with group/label/threshold metadata."""
@@ -1350,79 +1311,240 @@ def get_ticker_overview(symbol: str, request: Request) -> Dict[str, Any]:
 
 # ── Tier 2–4 new endpoints ────────────────────────────────────────────────────
 
-_TECH_MOMENTUM_INDICATOR_IDS = frozenset(
-    (
-        "rsi_14_in_band",
-        "macd_hist_positive",
-        "roc_3m_positive",
-        "roc_6m_positive",
-        "roc_12m_positive",
-        "multi_period_rs_4w_positive",
-        "multi_period_rs_13w_positive",
-        "multi_period_rs_26w_positive",
-        "slope_sma200_positive",
-        "up_down_volume_50d_gt_1",
-    )
-)
-
-_TECH_STRUCTURE_INDICATOR_IDS = frozenset(
-    (
-        "realized_vol_contraction",
+# ── Momentum · structure · sentiment tiers ────────────────────────────────
+#
+# Each tier is one dbt mart with one row per symbol for the latest eval_date:
+# boolean signal columns and a `<tier>_score` that is the passing fraction
+# (signals passed / signals). The ids below ARE those column names; until
+# 2026-09-30 this file validated against an older vocabulary no mart carries,
+# and the filters answered a hard-coded 0 "awaiting 252+ trading days" while
+# the marts held every symbol in the universe.
+_TIER_COLUMNS: Dict[str, tuple] = {
+    "momentum": (
+        "rsi_above_50",
+        "rsi_healthy_range",
+        "macd_bullish",
+        "macd_strong",
+        "roc_10_positive",
+        "roc_21_positive",
+        "rs_gt_spy",
+        "volume_expanding",
+        "volume_surge",
+        "price_gt_sma10",
+    ),
+    "structure": (
         "bb_squeeze",
-        "obv_slope_30d_positive",
-        "adx_14_ge_25",
-        "aroon_oscillator_ge_50",
-        "tight_closes_5d",
-        "vcp_contraction_3m",
-        "pocket_pivot_count",
-        "rsl_new_high",
-        "base_metrics",
-    )
-)
-
-_TECH_SENTIMENT_INDICATOR_IDS = frozenset(
-    (
-        "days_to_cover_ge_5",
-        "short_volume_ratio_le_30pct_recent",
-        "short_volume_ratio_trend_4w_falling",
-    )
-)
-
-_TIER_INDICATOR_IDS: Dict[str, frozenset] = {
-    "structure": _TECH_STRUCTURE_INDICATOR_IDS,
-    "sentiment": _TECH_SENTIMENT_INDICATOR_IDS,
+        "bb_tight_squeeze",
+        "adx_trending",
+        "adx_strong_trend",
+        "aroon_bullish",
+        "aroon_up_strong",
+        "vol_contracting",
+        "vol_tight_contraction",
+    ),
+    "sentiment": (
+        "si_declining",
+        "low_short_float",
+        "high_days_to_cover",
+        "short_float_declining",
+        "low_short_volume",
+        "sv_ratio_declining",
+    ),
 }
-_TIER_MAX_SCORE: Dict[str, int] = {
-    "structure": 10,
-    "sentiment": 3,
-}
+_TIER_INDICATOR_IDS: Dict[str, frozenset] = {k: frozenset(v) for k, v in _TIER_COLUMNS.items()}
+# The score is a fraction; filters and histograms speak in signals passed (0..N).
+_TIER_MAX_SCORE: Dict[str, int] = {k: len(v) for k, v in _TIER_COLUMNS.items()}
+
+
+def _tier_table(tier: str) -> str:
+    return f"dw_stock.mart_sepa_tier_{tier}"
+
+
+def _tier_passed_sql(tier: str) -> str:
+    """Signals passed, as an integer 0..N, from the stored fraction."""
+    return f"round({tier}_score * {_TIER_MAX_SCORE[tier]})::int"
+
+
+def _tier_filter(tier: str, cond_ids: List[str], min_score: int, match: str, limit: int) -> Dict[str, Any]:
+    """Names on the latest eval_date passing the picked signals (all / any) and at least min_score of them."""
+    from bifrost_api.research.analytics_reader import get_conn as _a_conn
+    from psycopg2.extras import RealDictCursor
+
+    table = _tier_table(tier)
+    passed = _tier_passed_sql(tier)
+    where = [f"eval_date = (SELECT max(eval_date) FROM {table})"]
+    if cond_ids:
+        joiner = " OR " if match == "any" else " AND "
+        where.append("(" + joiner.join(f"{c} IS TRUE" for c in cond_ids) + ")")
+    if min_score > 0:
+        where.append(f"{passed} >= %s")
+    sql = (
+        f"SELECT symbol, {passed} AS score, eval_date, count(*) OVER () AS total "
+        f"FROM {table} WHERE {' AND '.join(where)} "
+        f"ORDER BY {tier}_score DESC, symbol ASC LIMIT %s"
+    )
+    params: List[Any] = ([min_score] if min_score > 0 else []) + [limit]
+    with _a_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall() or []
+    total = int(rows[0]["total"]) if rows else 0
+    return {
+        "ok": True,
+        "tier": tier,
+        "include": cond_ids,
+        "match": match,
+        "min_score": min_score,
+        "max_score": _TIER_MAX_SCORE[tier],
+        # The whole match, not the page: a limited list is a floor, never a count.
+        "count": total,
+        "truncated": total > len(rows),
+        "eval_date": str(rows[0]["eval_date"]) if rows else None,
+        "symbols": [{"symbol": r["symbol"], "score": int(r["score"] or 0)} for r in rows],
+        "limit": limit,
+    }
+
+
+def _tier_args(tier: str, include: str, min_score: int, match: str, limit: int):
+    raw_ids = [s.strip() for s in (include or "").split(",") if s.strip()]
+    valid = _TIER_INDICATOR_IDS[tier]
+    cond_ids = [c for c in raw_ids if c in valid]
+    unknown = [c for c in raw_ids if c not in valid]
+    try:
+        eff_limit = max(1, min(int(limit), 5000))
+    except Exception:
+        eff_limit = 500
+    eff_min = max(0, min(int(min_score or 0), _TIER_MAX_SCORE[tier]))
+    return cond_ids, unknown, eff_min, ("any" if match == "any" else "all"), eff_limit
+
+
+def _tier_filter_response(tier: str, include: str, min_score: int, match: str, limit: int) -> Dict[str, Any]:
+    cond_ids, unknown, eff_min, eff_match, eff_limit = _tier_args(tier, include, min_score, match, limit)
+    if unknown:
+        return {"ok": False, "error": f"unknown {tier} signal ids: {', '.join(unknown)}", "valid": list(_TIER_COLUMNS[tier])}
+    if not cond_ids and eff_min == 0:
+        return {"ok": True, "tier": tier, "include": [], "count": 0, "symbols": [], "limit": eff_limit}
+    try:
+        return _tier_filter(tier, cond_ids, eff_min, eff_match, eff_limit)
+    except Exception as e:
+        logger.warning("tier filter %s failed: %s", tier, e)
+        return {"ok": False, "error": str(e)}
 
 
 @router.get("/research/data/readiness/momentum-distribution")
 def get_momentum_distribution(request: Request) -> Dict[str, Any]:
-    """Return universe-wide histogram of momentum_score (0..10)."""
+    """Universe-wide histogram of momentum signals passed (0..10) on the latest eval_date."""
     _ = request
-    try:
-        from bifrost_api.research.analytics_reader import get_conn as _a_conn
-        from psycopg2.extras import RealDictCursor
+    stats = _tier_stats("momentum")
+    if not stats.get("ok"):
+        return stats
+    return {"ok": True, "distribution": stats["pass_count_distribution"], "total": stats["universe_count"]}
 
-        with _a_conn() as _ac:
-            with _ac.cursor(cursor_factory=RealDictCursor) as cur:
+
+def _tier_stats(tier: str) -> Dict[str, Any]:
+    """Per-signal pass counts and the signals-passed histogram for one tier, latest eval_date."""
+    from bifrost_api.research.analytics_reader import get_conn as _a_conn
+    from psycopg2.extras import RealDictCursor
+
+    table = _tier_table(tier)
+    cols = _TIER_COLUMNS[tier]
+    per_signal = ", ".join(f"count(*) FILTER (WHERE {c} IS TRUE) AS {c}" for c in cols)
+    latest = f"eval_date = (SELECT max(eval_date) FROM {table})"
+    try:
+        with _a_conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(f"SELECT max(eval_date) AS d, count(*) AS n, {per_signal} FROM {table} WHERE {latest}")
+                head = cur.fetchone() or {}
                 cur.execute(
-                    "SELECT momentum_score AS score, count(*) AS cnt "
-                    "FROM dw_stock.mart_sepa_tier_momentum GROUP BY 1 ORDER BY 1"
+                    f"SELECT {_tier_passed_sql(tier)} AS s, count(*) AS c FROM {table} WHERE {latest} GROUP BY 1"
                 )
-                rows = cur.fetchall() or []
-        distribution = {i: 0 for i in range(11)}
-        total = 0
-        for r in rows:
-            s = int(r.get("score", 0))
-            c = int(r.get("cnt", 0))
-            distribution[s] = c
-            total += c
-        return {"ok": True, "distribution": distribution, "total": total}
+                hist_rows = cur.fetchall() or []
     except Exception as e:
+        logger.warning("tier stats %s failed: %s", tier, e)
         return {"ok": False, "error": str(e)}
+    hist = {i: 0 for i in range(_TIER_MAX_SCORE[tier] + 1)}
+    for r in hist_rows:
+        hist[int(r["s"] or 0)] = int(r["c"] or 0)
+    return {
+        "ok": True,
+        "tier": tier,
+        "eval_date": str(head["d"]) if head.get("d") else None,
+        "universe_count": int(head.get("n") or 0),
+        "max_score": _TIER_MAX_SCORE[tier],
+        "conditions": [{"id": c, "pass": int(head.get(c) or 0)} for c in cols],
+        "pass_count_distribution": hist,
+    }
+
+
+@router.get("/research/data/readiness/tier-stats")
+def get_tier_stats(request: Request, tier: str = "momentum") -> Dict[str, Any]:
+    """Per-signal pass counts and the signals-passed histogram for momentum, structure or sentiment."""
+    _ = request
+    if tier not in _TIER_COLUMNS:
+        return {"ok": False, "error": f"tier must be one of: {list(_TIER_COLUMNS.keys())}"}
+    return _tier_stats(tier)
+
+
+_MOMENTUM_GRADES = ("A+", "A", "B", "C", "D")
+
+
+@router.get("/research/data/readiness/momentum-grades")
+def get_momentum_grades(request: Request, grades: str = "", limit: int = 2000) -> Dict[str, Any]:
+    """The radar's grades on its latest session: names per grade, and the names in ``grades``.
+
+    ``/research/momentum/radar`` resolves its latest session only for one
+    symbol; across the universe it returns every session it holds, so a grade
+    read there counts names that held it on any day in months. A screen asks
+    about today, so this reads the latest ``trade_date`` only.
+    """
+    _ = request
+    picked = [g.strip().upper() for g in (grades or "").split(",") if g.strip()]
+    picked = [g for g in picked if g in _MOMENTUM_GRADES]
+    try:
+        eff_limit = max(1, min(int(limit), 5000))
+    except Exception:
+        eff_limit = 2000
+    from bifrost_api.research.analytics_reader import get_conn as _a_conn
+    from psycopg2.extras import RealDictCursor
+
+    table = "features.stock_signal_momentum_daily"
+    latest = f"trade_date = (SELECT max(trade_date) FROM {table})"
+    try:
+        with _a_conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    f"SELECT max(trade_date) AS d, grade, count(DISTINCT symbol) AS n FROM {table} "
+                    f"WHERE {latest} GROUP BY grade"
+                )
+                count_rows = cur.fetchall() or []
+                names: List[str] = []
+                if picked:
+                    cur.execute(
+                        f"SELECT DISTINCT symbol FROM {table} WHERE {latest} AND grade = ANY(%s) "
+                        "ORDER BY symbol LIMIT %s",
+                        (picked, eff_limit),
+                    )
+                    names = [r["symbol"] for r in (cur.fetchall() or [])]
+    except Exception as e:
+        logger.warning("momentum grades failed: %s", e)
+        return {"ok": False, "error": str(e)}
+    counts = {g: 0 for g in _MOMENTUM_GRADES}
+    trade_date = None
+    for r in count_rows:
+        if r.get("grade") in counts:
+            counts[r["grade"]] = int(r["n"] or 0)
+        trade_date = trade_date or (str(r["d"]) if r.get("d") else None)
+    total_picked = sum(counts[g] for g in picked)
+    return {
+        "ok": True,
+        "trade_date": trade_date,
+        "counts": counts,
+        "graded": sum(counts.values()),
+        "grades": picked,
+        "count": total_picked,
+        "truncated": total_picked > len(names) if picked else False,
+        "symbols": names,
+    }
 
 
 @router.get("/research/data/readiness/momentum-filter")
@@ -1430,25 +1552,12 @@ def get_momentum_filter(
     request: Request,
     include: str = "",
     min_score: int = 0,
+    match: str = "all",
     limit: int = 500,
 ) -> Dict[str, Any]:
-    """Filter symbols by momentum sub-conditions and/or minimum momentum score.
-
-    ``include``: comma-separated momentum indicator IDs (validated against whitelist).
-    ``min_score``: minimum momentum_score (0..10).
-    """
-    raw_ids = [s.strip() for s in (include or "").split(",") if s.strip()]
-    cond_ids = [c for c in raw_ids if c in _TECH_MOMENTUM_INDICATOR_IDS]
-
-    return {
-        "ok": True,
-        "include": cond_ids,
-        "min_score": min_score,
-        "count": 0,
-        "symbols": [],
-        "limit": limit,
-        "note": "Momentum data from dw_stock.mart_sepa_tier_momentum (awaiting 252+ trading days of data).",
-    }
+    """Names passing the picked momentum signals (``match`` all | any) and at least ``min_score`` of the 10."""
+    _ = request
+    return _tier_filter_response("momentum", include, min_score, match, limit)
 
 
 @router.get("/research/data/readiness/tier-filter")
@@ -1457,27 +1566,14 @@ def get_tier_filter(
     tier: str = "structure",
     include: str = "",
     min_score: int = 0,
+    match: str = "all",
     limit: int = 500,
 ) -> Dict[str, Any]:
-    """Filter symbols by structure or sentiment tier sub-conditions and/or minimum tier score."""
+    """Names passing the picked structure / sentiment / momentum signals and at least ``min_score`` of them."""
     _ = request
-    if tier not in _TIER_INDICATOR_IDS:
-        return {"ok": False, "error": f"tier must be one of: {list(_TIER_INDICATOR_IDS.keys())}"}
-
-    valid_ids = _TIER_INDICATOR_IDS[tier]
-    raw_ids = [s.strip() for s in (include or "").split(",") if s.strip()]
-    cond_ids = [c for c in raw_ids if c in valid_ids]
-    return {
-        "ok": True,
-        "tier": tier,
-        "include": cond_ids,
-        "min_score": min_score,
-        "count": 0,
-        "symbols": [],
-        "limit": limit,
-        "note": f"Tier data from dw_stock.mart_sepa_tier_{tier} (awaiting 252+ trading days of data).",
-    }
-
+    if tier not in _TIER_COLUMNS:
+        return {"ok": False, "error": f"tier must be one of: {list(_TIER_COLUMNS.keys())}"}
+    return _tier_filter_response(tier, include, min_score, match, limit)
 
 
 @router.get("/research/data/readiness/symbol-technical-tiers")
