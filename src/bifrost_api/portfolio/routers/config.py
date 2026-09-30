@@ -179,3 +179,39 @@ def put_market_streams_symbol_order(request: Request, body: Dict[str, Any] = Bod
     if reader.set_market_streams_symbol_order(category_name, symbols):
         return {"ok": True}
     return {"ok": False, "error": "Failed to save symbol order."}
+
+
+# --- Instrument class (core 0.27.0, trade design Rev .119) --------------------
+# What kind of security a stock-like holding is: stock / fixed_income /
+# cash_like, registered by the Owner once per instrument. Positions carry it as
+# `instrument_class`; an unregistered instrument has none and reads as a stock.
+
+
+@router.get("/instrument-classes")
+def get_instrument_classes(request: Request) -> Dict[str, Any]:
+    """Every registered instrument and its class."""
+    reader = request.app.state.reader
+    items = reader.list_instrument_classes()
+    return {"ok": True, "items": items, "count": len(items)}
+
+
+@router.put("/instrument-classes/{contract_key}")
+def put_instrument_class(request: Request, contract_key: str, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Register or change one instrument's class. body: instrument_class, note (optional)."""
+    if not request.app.state.control_via_db:
+        return {"ok": False, "error": "Postgres required."}
+    b = body or {}
+    ok, err = request.app.state.reader.set_instrument_class(
+        contract_key, str(b.get("instrument_class") or ""), note=b.get("note")
+    )
+    return {"ok": True} if ok else {"ok": False, "error": err or "Failed to save the instrument class."}
+
+
+@router.delete("/instrument-classes/{contract_key}")
+def delete_instrument_class(request: Request, contract_key: str) -> Dict[str, Any]:
+    """Drop the registration; the instrument reads as a stock again."""
+    if not request.app.state.control_via_db:
+        return {"ok": False, "error": "Postgres required."}
+    if request.app.state.reader.delete_instrument_class(contract_key):
+        return {"ok": True}
+    return {"ok": False, "error": "Failed to clear the instrument class."}

@@ -40,6 +40,12 @@ def test_every_portfolio_router_is_mounted_on_the_account_app() -> None:
         )
 
 
+def test_instrument_classes_live_on_the_config_router_the_account_app_mounts() -> None:
+    from bifrost_api.portfolio.routers import portfolio_config_router
+
+    assert "/instrument-classes/{contract_key}" in _paths(portfolio_config_router)
+
+
 def test_short_legs_is_reachable_at_the_path_the_gateway_strips_to() -> None:
     """The gateway strips `/api/portfolio`, so the app must own `/portfolio/short-legs`."""
     assert "/portfolio/short-legs" in _paths(portfolio_short_legs_router)
