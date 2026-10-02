@@ -114,8 +114,11 @@ def create_app(
         from bifrost_api.ops.app import AccessControlAllowPrivateNetworkMiddleware
 
         app.add_middleware(AccessControlAllowPrivateNetworkMiddleware)
-    except Exception:
-        logger.exception("Failed to add Ops Private Network middleware")
+    except Exception as exc:
+        # A monitor without its Ops wiring passes readiness on /health while /ops/* and
+        # /research/docs/* answer 404, and the platform's api-ops probe stays green. Fail
+        # the start instead, so a rollout keeps the old pods (debt TD-27).
+        raise RuntimeError("monitor startup: Ops Private Network middleware failed") from exc
     # Strategy Trading Daemon console (run_engine.py → bifrost:console:{dev|prod}:daemon_trading + legacy); reader thread + queues
     app.state.daemon_log_queues: list = []
     app.state.daemon_log_lock = threading.Lock()
@@ -270,8 +273,8 @@ def create_app(
             config=merged_config or reader._config,
             resolved_config_path=resolved_config_path,
         )
-    except Exception:
-        logger.exception("Failed to attach docs routes onto monitor")
+    except Exception as exc:
+        raise RuntimeError("monitor startup: attaching the docs routes failed") from exc
 
     # Phase B Wave B4: Ops control plane absorbed into monitor (Gate PASS).
     try:
@@ -283,8 +286,8 @@ def create_app(
             resolved_config_path=resolved_config_path,
             register_root_health=False,
         )
-    except Exception:
-        logger.exception("Failed to wire Ops control plane onto monitor")
+    except Exception as exc:
+        raise RuntimeError("monitor startup: wiring the Ops control plane failed") from exc
 
     # backend/monitor/app.py -> repo root (not backend/)
     _root = Path(__file__).resolve().parent.parent.parent
