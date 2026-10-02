@@ -8,7 +8,7 @@ import sys
 
 
 def main() -> int:
-    config_path = os.environ.get("BIFROST_CONFIG", "/app/config/config.stg.yaml")
+    config_path = os.environ.get("BIFROST_CONFIG", "/app/config/runtime.yaml")
     if not os.path.isfile(config_path):
         print(f"Config not found: {config_path}", file=sys.stderr)
         return 1

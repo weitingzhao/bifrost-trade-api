@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from bifrost_core.config.startup import config_profile_from_resolved_path
+from bifrost_core.config.profile import deployment_profile
 from bifrost_core.ib_operator.client import IbOperatorClient
 from bifrost_core.monitor.reader import StatusReader
 from bifrost_core.observability.prometheus import instrument_app
@@ -145,11 +145,8 @@ def create_app(
     app.state.control_via_db = control_via_db
     app.state.data_lag_threshold_ms = data_lag_threshold_ms
     app.state.status_cfg_for_read = status_cfg_for_read
-    app.state.bifrost_config_profile = (
-        config_profile_from_resolved_path(resolved_config_path)
-        if resolved_config_path
-        else None
-    )
+    # One answer to "which env" for every app (debt TD-52): control_profile, then env, then file name.
+    app.state.bifrost_config_profile = deployment_profile(merged_config or reader._config, resolved_config_path)
     _fe = (merged_config or {}).get("frontend") or {}
 
     def _fe_str(key: str) -> Optional[str]:

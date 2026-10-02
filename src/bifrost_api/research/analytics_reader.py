@@ -25,10 +25,13 @@ from psycopg2.pool import ThreadedConnectionPool
 
 logger = logging.getLogger(__name__)
 
-_ANALYTICS_PG_HOST = os.environ.get("ANALYTICS_PG_HOST", "192.168.10.73")
-_ANALYTICS_PG_PORT = int(os.environ.get("ANALYTICS_PG_PORT", "30432"))
+# No fallback host or user (debt TD-54): the defaults were a LAN NodePort and a role
+# (bifrost_readonly) that exists nowhere, so a pod missing its env connected somewhere
+# unintended or failed late. Every Deployment sets ANALYTICS_PG_* (base manifest).
+_ANALYTICS_PG_HOST = os.environ.get("ANALYTICS_PG_HOST", "").strip()
+_ANALYTICS_PG_PORT = int(os.environ.get("ANALYTICS_PG_PORT", "5432"))
 _ANALYTICS_PG_DATABASE = os.environ.get("ANALYTICS_PG_DATABASE", "bifrost_golden_source")
-_ANALYTICS_PG_USER = os.environ.get("ANALYTICS_PG_USER", "bifrost_readonly")
+_ANALYTICS_PG_USER = os.environ.get("ANALYTICS_PG_USER", "").strip()
 _ANALYTICS_PG_PASSWORD = os.environ.get("ANALYTICS_PG_PASSWORD", "")
 
 _DEFAULT_RESEARCH_URL = "http://research-api.research.svc.cluster.local:8795"
@@ -123,6 +126,11 @@ def research_api_base() -> str:
 def _get_pool() -> ThreadedConnectionPool:
     global _pool
     if _pool is None or _pool.closed:
+        if not _ANALYTICS_PG_HOST or not _ANALYTICS_PG_USER:
+            raise RuntimeError(
+                "Golden Source direct connection needs ANALYTICS_PG_HOST and ANALYTICS_PG_USER; "
+                "this process has no fallback host or user."
+            )
         _pool = ThreadedConnectionPool(
             minconn=1,
             maxconn=5,

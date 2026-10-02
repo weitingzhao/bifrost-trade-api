@@ -14,10 +14,8 @@ from fastapi.responses import JSONResponse
 
 from bifrost_api.common.service_endpoints import mount_auth_capabilities
 from bifrost_api.docs_api.merge_openapi import fetch_openapi, merge_openapi_specs
-from bifrost_core.config.startup import (
-    config_profile_from_resolved_path,
-    normalize_server_config,
-)
+from bifrost_core.config.profile import deployment_profile
+from bifrost_core.config.startup import normalize_server_config
 from bifrost_core.observability.prometheus import instrument_app
 
 logger = logging.getLogger(__name__)
@@ -63,7 +61,7 @@ def create_docs_app(
         raise ValueError("create_docs_app requires config['server'] from merged YAML (read_config).")
     _cfg["server"] = normalize_server_config(_cfg["server"])
 
-    _profile = config_profile_from_resolved_path(resolved_config_path) if resolved_config_path else None
+    _profile = deployment_profile(_cfg, resolved_config_path)
 
 
     _state: Dict[str, Any] = {

@@ -16,7 +16,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from bifrost_core.config.startup import config_profile_from_resolved_path, normalize_server_config
+from bifrost_core.config.profile import deployment_profile
+from bifrost_core.config.startup import normalize_server_config
 from bifrost_core.monitor.reader import StatusReader
 from bifrost_core.monitor.reader.errors import ReadFailed
 from bifrost_core.observability.prometheus import instrument_app
@@ -72,9 +73,8 @@ def create_account_app(
     app.state.status_cfg_for_read = status_cfg_for_read
     app.state.monitor_enabled = True
     app.state.ib_operator_client = None
-    app.state.bifrost_config_profile = (
-        config_profile_from_resolved_path(resolved_config_path) if resolved_config_path else None
-    )
+    # One answer to "which env" for every app (debt TD-52): control_profile, then env, then file name.
+    app.state.bifrost_config_profile = deployment_profile(merged_config or reader._config, resolved_config_path)
 
     _cfg_holder = merged_config or reader._config
     _raw_server = _cfg_holder.get("server")
