@@ -17,6 +17,7 @@ from starlette.testclient import TestClient
 
 import bifrost_api.trading.routers.executions as ex
 from bifrost_api.account.app import create_account_app
+from bifrost_core.monitor.reader.errors import WriteNotFound
 from tests.contract.helpers import operator_server_config
 from tests.envelope_asserts import assert_error, assert_list
 
@@ -165,16 +166,17 @@ def test_link_to_a_missing_execution_is_404(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_delete_a_missing_link_is_404(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ex, "delete_option_stock_link", lambda _cfg, _lid, _acc: (False, "Link not found or wrong account."))
-    assert_error(_client().delete(f"/executions/option-stock-links/7?account_id={ACC}"), 404, "Link not found")
+    def _missing(_cfg: Any, lid: int, acc: str) -> Any:
+        raise WriteNotFound(f"No option/stock link {lid} on account {acc}.")
+
+    monkeypatch.setattr(ex, "delete_option_stock_link_strict", _missing)
+    assert_error(_client().delete(f"/executions/option-stock-links/7?account_id={ACC}"), 404, "No option/stock link 7")
 
 
-@pytest.mark.parametrize("method,writer", [("PUT", "update_one_execution"), ("DELETE", "delete_one_execution")])
-def test_put_or_delete_a_missing_execution_is_404(monkeypatch: pytest.MonkeyPatch, method: str, writer: str) -> None:
-    monkeypatch.setattr(ex, writer, MagicMock(return_value=False))
-    c = _client()
-    r = c.request(method, "/executions/42", json={"price": 2} if method == "PUT" else None)
-    assert_error(r, 404, "account_executions_id missing")
+def test_put_a_missing_execution_is_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    # DELETE /executions/{id} is strict since TD-15 (tests/test_write_semantics.py).
+    monkeypatch.setattr(ex, "update_one_execution", MagicMock(return_value=False))
+    assert_error(_client().put("/executions/42", json={"price": 2}), 404, "account_executions_id missing")
 
 
 def test_stock_link_candidates_for_a_missing_option_is_404() -> None:
@@ -199,9 +201,9 @@ def test_a_link_that_exists_is_409(monkeypatch: pytest.MonkeyPatch) -> None:
 NO_PG_WRITES = [
     ("POST", "/executions", {"symbol": "ZZQ", "quantity": 1, "price": 2}, "account_executions", {"account_executions_id": None}),
     ("PUT", "/executions/42", {"price": 2}, "account_executions", {}),
-    ("DELETE", "/executions/42", None, "account_executions", {}),
+    ("DELETE", "/executions/42", None, "Postgres is not configured", {}),
     ("POST", "/executions/option-stock-links", {"account_id": ACC}, "PostgreSQL is required.", {"link_id": None}),
-    ("DELETE", f"/executions/option-stock-links/7?account_id={ACC}", None, "PostgreSQL is required.", {}),
+    ("DELETE", f"/executions/option-stock-links/7?account_id={ACC}", None, "Postgres is not configured", {}),
     ("POST", "/executions/fetch", None, "account_executions", {"count": 0}),
 ]
 

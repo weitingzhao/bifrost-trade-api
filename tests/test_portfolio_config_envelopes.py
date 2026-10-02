@@ -42,14 +42,13 @@ def _call(c: TestClient, method: str, path: str, body: Optional[Dict[str, Any]] 
 
 NO_PG_CASES = [
     ("POST", "/position-categories", {"name": "Core"}, {"id": None}),
-    ("PATCH", "/position-categories/3", {"name": "Core"}, {}),
-    ("DELETE", "/position-categories/3", None, {}),
     ("PATCH", "/executions/strategy-attribution", {"account_id": "U0000001", "contract_key": "ZZQ|STK|||"}, {}),
     ("PUT", "/position-categories/tag", {"account_id": "U0000001", "contract_key": "ZZQ|STK|||"}, {}),
     ("PUT", "/position-categories/symbol-order", {"category_name": "Core", "symbols": ["ZZQ"]}, {}),
     ("PUT", "/instrument-classes/ZZFI", {"instrument_class": "cash_like"}, {}),
-    ("DELETE", "/instrument-classes/ZZFI", None, {}),
 ]
+# PATCH / DELETE position categories and DELETE instrument classes are TD-15 writes
+# since 0.3.0; their 503 / 500 / 404 are in tests/test_write_semantics.py.
 
 
 @pytest.mark.parametrize("method,path,body,legacy", NO_PG_CASES)
@@ -100,8 +99,6 @@ def test_create_category_without_a_connection_is_503() -> None:
 
 
 WRITE_FAILED_CASES = [
-    ("PATCH", "/position-categories/3", {"name": "Core"}, "update_position_category", False, "Failed to update category."),
-    ("DELETE", "/position-categories/3", None, "delete_position_category", False, "Failed to delete category."),
     (
         "PUT",
         "/position-categories/tag",
@@ -126,7 +123,6 @@ WRITE_FAILED_CASES = [
         (False, "Failed to save the instrument class."),
         "Failed to save the instrument class.",
     ),
-    ("DELETE", "/instrument-classes/ZZFI", None, "delete_instrument_class", False, "Failed to clear the instrument class."),
 ]
 
 

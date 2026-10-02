@@ -10,6 +10,11 @@ it does in a script:
     404  no such plan
     409  the plan's state says no (with the reason)
     503  Postgres is not configured for writes
+
+PATCH and DELETE (TD-15, batch 3b-2) raise core's Write* outcomes, mapped in
+``bifrost_api.common.write_errors``: input errors are 400 there (PUT still
+answers 409 for them), the body is ``{detail, ok: false, error}``. PUT keeps its
+old behaviour for one release and is marked replaced by PATCH.
 """
 
 from __future__ import annotations
@@ -19,7 +24,9 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from bifrost_api.common.write_errors import deleted_body, write_target
 from bifrost_api.strategy.deps import db_not_configured, read_config, write_config
+from bifrost_api.strategy.patch_bodies import PlanPatch
 from bifrost_core.monitor.reader import strategy_plan as strategy_plan_module
 from bifrost_core.monitor.reader.strategy_plan import PlanRuleError
 from bifrost_core.monitor.schemas.strategy_plans import (
@@ -112,6 +119,17 @@ def update_plan_endpoint(
     return {"ok": True, "strategy_plan_id": strategy_plan_id}
 
 
+@router.patch("/plans/{strategy_plan_id}")
+def patch_plan_endpoint(request: Request, strategy_plan_id: int, body: PlanPatch) -> Dict[str, Any]:
+    """Change the fields sent; answer the plan as GET /plans/{id} does.
+
+    A draft takes any field. An intended plan takes `expires_at` only -- the plan
+    card's "Extend 7 days" and "Re-issue intent" -- and any other field is 409 with
+    the reason; a filled or cancelled plan is 409 for everything."""
+    config = write_target(request, f"strategy plan {strategy_plan_id}")
+    return strategy_plan_module.patch_plan(config, strategy_plan_id, body.patch_fields())
+
+
 @router.post("/plans/{strategy_plan_id}/intend")
 def intend_plan_endpoint(request: Request, strategy_plan_id: int) -> Dict[str, Any]:
     """Mark a draft intended. 409 carries what the plan is still missing."""
@@ -171,16 +189,7 @@ def cancel_plan_endpoint(request: Request, strategy_plan_id: int) -> Dict[str, A
 
 @router.delete("/plans/{strategy_plan_id}")
 def delete_plan_endpoint(request: Request, strategy_plan_id: int) -> Dict[str, Any]:
-    """Remove a draft. 409 for anything past draft. The UI calls this only once
+    """Hard-delete a draft; 409 for anything past draft. The UI calls this only once
     its Undo toast has closed (design Rev .138), so it is final."""
-    config = write_config(request)
-    try:
-        deleted = strategy_plan_module.delete_plan(config, strategy_plan_id)
-    except PlanRuleError as e:
-        raise HTTPException(status_code=409, detail=e.reason) from e
-    except Exception as e:
-        logger.warning("delete_plan failed: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to delete strategy plan") from e
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Strategy plan not found")
-    return {"ok": True, "strategy_plan_id": strategy_plan_id}
+    config = write_target(request, f"strategy plan {strategy_plan_id}")
+    return deleted_body(strategy_plan_module.delete_plan_strict(config, strategy_plan_id))

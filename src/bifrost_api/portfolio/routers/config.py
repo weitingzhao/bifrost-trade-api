@@ -2,19 +2,39 @@
 
 Failures answer a real status with ``{"detail", "ok": false, "error", ...}`` and
 lists answer ``{"items", "count", ...}`` (``bifrost_api.common.envelopes``, TD-16/17).
+
+PATCH and DELETE (TD-15, batch 3b-2) call core's TD-15 writers, whose Write*
+outcomes are mapped once in ``bifrost_api.common.write_errors``: PATCH changes
+only the fields sent (null clears a nullable column) and answers the row; DELETE
+is strict (404 for a missing row) and answers ``{"deleted": "hard", ..., "ok": true}``.
 """
 
 import logging
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, Request
+from pydantic import StrictInt, StrictStr
 
 from bifrost_api.common.envelopes import error_response, list_body
+from bifrost_api.common.write_errors import PatchBody, deleted_body, write_target
+from bifrost_core.portfolio.reader import instrument_class as instrument_class_module
+from bifrost_core.portfolio.reader import position_categories as position_categories_module
 from bifrost_core.portfolio.reader.instrument_class import INSTRUMENT_CLASSES, normalize_instrument_class
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["portfolio-config"])
+
+
+class PositionCategoryPatch(PatchBody):
+    name: Optional[StrictStr] = None
+    description: Optional[StrictStr] = None
+    sort_order: Optional[StrictInt] = None
+
+
+class InstrumentClassPatch(PatchBody):
+    instrument_class: Optional[StrictStr] = None
+    note: Optional[StrictStr] = None
 
 POSTGRES_REQUIRED = "Postgres required."
 # The reader's answers when it had no connection (core monitor/reader/common.py,
@@ -77,33 +97,19 @@ def post_position_category(request: Request, body: Dict[str, Any] = Body(...)) -
 
 
 @router.patch("/position-categories/{category_id:int}")
-def patch_position_category(request: Request, category_id: int, body: Dict[str, Any] = Body(default=None)) -> Any:
-    """Update one position category by id. body: name, description, sort_order (optional)."""
-    control_via_db = request.app.state.control_via_db
-    if not control_via_db:
-        return error_response(503, POSTGRES_REQUIRED)
-    reader = request.app.state.reader
-    b = body or {}
-    if reader.update_position_category(
-        category_id,
-        name=b.get("name"),
-        description=b.get("description"),
-        sort_order=_coerce_optional_int(b.get("sort_order")),
-    ):
-        return {"ok": True, "id": category_id}
-    return error_response(500, "Failed to update category.")
+def patch_position_category(request: Request, category_id: int, body: PositionCategoryPatch) -> Any:
+    """Change name / description / sort_order; `null` clears description or sort_order.
+    Answers the category row plus `ok: true` (SharesBand reads `ok`; it goes next release)."""
+    config = write_target(request, f"position category {category_id}")
+    row = position_categories_module.patch_position_category(config, category_id, body.patch_fields())
+    return {**row, "ok": True}
 
 
 @router.delete("/position-categories/{category_id:int}")
 def delete_position_category(request: Request, category_id: int) -> Any:
-    """Delete one position category by id (tags removed by CASCADE)."""
-    control_via_db = request.app.state.control_via_db
-    if not control_via_db:
-        return error_response(503, POSTGRES_REQUIRED)
-    reader = request.app.state.reader
-    if reader.delete_position_category(category_id):
-        return {"ok": True, "id": category_id}
-    return error_response(500, "Failed to delete category.")
+    """Hard delete; its tags go with it (CASCADE) and watchlist rows in it become uncategorized."""
+    config = write_target(request, f"position category {category_id}")
+    return deleted_body(position_categories_module.delete_position_category_strict(config, category_id))
 
 
 @router.patch("/executions/strategy-attribution")
@@ -235,11 +241,16 @@ def put_instrument_class(request: Request, contract_key: str, body: Dict[str, An
     return _write_failed(err, "Failed to save the instrument class.")
 
 
+@router.patch("/instrument-classes/{contract_key}")
+def patch_instrument_class(request: Request, contract_key: str, body: InstrumentClassPatch) -> Any:
+    """Change a registered instrument's class or note (`note: null` clears it, which PUT
+    cannot). 404 when the instrument has no registration -- PUT registers one."""
+    config = write_target(request, f"the instrument class of {contract_key}")
+    return instrument_class_module.patch_instrument_class(config, contract_key, body.patch_fields())
+
+
 @router.delete("/instrument-classes/{contract_key}")
 def delete_instrument_class(request: Request, contract_key: str) -> Any:
-    """Drop the registration; the instrument reads as a stock again."""
-    if not request.app.state.control_via_db:
-        return error_response(503, POSTGRES_REQUIRED)
-    if request.app.state.reader.delete_instrument_class(contract_key):
-        return {"ok": True}
-    return error_response(500, "Failed to clear the instrument class.")
+    """Drop the registration; the instrument reads as a stock again. 404 when none."""
+    config = write_target(request, f"the instrument class of {contract_key}")
+    return deleted_body(instrument_class_module.delete_instrument_class_strict(config, contract_key))

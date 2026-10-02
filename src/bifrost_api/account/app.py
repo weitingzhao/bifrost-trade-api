@@ -21,6 +21,7 @@ from bifrost_core.monitor.reader import StatusReader
 from bifrost_core.monitor.reader.errors import ReadFailed
 from bifrost_core.observability.prometheus import instrument_app
 from bifrost_api.common.service_endpoints import mount_auth_capabilities
+from bifrost_api.common.write_errors import install_write_errors
 from bifrost_api.deprecations import install_deprecations
 from bifrost_api.write_guard import install_write_guard
 
@@ -61,6 +62,10 @@ def create_account_app(
     @app.exception_handler(ReadFailed)
     async def _read_failed(_request: Request, exc: ReadFailed) -> JSONResponse:
         return JSONResponse(status_code=503, content={"detail": str(exc), "reason": "read_failed"})
+
+    # A write that did not happen answers its real status with core's reason:
+    # 404 / 409 / 400 / 503 / 500 (TD-15; bifrost_api.common.write_errors).
+    install_write_errors(app)
 
     app.state.reader = reader
     app.state.control_via_db = control_via_db

@@ -13,6 +13,7 @@ from bifrost_core.monitor.reader import StatusReader
 from bifrost_core.observability.prometheus import instrument_app
 from bifrost_core.sse.queue_utils import put_nowait_drop_oldest
 from bifrost_api.common.service_endpoints import mount_auth_capabilities
+from bifrost_api.common.write_errors import install_write_errors
 from bifrost_api.deprecations import install_deprecations
 from bifrost_api.write_guard import install_write_guard
 
@@ -56,6 +57,8 @@ def create_market_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Watchlist writes answer their real status with core's reason (TD-15).
+    install_write_errors(app)
 
     app.state.reader = reader
     app.state.control_via_db = control_via_db

@@ -11,6 +11,7 @@ from starlette.testclient import TestClient
 
 from bifrost_api.account.app import create_account_app
 from bifrost_core.monitor.reader import saved_search as saved_search_module
+from bifrost_core.monitor.reader.errors import WriteNotFound
 from bifrost_core.monitor.reader.saved_search import SavedSearchError
 from tests.contract.helpers import operator_server_config
 
@@ -65,5 +66,19 @@ def test_a_refusal_is_400_with_the_reason(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_delete_missing_is_404(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(saved_search_module, "delete_saved_search", lambda *_a, **_kw: False)
-    assert _client({"sink": "postgres"}).delete("/strategies/saved-searches/404").status_code == 404
+    def _missing(*_a: Any, **_kw: Any) -> Any:
+        raise WriteNotFound("No saved search 404.")
+
+    monkeypatch.setattr(saved_search_module, "delete_saved_search_strict", _missing)
+    r = _client({"sink": "postgres"}).delete("/strategies/saved-searches/404")
+    assert r.status_code == 404 and r.json()["detail"] == "No saved search 404."
+
+
+def test_delete_answers_deleted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        saved_search_module,
+        "delete_saved_search_strict",
+        lambda _cfg, sid, **_kw: {"deleted": "hard", "preference_saved_search_id": sid},
+    )
+    r = _client({"sink": "postgres"}).delete("/strategies/saved-searches/9")
+    assert r.json() == {"deleted": "hard", "preference_saved_search_id": 9, "ok": True}

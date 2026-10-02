@@ -16,6 +16,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Body, HTTPException, Request
 
+from bifrost_api.common.write_errors import deleted_body, write_target
 from bifrost_api.strategy.deps import db_not_configured, read_config, write_config
 from bifrost_core.monitor.reader import saved_search as saved_search_module
 from bifrost_core.monitor.reader.saved_search import SavedSearchError
@@ -57,13 +58,7 @@ def create_saved_search_endpoint(request: Request, body: Dict[str, Any] = Body(.
 
 @router.delete("/saved-searches/{saved_search_id}")
 def delete_saved_search_endpoint(request: Request, saved_search_id: int) -> Dict[str, Any]:
-    """Forget one saved search."""
-    config = write_config(request)
-    try:
-        gone = saved_search_module.delete_saved_search(config, saved_search_id)
-    except Exception as e:
-        logger.warning("delete_saved_search failed: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to remove the saved search") from e
-    if not gone:
-        raise HTTPException(status_code=404, detail="Saved search not found")
-    return {"ok": True}
+    """Forget one saved search (hard delete). Failures are core's Write* outcomes
+    (``bifrost_api.common.write_errors``): 404 missing, 503 Postgres unavailable."""
+    config = write_target(request, f"saved search {saved_search_id}")
+    return deleted_body(saved_search_module.delete_saved_search_strict(config, saved_search_id))

@@ -6,13 +6,22 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from bifrost_api.common.envelopes import list_body
+from bifrost_api.common.write_errors import deleted_body, write_target
 from bifrost_api.strategy.deps import write_config
+from bifrost_api.strategy.patch_bodies import (
+    AllocationPatch,
+    GateSafetyPatch,
+    InstancePatch,
+    OpportunityPatch,
+    StructurePatch,
+    TemplatePatch,
+)
 from bifrost_core.monitor.reader import gate_safety_write as gate_safety_write_module
 from bifrost_core.monitor.reader import strategy_allocation_write as strategy_allocation_write_module
 from bifrost_core.monitor.reader import strategy_opportunity_write as strategy_opportunity_write_module
 from bifrost_core.monitor.reader import strategy_structure_write as strategy_structure_write_module
 from bifrost_core.monitor.reader import strategy_rules_delete as strategy_rules_delete_module
-from bifrost_core.monitor.reader.strategy_rules_delete import RuleInUseError
+from bifrost_core.monitor.reader import strategy_instance as strategy_instance_module
 from bifrost_core.monitor.reader import template_config_write as template_config_write_module
 from bifrost_core.monitor.schemas.gate_params import default_gates
 from bifrost_core.monitor.schemas.strategies import (
@@ -21,18 +30,23 @@ from bifrost_core.monitor.schemas.strategies import (
     OpportunityBody,
     OpportunityUpdateBody,
     StrategyInstanceCreateBody,
-    StrategyInstanceUpdateBody,
 )
 from bifrost_core.monitor.services import option_strategy_templates
 from bifrost_core.monitor.services.strategy_parsing import (
     parse_opened_at_to_unix,
-    parse_optional_timestamp,
     parse_strategy_instance_ids_csv,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
+
+# Writes (TD-15, batch 3b-2): PATCH changes only the fields sent and answers the
+# row as GET-by-id does; DELETE is strict and answers {"deleted": "hard"|"soft",
+# <id>, ..., "ok": true}. Their failures are core's Write* outcomes, mapped once
+# in bifrost_api.common.write_errors (404 / 409 / 400 / 503 / 500). The PUTs keep
+# their old behaviour for one release; the merge ones are marked replaced in
+# bifrost_api.deprecations.
 
 
 @router.get("/dims")
@@ -117,14 +131,19 @@ def update_template_endpoint(
     return {"ok": True}
 
 
+@router.patch("/templates/{template_id}")
+def patch_template_endpoint(request: Request, template_id: int, body: TemplatePatch) -> Dict[str, Any]:
+    """Change the fields sent; answer the template as GET /templates/{id} does.
+    Legs, params and characteristics keep their own PUT routes."""
+    config = write_target(request, f"template {template_id}")
+    return template_config_write_module.patch_template(config, template_id, body.patch_fields())
+
+
 @router.delete("/templates/{template_id}")
 def delete_template_endpoint(request: Request, template_id: int) -> Dict[str, Any]:
-    config = write_config(request)
-    try:
-        template_config_write_module.delete_template(config, template_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    return {"ok": True}
+    """Hard delete. 409 naming the structures (deactivated ones too) that still use it."""
+    config = write_target(request, f"template {template_id}")
+    return deleted_body(template_config_write_module.delete_template_strict(config, template_id))
 
 
 @router.put("/templates/{template_id}/legs")
@@ -226,17 +245,20 @@ def update_structure_endpoint(request: Request, structure_id: int, body: Dict[st
     return {"ok": True}
 
 
+@router.patch("/structures/{structure_id}")
+def patch_structure_endpoint(request: Request, structure_id: int, body: StructurePatch) -> Dict[str, Any]:
+    """Change name / version / is_active / notes / meta; answer the structure as GET does.
+    The template and legs are not patchable. `is_active: false` only flips the column."""
+    config = write_target(request, f"structure {structure_id}")
+    return strategy_structure_write_module.patch_structure(config, structure_id, body.patch_fields())
+
+
 @router.delete("/structures/{structure_id}")
 def delete_structure_endpoint(request: Request, structure_id: int) -> Dict[str, Any]:
-    """Soft-delete a strategy structure (set is_active = false). Clears settings.active_strategy_structure_id if it pointed to this structure."""
-    control_via_db = write_config(request)
-    try:
-        ok = strategy_structure_write_module.deactivate_structure(control_via_db, structure_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    if not ok:
-        raise HTTPException(status_code=404, detail="Structure not found")
-    return {"ok": True}
+    """Soft delete (is_active = false); clears the daemon's active-structure setting if it
+    pointed here. Answers deleted "soft", was_active, cleared_daemon_setting."""
+    config = write_target(request, f"structure {structure_id}")
+    return deleted_body(strategy_structure_write_module.delete_structure_strict(config, structure_id))
 
 
 @router.get("/opportunities")
@@ -289,6 +311,14 @@ def update_opportunity_endpoint(request: Request, opportunity_id: int, body: Opp
     if not ok:
         raise HTTPException(status_code=404, detail="Opportunity not found or update failed")
     return {"ok": True}
+
+
+@router.patch("/opportunities/{opportunity_id}")
+def patch_opportunity_endpoint(request: Request, opportunity_id: int, body: OpportunityPatch) -> Dict[str, Any]:
+    """Change the fields sent (a field left out keeps its value, unlike PUT); answer the
+    opportunity as GET does. `symbols` / `entry_conditions` replace the list whole."""
+    config = write_target(request, f"opportunity {opportunity_id}")
+    return strategy_opportunity_write_module.patch_opportunity(config, opportunity_id, body.patch_fields())
 
 
 @router.get("/win-rate")
@@ -376,51 +406,22 @@ def get_instance_open_option_legs(request: Request, strategy_instance_id: int) -
 
 @router.delete("/instances/{strategy_instance_id}")
 def delete_strategy_instance_endpoint(request: Request, strategy_instance_id: int) -> Dict[str, Any]:
-    """Delete a strategy instance by id. Fails with 409 if the instance has linked executions."""
-    reader = request.app.state.reader
-    write_config(request)  # 503 without Postgres; the reader does the write
-    row = reader.get_strategy_instance_by_id(strategy_instance_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Strategy instance not found")
-    ok = reader.delete_strategy_instance(strategy_instance_id)
-    if not ok:
-        raise HTTPException(status_code=409, detail="Cannot delete: instance has linked executions or delete failed")
-    return {"ok": True}
+    """Hard delete. 409 while executions are split-allocated to it or attributed to it on
+    Golden Source; 503 when Golden Source is unreachable, 500 when its check fails --
+    nothing is deleted blind.
+    Its review goes with it; a plan that pointed at it keeps its text."""
+    config = write_target(request, f"strategy instance {strategy_instance_id}")
+    return deleted_body(strategy_instance_module.delete_instance_strict(config, strategy_instance_id))
 
 
 @router.patch("/instances/{strategy_instance_id}")
 def update_strategy_instance_endpoint(
-    request: Request, strategy_instance_id: int, body: StrategyInstanceUpdateBody
+    request: Request, strategy_instance_id: int, body: InstancePatch
 ) -> Dict[str, Any]:
-    """Update strategy instance label/notes/created_at/opened_at. Partial update supported."""
-    reader = request.app.state.reader
-    payload = body.model_dump(exclude_unset=True)
-    if not payload:
-        return {"ok": True}
-    if "created_at" in payload:
-        try:
-            created_at_val = parse_optional_timestamp(payload.get("created_at"), "created_at")
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
-    else:
-        created_at_val = payload.get("created_at")
-    if "opened_at" in payload:
-        try:
-            opened_at_val = parse_optional_timestamp(payload.get("opened_at"), "opened_at")
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
-    else:
-        opened_at_val = payload.get("opened_at")
-    ok = reader.update_strategy_instance(
-        strategy_instance_id,
-        label=payload.get("label"),
-        notes=payload.get("notes"),
-        created_at=created_at_val,
-        opened_at=opened_at_val,
-    )
-    if not ok:
-        raise HTTPException(status_code=404, detail="Strategy instance not found or update failed")
-    return {"ok": True}
+    """Change label / notes / opened_at / created_at; `null` clears label or notes.
+    Answers the instance as GET /instances/{id} does."""
+    config = write_target(request, f"strategy instance {strategy_instance_id}")
+    return strategy_instance_module.patch_instance(config, strategy_instance_id, body.patch_fields())
 
 
 @router.get("/allocations")
@@ -470,6 +471,14 @@ def update_allocation_endpoint(request: Request, allocation_id: int, body: Alloc
     if not ok:
         raise HTTPException(status_code=404, detail="Allocation not found or update failed")
     return {"ok": True}
+
+
+@router.patch("/allocations/{allocation_id}")
+def patch_allocation_endpoint(request: Request, allocation_id: int, body: AllocationPatch) -> Dict[str, Any]:
+    """Change the fields sent; answer the allocation as GET does. `allocation_limits` keys
+    are patched one by one (null clears both); `strategy_opportunity_ids` replaces the membership."""
+    config = write_target(request, f"allocation {allocation_id}")
+    return strategy_allocation_write_module.patch_allocation(config, allocation_id, body.patch_fields())
 
 
 @router.get("/gate-safety")
@@ -530,36 +539,31 @@ def update_gate_safety_endpoint(request: Request, gate_safety_id: int, body: Dic
     return {"ok": True}
 
 
-def _delete_rule(request: Request, fn, row_id: int, what: str) -> Dict[str, Any]:
-    """Delete one Desk rule object: 409 with the reason while it is in use, 404
-    when absent. The Desk calls this only once its Undo toast has closed (design
-    Rev .140), so it is final."""
-    control_via_db = write_config(request)
-    try:
-        ok = fn(control_via_db, row_id)
-    except RuleInUseError as e:
-        raise HTTPException(status_code=409, detail=e.reason) from e
-    except Exception as e:
-        logger.warning("delete %s failed: %s", what, e)
-        raise HTTPException(status_code=500, detail=f"Failed to delete {what}") from e
-    if not ok:
-        raise HTTPException(status_code=404, detail=f"{what[:1].upper()}{what[1:]} not found")
-    return {"ok": True}
+@router.patch("/gate-safety/{gate_safety_id}")
+def patch_gate_safety_endpoint(request: Request, gate_safety_id: int, body: GateSafetyPatch) -> Dict[str, Any]:
+    """Change the fields sent; answer the set as GET /gate-safety/{id} does. `gates` is a
+    partial object deep-merged into the stored gates; `earnings_dates` replaces the list."""
+    config = write_target(request, f"gate safety set {gate_safety_id}")
+    return gate_safety_write_module.patch_gate_safety(config, gate_safety_id, body.patch_fields())
 
 
 @router.delete("/opportunities/{opportunity_id}")
 def delete_opportunity_endpoint(request: Request, opportunity_id: int) -> Dict[str, Any]:
-    """Delete an opportunity with no trades; its allocation memberships go with it."""
-    return _delete_rule(request, strategy_rules_delete_module.delete_opportunity, opportunity_id, "opportunity")
+    """Hard delete; its allocation memberships go with it. 409 while it has trades.
+    The Desk calls this only once its Undo toast has closed (design Rev .140)."""
+    config = write_target(request, f"opportunity {opportunity_id}")
+    return deleted_body(strategy_rules_delete_module.delete_opportunity_strict(config, opportunity_id))
 
 
 @router.delete("/allocations/{allocation_id}")
 def delete_allocation_endpoint(request: Request, allocation_id: int) -> Dict[str, Any]:
-    """Delete an allocation that is not the active one."""
-    return _delete_rule(request, strategy_rules_delete_module.delete_allocation, allocation_id, "allocation")
+    """Hard delete. 409 while the daemon runs it."""
+    config = write_target(request, f"allocation {allocation_id}")
+    return deleted_body(strategy_rules_delete_module.delete_allocation_strict(config, allocation_id))
 
 
 @router.delete("/gate-safety/{gate_safety_id}")
 def delete_gate_safety_endpoint(request: Request, gate_safety_id: int) -> Dict[str, Any]:
-    """Delete a gate set nothing points at."""
-    return _delete_rule(request, strategy_rules_delete_module.delete_gate_safety, gate_safety_id, "gate safety set")
+    """Hard delete. 409 while an opportunity, an allocation or the daemon's settings use it."""
+    config = write_target(request, f"gate safety set {gate_safety_id}")
+    return deleted_body(strategy_rules_delete_module.delete_gate_safety_strict(config, gate_safety_id))

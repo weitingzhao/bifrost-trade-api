@@ -7,6 +7,12 @@ Flex ingest (trades / cash / XML / config write) is served by Flex Query Plugin
 Failures answer a real status with ``{"detail", "ok": false, "error", ...}`` and
 lists answer ``{"items", "count", ...}`` with the old list key beside them for one
 release (``bifrost_api.common.envelopes``, TD-16/17).
+
+TD-15 (batch 3b-2): ``PATCH /executions/{id}/attribution`` changes only the
+strategy attribution (the fill's own columns stay with PUT), and the two DELETEs
+are strict; both raise core's Write* outcomes, mapped in
+``bifrost_api.common.write_errors``. PUT keeps its old behaviour for one release
+and is marked replaced by the PATCH.
 """
 
 import asyncio
@@ -14,14 +20,19 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
+from pydantic import StrictInt
 
 from bifrost_api.common.envelopes import error_response, list_body
-from bifrost_core.portfolio.reader.option_stock_link import delete_option_stock_link, insert_option_stock_link
+from bifrost_api.common.write_errors import PatchBody, deleted_body, write_target
+from bifrost_core.portfolio.reader import accounts as accounts_module
+from bifrost_core.portfolio.reader.option_stock_link import (
+    delete_option_stock_link_strict,
+    insert_option_stock_link,
+)
 from bifrost_core.monitor.reader import (
     write_account_executions_to_db,
     insert_one_execution,
     update_one_execution,
-    delete_one_execution,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,6 +40,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["executions"])
 
 PG_REQUIRED_FOR_EXECUTIONS = "PostgreSQL is required to write account_executions."
+
+
+class ExecutionAttributionPatch(PatchBody):
+    """Strategy attribution of one execution: direct ids, or quantity splits -- not both."""
+
+    strategy_opportunity_id: Optional[StrictInt] = None
+    strategy_instance_id: Optional[StrictInt] = None
+    # [{strategy_instance_id, allocated_quantity}], replaced whole; [] removes the splits.
+    instance_allocations: Optional[List[Dict[str, Any]]] = None
 
 # What core's option-stock link readers and writers answer, by status. Core returns a
 # message rather than a reason code, so the route sorts by the message
@@ -306,18 +326,13 @@ def delete_option_stock_links_route(
     link_id: str,
     account_id: str = Query(..., description="Must match link row account_id"),
 ) -> Any:
-    control_via_db = request.app.state.control_via_db
-    if not control_via_db:
-        return error_response(503, "PostgreSQL is required.")
+    """Hard delete. 404 when there is no such link on that account."""
     try:
         lid = int(str(link_id).strip())
     except (TypeError, ValueError):
         raise HTTPException(status_code=422, detail="Invalid link id") from None
-    ok, err = delete_option_stock_link(control_via_db, lid, account_id.strip())
-    if ok:
-        return {"ok": True, "message": "Link removed."}
-    msg = str(err or "Delete failed.")
-    return error_response(_link_error_status(msg), msg)
+    config = write_target(request, f"option/stock link {lid}")
+    return deleted_body(delete_option_stock_link_strict(config, lid, account_id))
 
 
 @router.get("/executions/freshness")
@@ -450,17 +465,27 @@ def put_execution(request: Request, execution_id: str, body: Dict[str, Any] = Bo
     return error_response(404, "Update failed (account_executions_id missing or database error).")
 
 
+@router.patch("/executions/{execution_id}/attribution")
+def patch_execution_attribution(request: Request, execution_id: str, body: ExecutionAttributionPatch) -> Any:
+    """Change one execution's strategy attribution; answer its attribution fields
+    (account_executions_id, account_id, the two ids, instance_allocations).
+
+    `null` clears a direct id. A direct id on an execution that has splits is 409 unless
+    the same patch sends `instance_allocations: []`. The instance must be on the
+    execution's account (400). Negative ids are TWS raw rows."""
+    eid = _parse_account_executions_path_id(execution_id)
+    config = write_target(request, f"execution {eid}")
+    return accounts_module.patch_execution(config, eid, body.patch_fields())
+
+
 @router.delete("/executions/{execution_id}")
 def delete_execution(request: Request, execution_id: str) -> Any:
-    """Delete one execution by account_executions_id. Negative ids = TWS raw rows."""
+    """Hard-delete one execution: its Golden Source raw row, its splits, and its commission
+    when no other raw row carries the exec_id. 409 while an option/stock link names it.
+    Negative ids are TWS raw rows."""
     eid = _parse_account_executions_path_id(execution_id)
-    control_via_db = request.app.state.control_via_db
-    if not control_via_db:
-        return error_response(503, PG_REQUIRED_FOR_EXECUTIONS)
-    if delete_one_execution(control_via_db, eid):
-        return {"ok": True, "message": "Execution record deleted."}
-    # As for PUT: a missing row and a database error are one False from core.
-    return error_response(404, "Delete failed (account_executions_id missing or database error).")
+    config = write_target(request, f"execution {eid}")
+    return deleted_body(accounts_module.delete_execution_strict(config, eid))
 
 
 @router.post("/executions/fetch")
