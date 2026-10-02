@@ -39,7 +39,6 @@ class Identity:
 class AuthConfig:
     tokens: Dict[str, Identity] = field(default_factory=dict)
     default_role: str = "viewer"
-    allow_unauthenticated_reads: bool = True
 
     @classmethod
     def from_config(cls, config: dict) -> "AuthConfig":
@@ -78,8 +77,6 @@ class AuthConfig:
         if default_role not in VALID_ROLES:
             default_role = "viewer"
 
-        allow_unauth = bool(auth_cfg.get("allow_unauthenticated_reads", True))
-
         if tokens:
             logger.info(
                 "Ops auth: %d token(s) configured, default_role=%s",
@@ -94,7 +91,6 @@ class AuthConfig:
         return cls(
             tokens=tokens,
             default_role=default_role,
-            allow_unauthenticated_reads=allow_unauth,
         )
 
 
@@ -103,7 +99,11 @@ def _hash_token(token: str) -> str:
 
 
 class OpsAuth:
-    """Resolve identity from ``Authorization: Bearer`` or query ``token`` / ``access_token``."""
+    """Resolve identity from ``Authorization: Bearer``.
+
+    The ``?token=`` / ``?access_token=`` fallback is gone (debt TD-23): a token in a
+    URL lands in access logs and browser history, and no caller used it.
+    """
 
     def __init__(self, auth_config: AuthConfig) -> None:
         self._cfg = auth_config
@@ -113,12 +113,6 @@ class OpsAuth:
         auth_header = request.headers.get("Authorization", "").strip()
         if auth_header.lower().startswith("bearer "):
             raw_token = auth_header[7:].strip()
-        if not raw_token:
-            raw_token = (
-                request.query_params.get("token")
-                or request.query_params.get("access_token")
-                or ""
-            ).strip()
         if raw_token:
             token_hash = _hash_token(raw_token)
             ident = self._cfg.tokens.get(token_hash)

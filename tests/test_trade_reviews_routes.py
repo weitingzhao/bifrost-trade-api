@@ -15,12 +15,12 @@ from starlette.testclient import TestClient
 
 from bifrost_api.account.app import create_account_app
 from bifrost_core.monitor.reader import trade_review as trade_review_module
-from tests.contract.helpers import full_server_config
+from tests.contract.helpers import operator_server_config
 
 
 def _client(control_via_db: Any = None) -> TestClient:
     reader = MagicMock()
-    reader._config = full_server_config()
+    reader._config = operator_server_config()
     app = create_account_app(
         reader=reader,
         control_via_db=control_via_db,

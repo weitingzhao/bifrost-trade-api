@@ -18,7 +18,7 @@ from bifrost_core.monitor.reader import strategy_plan as strategy_plan_module
 from bifrost_core.monitor.reader import strategy_rules_delete as rules_module
 from bifrost_core.monitor.reader.strategy_plan import PlanRuleError
 from bifrost_core.monitor.reader.strategy_rules_delete import RuleInUseError
-from tests.contract.helpers import full_server_config
+from tests.contract.helpers import operator_server_config
 
 RULE_ROUTES = [
     ("/strategies/opportunities/5", "delete_opportunity"),
@@ -29,7 +29,7 @@ RULE_ROUTES = [
 
 def _client(control_via_db: Any = None) -> TestClient:
     reader = MagicMock()
-    reader._config = full_server_config()
+    reader._config = operator_server_config()
     app = create_account_app(
         reader=reader,
         control_via_db=control_via_db,

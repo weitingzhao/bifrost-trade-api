@@ -14,6 +14,7 @@ from bifrost_core.config.startup import config_profile_from_resolved_path, norma
 from bifrost_core.monitor.reader import StatusReader
 from bifrost_core.observability.prometheus import instrument_app
 from bifrost_core.sse.queue_utils import put_nowait_drop_oldest
+from bifrost_api.write_guard import install_write_guard
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,9 @@ def create_market_app(
         redoc_url="/market/redoc",
         openapi_url="/market/openapi.json",
     )
+    # Every write needs a role (debt TD-23). Added before CORS so CORS stays the
+    # outer layer and a refusal still carries its headers.
+    install_write_guard(app, lambda: merged_config or reader._config)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
