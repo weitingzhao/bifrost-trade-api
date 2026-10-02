@@ -1294,6 +1294,7 @@ def get_ticker_overview(symbol: str, request: Request) -> Dict[str, Any]:
 
     from bifrost_api.research.market_data_client import fetch_ticker_detail
     from bifrost_core.persistence.postgres.connection import _get_conn_params
+    from bifrost_core.persistence.postgres.market_tables import SCHEMA as MARKET_SCHEMA
 
     sym = symbol.strip().upper()
 
@@ -1306,14 +1307,19 @@ def get_ticker_overview(symbol: str, request: Request) -> Dict[str, Any]:
     if db:
         params = _get_conn_params(db)
         params["connect_timeout"] = 10
+        conn = None
         try:
             conn = psycopg2.connect(**params)
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("SET statement_timeout = 10000")
+                # Golden Source raw_market.ticker_related reaches the Trade DB as the FDW table
+                # market.ticker_related; raw_market does not exist here. The old query failed on
+                # every call, the failure was swallowed, and the page said "No related tickers on
+                # record" for every name (debt TD-03).
                 cur.execute(
-                    """
+                    f"""
                     SELECT rt.to_symbol
-                    FROM raw_market.ticker_related rt
+                    FROM {MARKET_SCHEMA}.ticker_related rt
                     WHERE rt.from_symbol = %s
                     ORDER BY rt.rank ASC
                     LIMIT 12
@@ -1321,9 +1327,11 @@ def get_ticker_overview(symbol: str, request: Request) -> Dict[str, Any]:
                     (sym,),
                 )
                 related = [r["to_symbol"] for r in cur.fetchall()]
-            conn.close()
         except Exception:
-            pass
+            logger.warning("ticker-overview: related tickers for %s failed", sym, exc_info=True)
+        finally:
+            if conn is not None:
+                conn.close()
 
     data: Dict[str, Any] = {
         "ticker": ticker.get("symbol", sym),
