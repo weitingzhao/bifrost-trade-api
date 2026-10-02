@@ -1,4 +1,8 @@
-"""Config: IB, active-strategy (Flex config write lives in Flex Query Plugin)."""
+"""Config: IB, active-strategy (Flex config write lives in Flex Query Plugin).
+
+Failures answer ``{"detail", "ok": false, "error"}`` with their status
+(``bifrost_api.common.envelopes``, TD-16/17); ``error`` goes in the next release.
+"""
 
 import logging
 from typing import Any, Dict, Optional
@@ -7,6 +11,7 @@ from fastapi import APIRouter, Body, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
+from bifrost_api.common.envelopes import error_response
 from bifrost_core.monitor.reader import (
     write_ib_config,
 )
@@ -14,6 +19,8 @@ from bifrost_core.monitor.reader.ib_config_public import ib_client_for_api
 from bifrost_core.monitor.reader.settings import write_active_strategy_and_gates
 
 logger = logging.getLogger(__name__)
+
+NO_CONTROL_DB = "control via DB not available (postgres required)"
 
 router = APIRouter(tags=["config"])
 
@@ -63,7 +70,7 @@ def post_config_ib(request: Request, body: IbConfigBody = Body(...)) -> JSONResp
     control_via_db = request.app.state.control_via_db
     reader = request.app.state.reader
     if not control_via_db:
-        return JSONResponse(status_code=503, content={"error": "control via DB not available (postgres required)"})
+        return error_response(503, NO_CONTROL_DB)
     current = reader.get_ib_config() or {}
 
     host_id = _optional_account_field(body, "ib_host_account_id", current)
@@ -75,7 +82,7 @@ def post_config_ib(request: Request, body: IbConfigBody = Body(...)) -> JSONResp
         merged = reader.get_ib_config() or {}
         out: Dict[str, Any] = {"ok": True, **ib_client_for_api(merged)}
         return JSONResponse(status_code=200, content=out)
-    return JSONResponse(status_code=500, content={"error": "failed to write settings"})
+    return error_response(500, "failed to write settings")
 
 
 @router.post("/config/active-strategy")
@@ -83,12 +90,12 @@ def post_config_active_strategy(request: Request, body: ActiveStrategyBody = Bod
     """Update settings: active_strategy_structure_id, active_gate_safety_strategy_id, active_strategy_allocation_id (null to clear). Daemon uses these on next start when loading gates from DB."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
-        return JSONResponse(status_code=503, content={"error": "control via DB not available (postgres required)"})
+        return error_response(503, NO_CONTROL_DB)
     # Only the fields the caller sent are written; an omitted field keeps its value, as
     # /config/ib already does. Sending null still clears that field (TD-38).
     sent = set(body.model_fields_set)
     if not sent:
-        return JSONResponse(status_code=400, content={"error": "no active_* field in the body"})
+        return error_response(400, "no active_* field in the body")
     try:
         if write_active_strategy_and_gates(
             control_via_db,
@@ -101,6 +108,6 @@ def post_config_active_strategy(request: Request, body: ActiveStrategyBody = Bod
                 status_code=200,
                 content={"ok": True, **{f: getattr(body, f) for f in sorted(sent)}},
             )
-        return JSONResponse(status_code=500, content={"error": "failed to write active strategy and gates"})
+        return error_response(500, "failed to write active strategy and gates")
     except ValueError as e:
-        return JSONResponse(status_code=409, content={"error": str(e)})
+        return error_response(409, str(e))
