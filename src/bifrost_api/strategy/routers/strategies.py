@@ -12,6 +12,7 @@ from bifrost_core.monitor.reader import strategy_structure_write as strategy_str
 from bifrost_core.monitor.reader import strategy_rules_delete as strategy_rules_delete_module
 from bifrost_core.monitor.reader.strategy_rules_delete import RuleInUseError
 from bifrost_core.monitor.reader import template_config_write as template_config_write_module
+from bifrost_core.monitor.schemas.gate_params import default_gates
 from bifrost_core.monitor.schemas.strategies import (
     AllocationBody,
     AllocationUpdateBody,
@@ -42,48 +43,10 @@ def _require_control_via_db(request: Request) -> Optional[dict]:
 
 @router.get("/dims")
 def list_dims_grouped_endpoint(request: Request) -> Dict[str, Any]:
+    """Dimension rows grouped by dim type, from core's dim catalog. Read-only: the
+    dims POST / PUT / DELETE routes only ever raised and went with core's writers (TD-58)."""
     reader = request.app.state.reader
     return {"by_type": reader.list_dims_grouped()}
-
-
-@router.get("/dims/{dim_type}/items")
-def list_dims_for_type_endpoint(request: Request, dim_type: str) -> Dict[str, Any]:
-    reader = request.app.state.reader
-    return {"items": reader.list_dims_for_type(dim_type)}
-
-
-@router.post("/dims/{dim_type}")
-def create_dim_endpoint(request: Request, dim_type: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    config = _require_control_via_db(request)
-    try:
-        template_config_write_module.create_dim(config, dim_type, body)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    return {"ok": True}
-
-
-@router.put("/dims/by-id/{strategy_dim_id}")
-def update_dim_endpoint(
-    request: Request, strategy_dim_id: int, body: Dict[str, Any]
-) -> Dict[str, Any]:
-    config = _require_control_via_db(request)
-    try:
-        ok = template_config_write_module.update_dim(config, strategy_dim_id, body)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    if not ok:
-        raise HTTPException(status_code=404, detail="Dimension row not found")
-    return {"ok": True}
-
-
-@router.delete("/dims/by-id/{strategy_dim_id}")
-def delete_dim_endpoint(request: Request, strategy_dim_id: int) -> Dict[str, Any]:
-    config = _require_control_via_db(request)
-    try:
-        template_config_write_module.delete_dim(config, strategy_dim_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    return {"ok": True}
 
 
 @router.get("/templates/options/param-kind")
@@ -539,6 +502,14 @@ def list_gate_safety(request: Request) -> Dict[str, Any]:
     reader = request.app.state.reader
     items = reader.list_gate_safety_sets()
     return {"items": items}
+
+
+@router.get("/gate-safety/defaults")
+def get_gate_safety_defaults() -> Dict[str, Any]:
+    """Core's default gates -- what a new gate set starts from (TD-72), so the UI
+    keeps no copy of them. Same shape as a gate set's `gates`, without earnings dates.
+    Declared before `/gate-safety/{gate_safety_id}` so "defaults" is not read as an id."""
+    return {"gates": default_gates()}
 
 
 @router.get("/gate-safety/{gate_safety_id}")
