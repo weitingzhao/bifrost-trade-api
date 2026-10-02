@@ -15,9 +15,11 @@ from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from bifrost_core.config.startup import config_profile_from_resolved_path, normalize_server_config
 from bifrost_core.monitor.reader import StatusReader
+from bifrost_core.monitor.reader.errors import ReadFailed
 from bifrost_core.observability.prometheus import instrument_app
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,13 @@ def create_account_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # A reader that could not read answers 503 with the reason, never 200 with an empty
+    # list: the Desk and Rules used to show "no rules" over a full book during a DB
+    # hiccup (TD-08). Error contract B: the success envelope is unchanged.
+    @app.exception_handler(ReadFailed)
+    async def _read_failed(_request: Request, exc: ReadFailed) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": str(exc), "reason": "read_failed"})
 
     app.state.reader = reader
     app.state.control_via_db = control_via_db
