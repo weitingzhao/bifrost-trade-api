@@ -104,7 +104,7 @@ def test_a_marked_route_says_so_and_logs_its_caller(caplog: pytest.LogCaptureFix
     "method, path, hit",
     [
         ("PUT", "/strategies/plans/42", ("/strategies/plans/{strategy_plan_id}", "/strategies/plans/42")),
-        ("PUT", "/executions/-7", ("/executions/{execution_id}", "/executions/-7/attribution")),
+        ("PUT", "/executions/-7", None),
         ("PUT", "/instrument-classes/ZZFI", ("/instrument-classes/{contract_key}", "/instrument-classes/ZZFI")),
         ("PATCH", "/strategies/plans/42", None),
         ("PUT", "/strategies/templates/3/legs", None),
@@ -139,9 +139,14 @@ def test_a_replaced_route_answers_as_before() -> None:
     reader = MagicMock()
     reader._config = operator_server_config()
     app = create_account_app(reader=reader, control_via_db=None, merged_config=reader._config)
-    r = TestClient(app, raise_server_exceptions=False).put("/executions/-7", json={"strategy_instance_id": 3})
+    client = TestClient(app, raise_server_exceptions=False)
+    r = client.put("/instrument-classes/ZZFI", json={"instrument_class": "etf"})
+    assert r.status_code == 503
+    assert r.headers.get("link") == '</instrument-classes/ZZFI>; rel="successor-version"'
+    # PUT /executions/{id} is not marked: the fill edit has no PATCH successor yet.
+    r = client.put("/executions/-7", json={"strategy_instance_id": 3})
     assert r.status_code == 503 and r.json()["detail"] == "PostgreSQL is required to write account_executions."
-    assert r.headers.get("link") == '</executions/-7/attribution>; rel="successor-version"'
+    assert "deprecation" not in r.headers and "link" not in r.headers
 
 
 def test_an_unmarked_route_is_left_alone() -> None:

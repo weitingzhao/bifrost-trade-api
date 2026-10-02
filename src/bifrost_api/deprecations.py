@@ -84,12 +84,13 @@ REPLACED_ROUTES: Dict[Tuple[str, str], str] = {
     ("PUT", "/strategies/allocations/{allocation_id}"): "PATCH /strategies/allocations/{allocation_id}",
     ("PUT", "/strategies/plans/{strategy_plan_id}"): "PATCH /strategies/plans/{strategy_plan_id}",
     ("PUT", "/strategies/reviews/{strategy_instance_id}"): "PATCH /strategies/reviews/{strategy_instance_id}",
-    # The attribution callers' successor; the fill columns ExecutionFormModal edits have none yet.
-    ("PUT", "/executions/{execution_id}"): "PATCH /executions/{execution_id}/attribution",
     ("PUT", "/instrument-classes/{contract_key}"): "PATCH /instrument-classes/{contract_key}",
     # Not here: PUT gate-safety / structures (already a full replace), the template
     # legs / params / characteristics, tag and symbol-order PUTs (replace a collection
-    # on purpose), and GET /instrument-classes (in use).
+    # on purpose), and GET /instrument-classes (in use). Nor PUT /executions/{execution_id}:
+    # ExecutionFormModal edits the fill columns through it and those have no PATCH yet, so
+    # it stays a merge (attribution callers move to PATCH /executions/{id}/attribution) and
+    # does not become a replace with the others.
 }
 
 
