@@ -178,3 +178,20 @@ def cancel_plan_endpoint(request: Request, strategy_plan_id: int) -> Dict[str, A
     if not cancelled:
         raise HTTPException(status_code=404, detail="Strategy plan not found")
     return {"ok": True, "strategy_plan_id": strategy_plan_id, "status": "cancelled"}
+
+
+@router.delete("/plans/{strategy_plan_id}")
+def delete_plan_endpoint(request: Request, strategy_plan_id: int) -> Dict[str, Any]:
+    """Remove a draft. 409 for anything past draft. The UI calls this only once
+    its Undo toast has closed (design Rev .138), so it is final."""
+    config = _write_config(request)
+    try:
+        deleted = strategy_plan_module.delete_plan(config, strategy_plan_id)
+    except PlanRuleError as e:
+        raise HTTPException(status_code=409, detail=e.reason) from e
+    except Exception as e:
+        logger.warning("delete_plan failed: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to delete strategy plan") from e
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Strategy plan not found")
+    return {"ok": True, "strategy_plan_id": strategy_plan_id}

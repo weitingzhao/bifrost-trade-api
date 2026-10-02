@@ -9,6 +9,8 @@ from bifrost_core.monitor.reader import gate_safety_write as gate_safety_write_m
 from bifrost_core.monitor.reader import strategy_allocation_write as strategy_allocation_write_module
 from bifrost_core.monitor.reader import strategy_opportunity_write as strategy_opportunity_write_module
 from bifrost_core.monitor.reader import strategy_structure_write as strategy_structure_write_module
+from bifrost_core.monitor.reader import strategy_rules_delete as strategy_rules_delete_module
+from bifrost_core.monitor.reader.strategy_rules_delete import RuleInUseError
 from bifrost_core.monitor.reader import template_config_write as template_config_write_module
 from bifrost_core.monitor.schemas.strategies import (
     AllocationBody,
@@ -583,3 +585,40 @@ def update_gate_safety_endpoint(request: Request, gate_safety_id: int, body: Dic
     if not ok:
         raise HTTPException(status_code=404, detail="Gate safety set not found or update failed")
     return {"ok": True}
+
+
+def _delete_rule(request: Request, fn, row_id: int, what: str) -> Dict[str, Any]:
+    """Delete one Desk rule object: 409 with the reason while it is in use, 404
+    when absent. The Desk calls this only once its Undo toast has closed (design
+    Rev .140), so it is final."""
+    control_via_db = getattr(request.app.state, "control_via_db", None)
+    if not control_via_db:
+        raise HTTPException(status_code=503, detail="Database control not configured")
+    try:
+        ok = fn(control_via_db, row_id)
+    except RuleInUseError as e:
+        raise HTTPException(status_code=409, detail=e.reason) from e
+    except Exception as e:
+        logger.warning("delete %s failed: %s", what, e)
+        raise HTTPException(status_code=500, detail=f"Failed to delete {what}") from e
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"{what[:1].upper()}{what[1:]} not found")
+    return {"ok": True}
+
+
+@router.delete("/opportunities/{opportunity_id}")
+def delete_opportunity_endpoint(request: Request, opportunity_id: int) -> Dict[str, Any]:
+    """Delete an opportunity with no trades; its allocation memberships go with it."""
+    return _delete_rule(request, strategy_rules_delete_module.delete_opportunity, opportunity_id, "opportunity")
+
+
+@router.delete("/allocations/{allocation_id}")
+def delete_allocation_endpoint(request: Request, allocation_id: int) -> Dict[str, Any]:
+    """Delete an allocation that is not the active one."""
+    return _delete_rule(request, strategy_rules_delete_module.delete_allocation, allocation_id, "allocation")
+
+
+@router.delete("/gate-safety/{gate_safety_id}")
+def delete_gate_safety_endpoint(request: Request, gate_safety_id: int) -> Dict[str, Any]:
+    """Delete a gate set nothing points at."""
+    return _delete_rule(request, strategy_rules_delete_module.delete_gate_safety, gate_safety_id, "gate safety set")
