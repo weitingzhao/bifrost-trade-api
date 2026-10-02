@@ -34,6 +34,7 @@ from bifrost_api.trading.schemas.requests import (
     OptionStockLinkBody,
     OptionStockLinksQueryBody,
 )
+from bifrost_core.portfolio.gateway_fills import execution_rows_from_gateway_fills
 from bifrost_core.portfolio.reader import accounts as accounts_module
 from bifrost_core.portfolio.reader.option_stock_link import (
     delete_option_stock_link_strict,
@@ -159,8 +160,9 @@ def get_executions(
             "performance_book: brokerage.executions_final, the Flex-confirmed book | "
             "on_the_fly: brokerage.executions_fly, TWS fills Flex has not confirmed yet (no BAG) | "
             "tws_raw: brokerage.executions_raw_tws only, with synthetic negative ids. "
-            "quantity is signed, sells negative (tws_client rows are stored signed; other sources are "
-            "negated on read) -- except under tws_raw, which returns the raw TWS quantity unchanged."
+            "quantity is signed from side alone: SELL / SLD / S negative, anything else positive, "
+            "whatever the source or the stored sign (core 0.35.0, TD-30) -- except under tws_raw, "
+            "which returns the stored TWS quantity unchanged."
         ),
     ),
 ) -> Dict[str, Any]:
@@ -490,6 +492,12 @@ async def post_executions_fetch(
 
     Reads fills only. 503 when Postgres, the monitor flag or the gateway client is
     missing, or the gateway answered an error; 500 when the write failed.
+
+    The plugin's fills (``account`` / ``shares`` / ``ts``) are mapped to the writer's row
+    by core ``portfolio.gateway_fills`` (api 0.3.3). A fill that cannot be written whole --
+    no account or quantity, or an option fill without expiry / strike / right, which the
+    plugin does not send yet -- is not written; ``skipped_incomplete`` counts them and
+    ``skipped_exec_ids`` names them.
     """
     app = request.app
     reader = app.state.reader
@@ -588,8 +596,49 @@ async def post_executions_fetch(
             out["secondary_error"] = secondary_error
         return out
 
+    rows, refused = execution_rows_from_gateway_fills(all_execs)
+    skipped_ids = [r.get("exec_id") for r in refused]
+    if refused:
+        logger.warning(
+            "executions/fetch: %s fill(s) not written (incomplete): %s",
+            len(refused),
+            "; ".join(f"{r.get('exec_id')!r} missing {','.join(r['missing'])}" for r in refused[:20]),
+        )
+    skipped_note = (
+        f" Not written (incomplete fill: no account / quantity, or an option without expiry / strike / right): "
+        f"{len(refused)}, exec_ids [{', '.join(str(x) for x in skipped_ids[:20])}"
+        f"{', ...' if len(skipped_ids) > 20 else ''}]."
+        if refused
+        else ""
+    )
+    if not rows:
+        msg = f"IB returned {fetched_total} execution(s); none could be written.{skipped_note}"
+        await asyncio.to_thread(
+            _publish_tws_fetch_system_message,
+            cfg,
+            ok=True,
+            title="TWS executions fetch: nothing written",
+            message=msg,
+            reason=None,
+            level="warning",
+        )
+        out_none: Dict[str, Any] = {
+            "ok": True,
+            "message": msg,
+            "count": fetched_total,
+            "days": days,
+            "fetched_primary": fetched_primary,
+            "fetched_secondary": fetched_secondary,
+            "fetched_total": fetched_total,
+            "skipped_incomplete": len(refused),
+            "skipped_exec_ids": skipped_ids,
+        }
+        if secondary_error:
+            out_none["secondary_error"] = secondary_error
+        return out_none
+
     stats_out: Dict[str, Any] = {}
-    if not write_account_executions_to_db(control_via_db, all_execs, stats_out=stats_out):
+    if not write_account_executions_to_db(control_via_db, rows, stats_out=stats_out):
         await asyncio.to_thread(
             _publish_tws_fetch_system_message,
             cfg,
@@ -623,6 +672,7 @@ async def post_executions_fetch(
         f"updated {len(upd_ids)} row(s), ids {_fmt_db_id_list(upd_ids)} (TWS path is insert-or-skip, usually 0); "
         f"skipped duplicate exec_id: {skip}, existing row ids {_fmt_db_id_list(sk_ids)}."
     )
+    msg += skipped_note
     if missing_raw:
         msg += " (executions_raw_tws missing or unavailable; stats may be incomplete.)"
     if secondary_error:
@@ -651,6 +701,8 @@ async def post_executions_fetch(
         "tws_raw_inserted_ids": ins_ids,
         "tws_raw_updated_ids": upd_ids,
         "tws_raw_skipped_ids": sk_ids,
+        "skipped_incomplete": len(refused),
+        "skipped_exec_ids": skipped_ids,
         "message": msg,
     }
     if secondary_error:

@@ -265,9 +265,56 @@ def test_link_database_error_is_500(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_fetch_write_failure_is_500(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ex, "_publish_tws_fetch_system_message", lambda *_a, **_k: None)
     monkeypatch.setattr(ex, "write_account_executions_to_db", lambda *_a, **_k: False)
-    gw = _Gateway({"ok": True, "data": {"executions": [{"exec_id": "zz-1"}]}})
+    gw = _Gateway({"ok": True, "data": {"executions": [_plugin_fill()]}})
     r = _client(gateway=gw).post("/executions/fetch")
     assert_error(r, 500, "Failed to write account_executions.", {"count": 0, "fetched_total": 1})
+
+
+# --- fetch: the plugin's fills are mapped to the writer's row (api 0.3.3) -------------
+
+
+def _plugin_fill(**over: Any) -> Dict[str, Any]:
+    """The shape bifrost-platform-plugin ib_gateway fetch_executions answers (values made up)."""
+    fill = {
+        "exec_id": "zz-1", "account": ACC, "symbol": "ZZQ", "sec_type": "STK", "side": "BOT",
+        "shares": 10.0, "price": 12.5, "commission": 1.0, "realized_pnl": None, "ts": 1_790_000_000.0,
+    }
+    fill.update(over)
+    return fill
+
+
+def test_fetch_writes_mapped_rows_and_counts_the_incomplete(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ex, "_publish_tws_fetch_system_message", lambda *_a, **_k: None)
+    written: Dict[str, Any] = {}
+
+    def fake_write(_cfg: Any, rows: Any, stats_out: Dict[str, Any]) -> bool:
+        written["rows"] = rows
+        stats_out.update({"tws_raw_inserted": 1, "tws_raw_inserted_ids": [5]})
+        return True
+
+    monkeypatch.setattr(ex, "write_account_executions_to_db", fake_write)
+    fills = [_plugin_fill(), _plugin_fill(exec_id="zz-2", account=None), _plugin_fill(exec_id="zz-3", sec_type="OPT")]
+    r = _client(gateway=_Gateway({"ok": True, "data": {"executions": fills}})).post("/executions/fetch")
+    assert r.status_code == 200
+    body = r.json()
+    assert (body["count"], body["fetched_total"], body["tws_raw_inserted"]) == (3, 3, 1)
+    assert body["skipped_incomplete"] == 2 and body["skipped_exec_ids"] == ["zz-2", "zz-3"]
+    assert "Not written (incomplete fill" in body["message"]
+    (row,) = written["rows"]
+    assert (row["account_id"], row["quantity"], row["time"], row["source"]) == (ACC, 10.0, 1_790_000_000.0, "tws_client")
+    assert row["contract_key"] == "ZZQ|STK|||"
+
+
+def test_fetch_with_only_incomplete_fills_writes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ex, "_publish_tws_fetch_system_message", lambda *_a, **_k: None)
+    monkeypatch.setattr(ex, "write_account_executions_to_db", MagicMock(side_effect=AssertionError("no write")))
+    gw = _Gateway({"ok": True, "data": {"executions": [{"exec_id": "zz-1"}]}})
+    r = _client(gateway=gw).post("/executions/fetch")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["fetched_total"] == 1
+    assert body["skipped_incomplete"] == 1 and body["skipped_exec_ids"] == ["zz-1"]
+    assert "none could be written" in body["message"]
 
 
 # --- success shapes unchanged ------------------------------------------------------------
