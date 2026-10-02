@@ -20,6 +20,7 @@ from bifrost_core.ib_operator.client import IbOperatorClient
 from bifrost_core.monitor.reader import StatusReader
 from bifrost_core.observability.prometheus import instrument_app
 from bifrost_api.common.service_endpoints import mount_auth_capabilities
+from bifrost_api.deprecations import install_deprecations
 from bifrost_api.write_guard import install_write_guard
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,8 @@ def create_app(
     # Every write needs a role (debt TD-23). Added before CORS so CORS stays the
     # outer layer and a refusal still carries its headers.
     install_write_guard(app, lambda: merged_config or reader._config)
+    # Routes no repo calls carry Deprecation: true and log their callers (debt TD-40).
+    install_deprecations(app)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
