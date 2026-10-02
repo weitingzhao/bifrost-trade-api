@@ -2,9 +2,8 @@
 
 **trading_engine** uses ``redis_meta_key`` ``bifrost:health:daemon_strategy_trading`` by default (Dev/Prod
 Ops lease + ``engine_ops_active``, same exclusivity rules as Socket rows in
-:mod:`backend.ops.routers.market_ingest`). **account_sync_daemon** uses
-``bifrost:health:daemon_account_sync`` by default for the same Ops lease fields on that hash.
-YAML may omit ``redis_meta_key`` for either id and the default meta key is applied.
+:mod:`backend.ops.routers.market_ingest`). YAML may omit ``redis_meta_key`` for it and the
+default meta key is applied. (account_sync_daemon was deleted with account-sync, TD-22.)
 """
 
 from __future__ import annotations
@@ -12,9 +11,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from bifrost_core.core.redis_health_keys import (
-    BIFROST_HEALTH_ACCOUNT_SYNC_DAEMON,
     BIFROST_HEALTH_DAEMON_TRADING_ENGINE,
-    LEGACY_BIFROST_HEALTH_ACCOUNT_SYNC_DAEMON,
     LEGACY_BIFROST_HEALTH_DAEMON_TRADING_ENGINE,
     BIFROST_HEALTH_IB_ACCOUNT_AGENT,
     BIFROST_HEALTH_IB_INGESTOR,
@@ -29,14 +26,16 @@ _LEGACY_IB_INGESTER_META_HEALTH = "ib:ingester:meta:health"
 _LEGACY_IB_OPERATOR_META_HEALTH = "ib:operator:meta:health"
 
 # Ingest processes that publish quotes / WS health (Socket Services page). When YAML lists only
-# daemon rows (trading_engine, account_sync_daemon), merge these defaults so Ops UI still shows
+# daemon rows (trading_engine), merge these defaults so Ops UI still shows
 # socket units alongside Daemon-only overrides.
 _SOCKET_FEED_IDS: tuple[str, ...] = (
     "ib_operator",
     "ib_ingestor",
     "ib_account_agent",
 )
-_DAEMON_ONLY_IDS = frozenset({"trading_engine", "account_sync_daemon"})
+_DAEMON_ONLY_IDS = frozenset({"trading_engine"})
+# account-sync was deleted 2026-10-02 (TD-22); a config row still naming it is skipped.
+_RETIRED_SERVICE_IDS = frozenset({"account_sync_daemon"})
 
 
 def canonical_ingest_service_id(service_id: str) -> str:
@@ -90,12 +89,6 @@ DEFAULT_MARKET_INGEST_SERVICES: List[Dict[str, str]] = [
         "systemd_unit": "bifrost-engine.service",
         "redis_meta_key": BIFROST_HEALTH_DAEMON_TRADING_ENGINE,
     },
-    {
-        "id": "account_sync_daemon",
-        "label": "Account Sync Daemon",
-        "systemd_unit": "bifrost-account-sync-daemon.service",
-        "redis_meta_key": BIFROST_HEALTH_ACCOUNT_SYNC_DAEMON,
-    },
 ]
 
 
@@ -115,6 +108,8 @@ def market_ingest_services_from_config(config: dict) -> List[Dict[str, str]]:
         meta = str(row.get("redis_meta_key") or "").strip()
         if not sid or not unit:
             continue
+        if sid in _RETIRED_SERVICE_IDS:
+            continue
         norm_unit = unit if unit.endswith(".service") else f"{unit}.service"
         if sid == "ib_ingestor" and meta in (
             _LEGACY_IB_INGESTER_META_HEALTH,
@@ -132,12 +127,8 @@ def market_ingest_services_from_config(config: dict) -> List[Dict[str, str]]:
             meta = BIFROST_HEALTH_DAEMON_TRADING_ENGINE
         elif sid == "trading_engine" and meta == LEGACY_BIFROST_HEALTH_DAEMON_TRADING_ENGINE:
             meta = BIFROST_HEALTH_DAEMON_TRADING_ENGINE
-        elif sid == "account_sync_daemon" and meta == LEGACY_BIFROST_HEALTH_ACCOUNT_SYNC_DAEMON:
-            meta = BIFROST_HEALTH_ACCOUNT_SYNC_DAEMON
         if sid == "trading_engine" and not meta:
             meta = BIFROST_HEALTH_DAEMON_TRADING_ENGINE
-        if sid == "account_sync_daemon" and not meta:
-            meta = BIFROST_HEALTH_ACCOUNT_SYNC_DAEMON
         out.append({
             "id": sid,
             "label": label or sid,

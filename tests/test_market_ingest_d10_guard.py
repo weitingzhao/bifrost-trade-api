@@ -24,7 +24,7 @@ def freeze_executor(monkeypatch):
     )
     ex = KubernetesExecutor(
         namespace="bifrost-stg",
-        allowed_units=["bifrost-engine", "bifrost-account-sync-daemon"],
+        allowed_units=["bifrost-engine"],
         daemon_scale_guard="freeze",
     )
     ex._apps = MagicMock()
@@ -62,15 +62,6 @@ def test_freeze_start_replicas_positive_allowed(freeze_executor):
             2,
         )
         is None
-    )
-
-
-def test_freeze_account_sync_start_not_blocked(freeze_executor):
-    assert not _d10_should_reject_scale_up(
-        freeze_executor,
-        "account_sync_daemon",
-        MarketIngestAction.START,
-        0,
     )
 
 

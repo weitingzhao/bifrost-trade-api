@@ -16,8 +16,6 @@ UNIT_TO_DEPLOYMENT: dict[str, str] = {
     "bifrost-ib-ingestor.service": "ib-market-gateway",
     "bifrost-ib-account-agent": "ib-account-agent",
     "bifrost-ib-account-agent.service": "ib-account-agent",
-    "bifrost-account-sync-daemon": "account-sync",
-    "bifrost-account-sync-daemon.service": "account-sync",
 }
 
 

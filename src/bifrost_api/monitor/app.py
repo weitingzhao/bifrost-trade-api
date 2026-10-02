@@ -150,10 +150,6 @@ def create_app(
     app.state._ib_account_agent_log_loop: Optional[asyncio.AbstractEventLoop] = None
 
     # Account Sync Daemon console log stream
-    app.state.account_sync_daemon_log_queues: list = []
-    app.state.account_sync_daemon_log_lock = threading.Lock()
-    app.state._account_sync_daemon_log_thread: Optional[threading.Thread] = None
-    app.state._account_sync_daemon_log_loop: Optional[asyncio.AbstractEventLoop] = None
 
     # Docs API console log stream (run_server_docs.py → bifrost:console:{dev|prod}:api_docs)
     app.state.docs_log_queues: list = []

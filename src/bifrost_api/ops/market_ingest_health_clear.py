@@ -156,8 +156,6 @@ def _hash_looks_connected(m: Dict[str, str], sid: str) -> bool:
         return redis_hash_field_truthy(m, "connected")
     if sid == "trading_engine":
         return redis_hash_field_truthy(m, ENGINE_OPS_ACTIVE_REDIS_FIELD)
-    if sid == "account_sync_daemon":
-        return redis_hash_field_truthy(m, "alive")
     return False
 
 
@@ -232,16 +230,6 @@ def clear_ingest_health_after_stop(redis_url: str, meta_key: str, service_id: st
                 key,
                 mapping={
                     ENGINE_OPS_ACTIVE_REDIS_FIELD: "0",
-                    "updated_at": str(now),
-                },
-            )
-        elif sid == "account_sync_daemon":
-            r.hset(
-                key,
-                mapping={
-                    "alive": "0",
-                    "stream_lag": "0",
-                    "last_sync_version": "0",
                     "updated_at": str(now),
                 },
             )

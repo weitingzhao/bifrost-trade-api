@@ -18,9 +18,7 @@ from bifrost_core.monitor.reader.ib_config_public import (
 from bifrost_core.monitor.self_check import derive_daemon_self_check, derive_health_roll_up
 from bifrost_core.core.realtime.redis_keys import SUBSCRIBE_CHANNEL_DEFAULT
 from bifrost_core.core.redis_health_keys import (
-    hgetall_account_sync_daemon_health,
     hgetall_ib_account_agent_health,
-    redis_hash_field_truthy,
     hgetall_ib_ingestor_health,
 )
 
@@ -622,49 +620,6 @@ def get_status(request: Request) -> Dict[str, Any]:
             ib_account_agent=ib_account_agent,
             platform_ib_gateway=platform_ib_gateway,
         )
-        account_sync_hb = reader.get_account_sync_heartbeat()
-        account_sync_block: Optional[Dict[str, Any]] = None
-        if account_sync_hb is not None:
-            _as_last_ts = account_sync_hb.get("last_ts")
-            _now_ts = time.time()
-            _as_alive = _as_last_ts is not None and (_now_ts - float(_as_last_ts)) < 35
-            if account_sync_hb.get("alive") is False:
-                _as_alive = False
-            account_sync_block = {
-                "heartbeat": {
-                    "last_ts": _as_last_ts,
-                    "daemon_alive": _as_alive,
-                    "heartbeat_interval_sec": float(
-                        account_sync_hb.get("heartbeat_interval_sec") or 5.0,
-                    ),
-                    "last_sync_version": account_sync_hb.get("last_sync_version", 0),
-                    "accounts_synced": account_sync_hb.get("accounts_synced", 0),
-                    "positions_synced": account_sync_hb.get("positions_synced", 0),
-                    "executions_synced": account_sync_hb.get("executions_synced", 0),
-                    "open_orders_synced": account_sync_hb.get("open_orders_synced", 0),
-                    "stream_lag": account_sync_hb.get("stream_lag", 0),
-                },
-            }
-        else:
-            try:
-                # Fallback: legacy redis-ib health hash (pre-IPC migration)
-                _asd_health_r = _ib_r if _ib_r is not None else _r
-                if (_ib_rurl or _rurl) and _asd_health_r is not None:
-                    _asd_h = hgetall_account_sync_daemon_health(_asd_health_r)
-                    if _asd_h:
-                        _asd_alive = redis_hash_field_truthy(_asd_h, "alive")
-                        account_sync_block = {
-                            "heartbeat": {
-                                "last_ts": None,
-                                "daemon_alive": _asd_alive,
-                                "heartbeat_interval_sec": 5.0,
-                                "last_sync_version": 0,
-                                "stream_lag": int(_asd_h.get("stream_lag") or 0),
-                            },
-                        }
-            except Exception:
-                pass
-        payload["account_sync_daemon"] = account_sync_block
 
         with _status_cache_lock:
             _status_cache = payload

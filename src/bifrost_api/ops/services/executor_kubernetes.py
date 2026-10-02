@@ -1,4 +1,4 @@
-"""Kubernetes workload executor for daemon, socket, and account-sync control."""
+"""Kubernetes workload executor for the daemon and ingest workloads (account-sync deleted, TD-22)."""
 
 from __future__ import annotations
 
@@ -14,11 +14,10 @@ from bifrost_api.ops.workload_map import deployment_for_unit, is_managed_unit
 logger = logging.getLogger(__name__)
 
 _DAEMON_DEPLOYMENT = "daemon"
-_ACCOUNT_SYNC_DEPLOYMENT = "account-sync"
 _VALID_ACTIONS = frozenset({"start", "stop", "restart"})
 _VALID_DAEMON_SCALE_GUARDS = frozenset({"freeze", "observe", "off"})
 _D10_FREEZE_MESSAGE = "Trading execution is BLOCKED (D10). Daemon scale-up requires Owner unlock."
-_HEALTH_WORKLOAD_NAMES = (_DAEMON_DEPLOYMENT, _ACCOUNT_SYNC_DEPLOYMENT)
+_HEALTH_WORKLOAD_NAMES = (_DAEMON_DEPLOYMENT,)
 
 
 class KubernetesExecutor:
@@ -210,16 +209,6 @@ class KubernetesExecutor:
         out["deployment" if kind == "deployment" else "statefulset"] = name
         return out
 
-    async def _co_scale_account_sync(self, daemon_action: str) -> Optional[Dict[str, Any]]:
-        spec_replicas, _ready, kind = await self._workload_ready_replicas(
-            _ACCOUNT_SYNC_DEPLOYMENT
-        )
-        if daemon_action == "stop" and spec_replicas > 0:
-            return await self._scale_workload(kind, _ACCOUNT_SYNC_DEPLOYMENT, 0)
-        if daemon_action in ("start", "restart") and spec_replicas == 0:
-            return await self._scale_workload(kind, _ACCOUNT_SYNC_DEPLOYMENT, 1)
-        return None
-
     async def _systemctl_workload(
         self,
         action: str,
@@ -244,19 +233,11 @@ class KubernetesExecutor:
             else:
                 result = await self._scale_workload(kind, workload, 1)
                 result["unit"] = unit
-            if is_daemon:
-                co_scale = await self._co_scale_account_sync("start")
-                if co_scale:
-                    result["co_scale_account_sync"] = co_scale
             return result
 
         if action == "stop":
             result = await self._scale_workload(kind, workload, 0)
             result["unit"] = unit
-            if is_daemon:
-                co_scale = await self._co_scale_account_sync("stop")
-                if co_scale:
-                    result["co_scale_account_sync"] = co_scale
             return result
 
         if action == "restart":
@@ -267,10 +248,6 @@ class KubernetesExecutor:
             else:
                 result = await self._rollout_restart_workload(kind, workload)
             result["unit"] = unit
-            if is_daemon:
-                co_scale = await self._co_scale_account_sync("restart")
-                if co_scale:
-                    result["co_scale_account_sync"] = co_scale
             return result
 
         raise PermissionError(f"Action {action!r} is not supported")

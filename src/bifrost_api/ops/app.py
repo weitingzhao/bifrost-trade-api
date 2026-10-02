@@ -38,7 +38,6 @@ DEFAULT_ALLOWED_UNITS = [
     "bifrost-ib-ingestor",
     "bifrost-ib-account-agent",
     "bifrost-engine",
-    "bifrost-account-sync-daemon",
 ]
 
 
