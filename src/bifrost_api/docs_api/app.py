@@ -30,6 +30,7 @@ def create_docs_app(
     main_openapi_url: str,
     research_openapi_url: str,
     *,
+    extra_openapi_urls: Optional[Dict[str, str]] = None,
     config: Optional[dict] = None,
     resolved_config_path: Optional[str] = None,
 ) -> FastAPI:
@@ -72,6 +73,9 @@ def create_docs_app(
     _state: Dict[str, Any] = {
         "main_url": main_openapi_url,
         "research_url": research_openapi_url,
+        # Secondary specs merged after the main one, by component prefix. Account and Market
+        # were never in the aggregate, so no env had one document for the Trade API (TD-28).
+        "secondaries": {"Research": research_openapi_url, **(extra_openapi_urls or {})},
     }
 
     _legacy_browser_prefix = os.environ.get("BIFROST_DOCS_ROOT_PATH", "").strip().rstrip("/")
@@ -83,6 +87,7 @@ def create_docs_app(
             "ts": time.time(),
             "main_url": _state["main_url"],
             "research_url": _state["research_url"],
+            "secondary_urls": dict(_state["secondaries"]),
         }
         srv = _cfg["server"]
         out["port"] = int(srv["docs_port"])
@@ -158,15 +163,20 @@ def create_docs_app(
                 status_code=502,
                 content={"detail": f"Cannot reach main API: {exc}"},
             )
-        try:
-            research_spec = fetch_openapi(_state["research_url"])
-        except Exception as exc:
-            logger.warning("Failed to fetch Research OpenAPI from %s: %s", _state["research_url"], exc)
-            return JSONResponse(
-                status_code=502,
-                content={"detail": f"Cannot reach Research API: {exc}"},
-            )
-        merged = merge_openapi_specs(main_spec, research_spec, secondary_prefix="Research")
+        merged = main_spec
+        unreachable: Dict[str, str] = {}
+        for prefix, url in _state["secondaries"].items():
+            try:
+                spec = fetch_openapi(url)
+            except Exception as exc:
+                logger.warning("Failed to fetch %s OpenAPI from %s: %s", prefix, url, exc)
+                unreachable[prefix] = f"{url}: {exc}"
+                continue
+            merged = merge_openapi_specs(merged, spec, secondary_prefix=prefix)
+        if unreachable:
+            # Serve what answered and say what did not, rather than one 502 for the whole document.
+            merged = dict(merged)
+            merged["x-bifrost-unreachable"] = unreachable
         return JSONResponse(content=merged)
 
     from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
@@ -213,6 +223,18 @@ def create_docs_app(
     return app
 
 
+def _sibling_openapi(service: str, port: int, path: str) -> str:
+    """Another Trade API's OpenAPI URL as seen from inside the monitor process.
+
+    In K3s each API is its own Deployment behind a Service of the same name in this
+    namespace, so 127.0.0.1 only ever reached the monitor itself -- the research spec
+    answered 502 in every env (TD-28). Outside Kubernetes (local runs) the APIs share
+    a host, and 127.0.0.1 with the configured port is right.
+    """
+    host = service if os.environ.get("KUBERNETES_SERVICE_HOST") else "127.0.0.1"
+    return f"http://{host}:{port}{path}"
+
+
 def attach_docs_routes(
     host_app: FastAPI,
     *,
@@ -226,13 +248,20 @@ def attach_docs_routes(
     Does not register root ``/health`` (host app already has one). Registers
     ``/research/docs/*`` and root ``/openapi.json`` / ``/docs`` / ``/redoc``.
     """
+    srv = normalize_server_config(dict(config.get("server") or {}))
     docs_app = create_docs_app(
         main_openapi_url
         or os.environ.get("BIFROST_DOCS_MAIN_OPENAPI")
-        or f"http://127.0.0.1:{int((config.get('server') or {}).get('monitor_port', 8765))}/openapi.json",
+        or f"http://127.0.0.1:{int(srv['monitor_port'])}/openapi.json",
         research_openapi_url
         or os.environ.get("BIFROST_DOCS_RESEARCH_OPENAPI")
-        or f"http://127.0.0.1:{int((config.get('server') or {}).get('research_port', 8773))}/openapi.json",
+        or _sibling_openapi("api-research", int(srv["research_port"]), "/openapi.json"),
+        extra_openapi_urls={
+            "Account": os.environ.get("BIFROST_DOCS_ACCOUNT_OPENAPI")
+            or _sibling_openapi("api-account", int(srv["trading_port"]), "/account/openapi.json"),
+            "Market": os.environ.get("BIFROST_DOCS_MARKET_OPENAPI")
+            or _sibling_openapi("api-market", int(srv["market_port"]), "/market/openapi.json"),
+        },
         config=config,
         resolved_config_path=resolved_config_path,
     )
