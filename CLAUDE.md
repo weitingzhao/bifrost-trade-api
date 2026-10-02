@@ -97,6 +97,21 @@ Research **不写** `strategy_opportunity`。表结构与列见 `bifrost-trade-c
   `Link: <successor>; rel="successor-version"`，日志 `replaced route hit … use <successor>`。与 `DEPRECATED_ROUTES`（没人调用、
   准备删的路由）互斥。下一版 PUT 变真正的整体替换。新增 merge 式写入一律做 PATCH，不要再加 merge 式 PUT。
 
+### 请求与响应模型（TD-24，0.3.1，决策 B 先加后收）
+
+- **POST / PUT body 一律是模型**，不再收 `Dict[str, Any]`：继承 `common/request_bodies.LenientBody`（嵌套对象用
+  `LenientItem`），放在各域 `*/schemas/requests.py`。类型 strict（`"5"` 不是数、`1` 不是 `true`）→ 类型错是 422、什么都不写；
+  字段在模型里都可选，「必填」仍由路由 / core 答 400（消息不变）。路由只读声明过的字段：交给 core 用
+  `body.declared(exclude_unset=True)`。**未知字段这一版接受并忽略**，每个请求记一行
+  `unknown request fields: <METHOD> <route template> ignored [<names>]`（只有字段名，不记值；嵌套写 `legs[].x`），
+  靠 `install_request_field_log`（account、market 两个 app）拿到路由模板。**下一版改 `extra="forbid"`**，与 PATCH 一致。
+  core 自带的 body（opportunity / allocation / instance / plan / review）与 PATCH 的 `PatchBody` 不在此列。
+- **响应模型**：allocations、opportunities、gate-safety、instances、plans 的列表 / 单个 GET / PATCH 用
+  `strategy/schemas/responses.py`（`response_model=…`，`response_model_exclude_unset=True`）。`ResponseRow` 先跑
+  `jsonable_encoder`，线上形状与没模型时一字不差（时间戳是 `isoformat()` 的 `+00:00` 字符串）；`extra="allow"` 这一版保留
+  reader 新加的字段。没有默认值的字段 = reader 一定会发；reader 少发一个就是 500——改 core reader 的 SELECT 时同步改模型和
+  `tests/strategy_rows.py`（它用真 reader 跑 SQL 形状的行）。字段清单给前端 zod 用。
+
 ## `bifrost_api.research` 的实际内容
 
 - `routers/` — 五个 router（见上表）
