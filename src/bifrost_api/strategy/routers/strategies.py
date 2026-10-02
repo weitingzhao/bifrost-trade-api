@@ -35,6 +35,7 @@ from bifrost_api.strategy.schemas.responses import (
     OpportunityList,
 )
 from bifrost_core.monitor.reader import gate_safety_write as gate_safety_write_module
+from bifrost_core.monitor.reader.errors import WriteError
 from bifrost_core.monitor.reader import strategy_allocation_write as strategy_allocation_write_module
 from bifrost_core.monitor.reader import strategy_opportunity_write as strategy_opportunity_write_module
 from bifrost_core.monitor.reader import strategy_structure_write as strategy_structure_write_module
@@ -310,6 +311,8 @@ def create_opportunity_endpoint(request: Request, body: OpportunityBody) -> Dict
     payload["entry_conditions"] = [c.model_dump() for c in (body.entry_conditions or [])]
     try:
         oid = strategy_opportunity_write_module.create_opportunity(control_via_db, payload)
+    except WriteError:
+        raise  # WriteInvalid (a bad limit / gate id, TD-48) -> 400 via common.write_errors
     except (ValueError, TypeError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if oid is None:
@@ -326,6 +329,8 @@ def update_opportunity_endpoint(request: Request, opportunity_id: int, body: Opp
         payload["entry_conditions"] = [c.model_dump() for c in (body.entry_conditions or [])]
     try:
         ok = strategy_opportunity_write_module.update_opportunity(control_via_db, opportunity_id, payload)
+    except WriteError:
+        raise  # WriteInvalid (a bad limit / gate id, TD-48) -> 400 via common.write_errors
     except (ValueError, TypeError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if not ok:
@@ -472,6 +477,8 @@ def create_allocation_endpoint(request: Request, body: AllocationBody) -> Dict[s
     payload = body.model_dump()
     try:
         aid = strategy_allocation_write_module.create_allocation(control_via_db, payload)
+    except WriteError:
+        raise  # WriteInvalid (a bad limit / gate id, TD-48) -> 400 via common.write_errors
     except (ValueError, TypeError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if aid is None:
@@ -486,6 +493,8 @@ def update_allocation_endpoint(request: Request, allocation_id: int, body: Alloc
     payload = body.model_dump(exclude_unset=True)
     try:
         ok = strategy_allocation_write_module.update_allocation(control_via_db, allocation_id, payload)
+    except WriteError:
+        raise  # WriteInvalid (a bad limit / gate id, TD-48) -> 400 via common.write_errors
     except (ValueError, TypeError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if not ok:
