@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from bifrost_api.common.envelopes import list_body
 from bifrost_api.strategy.deps import write_config
 from bifrost_core.monitor.reader import gate_safety_write as gate_safety_write_module
 from bifrost_core.monitor.reader import strategy_allocation_write as strategy_allocation_write_module
@@ -80,7 +81,7 @@ def list_templates_endpoint(
     active_only: bool = Query(True),
 ) -> Dict[str, Any]:
     reader = request.app.state.reader
-    return {"items": reader.list_templates(active_only=active_only)}
+    return list_body(reader.list_templates(active_only=active_only))
 
 
 @router.get("/templates/{template_id}")
@@ -181,7 +182,7 @@ def list_structures(
     """Return list of strategy_structure rows for management dropdown."""
     reader = request.app.state.reader
     items: List[Dict[str, Any]] = reader.list_structures(active_only=active_only)
-    return {"items": items}
+    return list_body(items)
 
 
 @router.get("/structures/{structure_id}")
@@ -246,7 +247,7 @@ def list_opportunities(
     """Return list of strategy_opportunity rows for management."""
     reader = request.app.state.reader
     items: List[Dict[str, Any]] = reader.list_opportunities(active_only=active_only)
-    return {"items": items}
+    return list_body(items)
 
 
 @router.get("/opportunities/{opportunity_id}")
@@ -331,7 +332,7 @@ def list_strategy_instances(
         opened_at_from=opened_at_from,
         opened_at_until=opened_at_until,
     )
-    return {"items": items}
+    return list_body(items)
 
 
 @router.get("/instances/{strategy_instance_id}")
@@ -370,7 +371,7 @@ def get_instance_open_option_legs(request: Request, strategy_instance_id: int) -
     """Return current open OPT positions linked to this instance (derived from executions intersected with positions)."""
     reader = request.app.state.reader
     legs = reader.get_instance_open_option_legs(strategy_instance_id)
-    return {"items": legs, "strategy_instance_id": strategy_instance_id}
+    return list_body(legs, strategy_instance_id=strategy_instance_id)
 
 
 @router.delete("/instances/{strategy_instance_id}")
@@ -430,7 +431,7 @@ def list_allocations(
     """Return list of strategy_allocation rows for management."""
     reader = request.app.state.reader
     items: List[Dict[str, Any]] = reader.list_allocations(active_only=active_only)
-    return {"items": items}
+    return list_body(items)
 
 
 @router.get("/allocations/{allocation_id}")
@@ -476,7 +477,7 @@ def list_gate_safety(request: Request) -> Dict[str, Any]:
     """Return list of gate_safety_strategy rows for management dropdown."""
     reader = request.app.state.reader
     items = reader.list_gate_safety_sets()
-    return {"items": items}
+    return list_body(items)
 
 
 @router.get("/gate-safety/defaults")
