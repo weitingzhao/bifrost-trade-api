@@ -29,7 +29,7 @@ class IbConfigBody(BaseModel):
 
 
 class ActiveStrategyBody(BaseModel):
-    """POST /config/active-strategy body: active_strategy_structure_id, active_gate_safety_strategy_id, active_strategy_allocation_id (null to clear)."""
+    """POST /config/active-strategy body: any of the three ids; an omitted field is left as it is, null clears it."""
     active_strategy_structure_id: Optional[int] = None
     active_gate_safety_strategy_id: Optional[int] = None
     active_strategy_allocation_id: Optional[int] = None
@@ -84,21 +84,22 @@ def post_config_active_strategy(request: Request, body: ActiveStrategyBody = Bod
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return JSONResponse(status_code=503, content={"error": "control via DB not available (postgres required)"})
+    # Only the fields the caller sent are written; an omitted field keeps its value, as
+    # /config/ib already does. Sending null still clears that field (TD-38).
+    sent = set(body.model_fields_set)
+    if not sent:
+        return JSONResponse(status_code=400, content={"error": "no active_* field in the body"})
     try:
         if write_active_strategy_and_gates(
             control_via_db,
             active_strategy_structure_id=body.active_strategy_structure_id,
             active_gate_safety_strategy_id=body.active_gate_safety_strategy_id,
             active_strategy_allocation_id=body.active_strategy_allocation_id,
+            only=sent,
         ):
             return JSONResponse(
                 status_code=200,
-                content={
-                    "ok": True,
-                    "active_strategy_structure_id": body.active_strategy_structure_id,
-                    "active_gate_safety_strategy_id": body.active_gate_safety_strategy_id,
-                    "active_strategy_allocation_id": body.active_strategy_allocation_id,
-                },
+                content={"ok": True, **{f: getattr(body, f) for f in sorted(sent)}},
             )
         return JSONResponse(status_code=500, content={"error": "failed to write active strategy and gates"})
     except ValueError as e:
