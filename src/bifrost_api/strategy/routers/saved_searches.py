@@ -16,6 +16,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Body, HTTPException, Request
 
+from bifrost_api.strategy.deps import db_not_configured, read_config, write_config
 from bifrost_core.monitor.reader import saved_search as saved_search_module
 from bifrost_core.monitor.reader.saved_search import SavedSearchError
 
@@ -24,17 +25,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/strategies", tags=["saved-searches"])
 
 
-def _config(request: Request) -> dict:
-    control_via_db = getattr(request.app.state, "control_via_db", None)
-    if not control_via_db:
-        raise HTTPException(status_code=503, detail="Database control not configured")
-    return control_via_db
-
-
 @router.get("/saved-searches")
 def list_saved_searches_endpoint(request: Request) -> Dict[str, Any]:
     """Every saved search, oldest first. A read that fails is a 500, never an empty list."""
-    config = getattr(request.app.state, "status_cfg_for_read", None)
+    config = read_config(request)
     try:
         items = saved_search_module.list_saved_searches(config)
     except Exception as e:
@@ -46,7 +40,7 @@ def list_saved_searches_endpoint(request: Request) -> Dict[str, Any]:
 @router.post("/saved-searches")
 def create_saved_search_endpoint(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """Keep a scope: body {route, label, state}. Saving a label again on a page replaces it."""
-    config = _config(request)
+    config = write_config(request)
     try:
         new_id = saved_search_module.create_saved_search(
             config, str(body.get("route") or ""), str(body.get("label") or ""), body.get("state") or {}
@@ -57,14 +51,14 @@ def create_saved_search_endpoint(request: Request, body: Dict[str, Any] = Body(.
         logger.warning("create_saved_search failed: %s", e)
         raise HTTPException(status_code=500, detail="Failed to save the search") from e
     if new_id is None:
-        raise HTTPException(status_code=503, detail="Database control not configured")
+        raise db_not_configured()
     return {"preference_saved_search_id": new_id}
 
 
 @router.delete("/saved-searches/{saved_search_id}")
 def delete_saved_search_endpoint(request: Request, saved_search_id: int) -> Dict[str, Any]:
     """Forget one saved search."""
-    config = _config(request)
+    config = write_config(request)
     try:
         gone = saved_search_module.delete_saved_search(config, saved_search_id)
     except Exception as e:

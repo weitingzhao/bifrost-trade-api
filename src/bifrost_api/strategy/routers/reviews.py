@@ -14,11 +14,12 @@ A review is a record, never an instruction: nothing downstream reads it to act
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import psycopg2
 from fastapi import APIRouter, HTTPException, Request
 
+from bifrost_api.strategy.deps import db_not_configured, read_config, write_config
 from bifrost_core.monitor.reader import trade_review as trade_review_module
 from bifrost_core.monitor.schemas.trade_reviews import TradeReviewBody
 
@@ -27,23 +28,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/strategies", tags=["trade-reviews"])
 
 
-def _read_config(request: Request) -> Optional[dict]:
-    return getattr(request.app.state, "status_cfg_for_read", None)
-
-
-def _write_config(request: Request) -> dict:
-    control_via_db = getattr(request.app.state, "control_via_db", None)
-    if not control_via_db:
-        raise HTTPException(status_code=503, detail="Database control not configured")
-    return control_via_db
-
-
 @router.get("/reviews")
 def list_reviews_endpoint(request: Request) -> Dict[str, Any]:
     """Every review. A failed read is a 500 -- an empty list would say nothing
     has been reviewed, which is a statement about the book, not the query."""
     try:
-        items = trade_review_module.list_reviews(_read_config(request))
+        items = trade_review_module.list_reviews(read_config(request))
     except Exception as e:
         logger.warning("list_reviews failed: %s", e)
         raise HTTPException(status_code=500, detail="Failed to read trade reviews") from e
@@ -55,7 +45,7 @@ def save_review_endpoint(
     request: Request, strategy_instance_id: int, body: TradeReviewBody
 ) -> Dict[str, Any]:
     """Write one instance's review. `reviewed: true` confirms it, `false` reopens it."""
-    config = _write_config(request)
+    config = write_config(request)
     try:
         row = trade_review_module.save_review(
             config, strategy_instance_id, body.model_dump(exclude_unset=True)
@@ -66,5 +56,5 @@ def save_review_endpoint(
         logger.warning("save_review failed: %s", e)
         raise HTTPException(status_code=500, detail="Failed to save trade review") from e
     if row is None:
-        raise HTTPException(status_code=503, detail="Database control not configured")
+        raise db_not_configured()
     return row

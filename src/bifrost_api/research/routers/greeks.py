@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Query, Request
 
+from bifrost_api.research.deps import db_config
+
 router = APIRouter(tags=["research"])
 
 DEFAULT_RISK_FREE_RATE = 0.045
@@ -148,10 +150,6 @@ def compute_greeks(
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
-
-
-def _db_config(request: Request) -> Optional[dict]:
-    return request.app.state.control_via_db or getattr(request.app.state, "status_cfg_for_read", None)
 
 
 def _fetch_greeks_rows(
@@ -306,7 +304,7 @@ def get_greeks(
     Joins option_day with stock_day for the underlying price.
     Note: Black-Scholes is a European approximation for NVDA's American options.
     """
-    db = _db_config(request)
+    db = db_config(request)
     if db is None:
         return {
             "ok": False, "symbol": symbol, "trade_date": trade_date,

@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from bifrost_api.common.service_endpoints import mount_auth_capabilities
 from bifrost_api.docs_api.merge_openapi import fetch_openapi, merge_openapi_specs
 from bifrost_core.config.startup import (
     config_profile_from_resolved_path,
@@ -22,7 +22,6 @@ from bifrost_core.observability.prometheus import instrument_app
 
 logger = logging.getLogger(__name__)
 
-DOCS_STOP_EXIT_DELAY_SEC = 2.5
 DOCS_PATH_PREFIX = "/research/docs"
 
 
@@ -66,9 +65,6 @@ def create_docs_app(
 
     _profile = config_profile_from_resolved_path(resolved_config_path) if resolved_config_path else None
 
-    from bifrost_api.ops.services.audit_store import AuditStore
-
-    app.state.audit_store = AuditStore.from_config(_cfg)
 
     _state: Dict[str, Any] = {
         "main_url": main_openapi_url,
@@ -89,8 +85,7 @@ def create_docs_app(
             "research_url": _state["research_url"],
             "secondary_urls": dict(_state["secondaries"]),
         }
-        srv = _cfg["server"]
-        out["port"] = int(srv["docs_port"])
+        # No "port": docs_port names a port no pod listens on; monitor serves these routes.
         if _profile is not None:
             out["config_profile"] = _profile
         if resolved_config_path:
@@ -105,54 +100,7 @@ def create_docs_app(
     def docs_health_prefixed() -> Dict[str, Any]:
         return _health_payload()
 
-    @app.get(f"{DOCS_PATH_PREFIX}/auth/capabilities")
-    def docs_auth_capabilities(request: Request) -> Dict[str, Any]:
-        """Same shape as GET /ops/auth/capabilities (shared ops.auth tokens)."""
-        from bifrost_api.ops.auth import AuthConfig, OpsAuth
-
-        return OpsAuth(AuthConfig.from_config(_cfg)).capabilities(request)
-
-    @app.post(f"{DOCS_PATH_PREFIX}/shutdown")
-    def post_docs_shutdown(request: Request) -> Any:
-        """Terminate the Docs API process. Requires operator role (same tokens as Ops API)."""
-        from bifrost_api.ops.auth import AuthConfig, OpsAuth
-        from bifrost_api.ops.models.schemas import AuditEntry
-
-        ops_auth = OpsAuth(AuthConfig.from_config(_cfg))
-        ident, denied = ops_auth.require_role(request, "operator")
-        audit_store = getattr(app.state, "audit_store", None)
-        if denied:
-            if audit_store is not None:
-                audit_store.append(
-                    AuditEntry(
-                        operator=ident.name,
-                        source_ip=request.client.host if request.client else None,
-                        action="docs_shutdown",
-                        target="process",
-                        outcome="denied",
-                        detail=f"role={ident.role}",
-                    ),
-                )
-            return denied
-        if audit_store is not None:
-            audit_store.append(
-                AuditEntry(
-                    operator=ident.name,
-                    source_ip=request.client.host if request.client else None,
-                    action="docs_shutdown",
-                    target="process",
-                    outcome="scheduled",
-                    detail="process exit",
-                ),
-            )
-
-        def _exit_after_send() -> None:
-            time.sleep(DOCS_STOP_EXIT_DELAY_SEC)
-            logger.info("Docs API shutdown: exiting process.")
-            os._exit(0)
-
-        threading.Thread(target=_exit_after_send, daemon=True).start()
-        return {"ok": True}
+    mount_auth_capabilities(app, [f"{DOCS_PATH_PREFIX}/auth/capabilities"], lambda: _cfg)
 
     def _merged_openapi_response() -> JSONResponse:
         try:

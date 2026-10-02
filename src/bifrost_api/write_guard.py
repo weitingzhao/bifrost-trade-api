@@ -12,8 +12,9 @@ remembering to add it. The exceptions are fixed paths, so matching the path the
 app sees (after Traefik strips ``/api/<domain>``) is enough:
 
 - ``READ_ONLY_POSTS``: POSTs that only read, open to a viewer.
-- ``ADMIN_PATHS``: process exits and IB disconnect / reconnect, which act on
-  the connection every environment's gateway shares.
+- ``ADMIN_PATHS``: IB disconnect / reconnect, which act on the connection
+  every environment's gateway shares. (The process-exit routes that were here
+  are gone, TD-64: lifecycle belongs to Kubernetes.)
 - everything else that is not GET / HEAD / OPTIONS: operator.
 
 The role comes from ``OpsAuth`` (``ops/auth.py``): an ``Authorization: Bearer``
@@ -47,15 +48,6 @@ READ_ONLY_POSTS = frozenset(
 
 ADMIN_PATHS = frozenset(
     {
-        "/api/server/shutdown",
-        "/ops/shutdown",
-        "/research/docs/shutdown",
-        "/account/shutdown",
-        "/trading/shutdown",
-        "/portfolio/shutdown",
-        "/strategy/shutdown",
-        "/market/shutdown",
-        "/shutdown",
         "/control/monitor_stop",
         "/control/monitor_release_ib",
         "/control/monitor_connect",

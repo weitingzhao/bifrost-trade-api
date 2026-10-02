@@ -19,6 +19,7 @@ from bifrost_core.config.startup import config_profile_from_resolved_path
 from bifrost_core.ib_operator.client import IbOperatorClient
 from bifrost_core.monitor.reader import StatusReader
 from bifrost_core.observability.prometheus import instrument_app
+from bifrost_api.common.service_endpoints import mount_auth_capabilities
 from bifrost_api.write_guard import install_write_guard
 
 logger = logging.getLogger(__name__)
@@ -123,79 +124,8 @@ def create_app(
         # /research/docs/* answer 404, and the platform's api-ops probe stays green. Fail
         # the start instead, so a rollout keeps the old pods (debt TD-27).
         raise RuntimeError("monitor startup: Ops Private Network middleware failed") from exc
-    # Strategy Trading Daemon console (run_engine.py → bifrost:console:{dev|prod}:daemon_trading + legacy); reader thread + queues
-    app.state.daemon_log_queues: list = []
-    app.state.daemon_log_lock = threading.Lock()
-    app.state._daemon_log_thread: Optional[threading.Thread] = None
-    app.state._daemon_log_loop: Optional[asyncio.AbstractEventLoop] = None
-
-    # Monitor API console log stream (run_server.py → bifrost:console:{dev|prod}:api_monitor)
-    app.state.monitor_log_queues: list = []
-    app.state.monitor_log_lock = threading.Lock()
-    app.state._monitor_log_thread: Optional[threading.Thread] = None
-    app.state._monitor_log_loop: Optional[asyncio.AbstractEventLoop] = None
-
-    # IB Operator log stream (scripts/systemd/run_ib_operator.py → bifrost:console:ws_ib_operator)
-    app.state.ib_operator_log_queues: list = []
-    app.state.ib_operator_log_lock = threading.Lock()
-    app.state._ib_operator_log_thread: Optional[threading.Thread] = None
-    app.state._ib_operator_log_loop: Optional[asyncio.AbstractEventLoop] = None
-
-    # IB ingestor log stream (scripts/systemd/run_ib_ingestor.py → bifrost:console:ws_ib_ingestor)
-    app.state.ib_ingestor_log_queues: list = []
-    app.state.ib_ingestor_log_lock = threading.Lock()
-    app.state._ib_ingestor_log_thread: Optional[threading.Thread] = None
-    app.state._ib_ingestor_log_loop: Optional[asyncio.AbstractEventLoop] = None
-
-    # IB Account Agent log stream (scripts/systemd/run_ib_account_agent.py → bifrost:console:ws_ib_account_agent)
-    app.state.ib_account_agent_log_queues: list = []
-    app.state.ib_account_agent_log_lock = threading.Lock()
-    app.state._ib_account_agent_log_thread: Optional[threading.Thread] = None
-    app.state._ib_account_agent_log_loop: Optional[asyncio.AbstractEventLoop] = None
-
-    # Account Sync Daemon console log stream
-
-    # Docs API console log stream (run_server_docs.py → bifrost:console:{dev|prod}:api_docs)
-    app.state.docs_log_queues: list = []
-    app.state.docs_log_lock = threading.Lock()
-    app.state._docs_log_thread: Optional[threading.Thread] = None
-    app.state._docs_log_loop: Optional[asyncio.AbstractEventLoop] = None
-
-    # Ops API console log stream (run_server_ops.py → bifrost:console:{dev|prod}:api_ops)
-    app.state.ops_log_queues: list = []
-    app.state.ops_log_lock = threading.Lock()
-    app.state._ops_log_thread: Optional[threading.Thread] = None
-    app.state._ops_log_loop: Optional[asyncio.AbstractEventLoop] = None
-
-    # Trading API console log stream (run_server_trading.py → bifrost:console:{dev|prod}:api_trading)
-    app.state.trading_log_queues: list = []
-    app.state.trading_log_lock = threading.Lock()
-    app.state._trading_log_thread: Optional[threading.Thread] = None
-    app.state._trading_log_loop: Optional[asyncio.AbstractEventLoop] = None
-
-    # Portfolio API console log stream (run_server_portfolio.py → bifrost:console:{dev|prod}:api_portfolio)
-    app.state.portfolio_log_queues: list = []
-    app.state.portfolio_log_lock = threading.Lock()
-    app.state._portfolio_log_thread: Optional[threading.Thread] = None
-    app.state._portfolio_log_loop: Optional[asyncio.AbstractEventLoop] = None
-
-    # Research API console log stream (run_server_research.py → bifrost:console:{dev|prod}:api_research)
-    app.state.research_log_queues: list = []
-    app.state.research_log_lock = threading.Lock()
-    app.state._research_log_thread: Optional[threading.Thread] = None
-    app.state._research_log_loop: Optional[asyncio.AbstractEventLoop] = None
-
-    # Strategy API console log stream (run_server_strategy.py → bifrost:console:{dev|prod}:api_strategy)
-    app.state.strategy_log_queues: list = []
-    app.state.strategy_log_lock = threading.Lock()
-    app.state._strategy_log_thread: Optional[threading.Thread] = None
-    app.state._strategy_log_loop: Optional[asyncio.AbstractEventLoop] = None
-
-    # Market API console log stream (run_server_market.py → bifrost:console:{dev|prod}:api_market)
-    app.state.market_log_queues: list = []
-    app.state.market_log_lock = threading.Lock()
-    app.state._market_log_thread: Optional[threading.Thread] = None
-    app.state._market_log_loop: Optional[asyncio.AbstractEventLoop] = None
+    # The per-service console log-stream queues / locks / threads / loops (12
+    # services, 48 attributes) had no reader and are gone (TD-64).
 
     # System messages (Redis message center -> materialized TTL items -> SSE fan-out).
     app.state.system_message_queues: list = []
@@ -234,20 +164,14 @@ def create_app(
     if not isinstance(_scfg, dict):
         raise ValueError("create_app (monitor) requires merged_config['server'] from read_config().")
     app.state.bifrost_server_listen_port = int(_scfg["monitor_port"])
-    # massive_port remains in YAML schema (legacy) but is not exposed on /health
-    app.state.bifrost_docs_port = int(_scfg["docs_port"])
-    app.state.bifrost_ops_port = int(_scfg["ops_port"])
+    # Only ports a process listens on reach /health: massive / docs / ops /
+    # strategy / portfolio stay in the YAML schema but no pod listens on them.
     app.state.bifrost_trading_port = int(_scfg["trading_port"])
-    app.state.bifrost_strategy_port = int(_scfg["strategy_port"])
-    app.state.bifrost_portfolio_port = int(_scfg["portfolio_port"])
     app.state.bifrost_market_port = int(_scfg["market_port"])
     app.state.bifrost_research_port = int(_scfg["research_port"])
 
     app.state.bifrost_utilized_services = _utilized_services_from_config(merged_config)
     app.state.bifrost_merged_config = merged_config or {}
-    from bifrost_api.ops.services.audit_store import AuditStore
-
-    app.state.audit_store = AuditStore.from_config(merged_config or {})
 
     from bifrost_api.monitor.routers import (
         config_router,
@@ -262,6 +186,9 @@ def create_app(
     app.include_router(status_router)
     app.include_router(daemon_router)
     app.include_router(config_router)
+    mount_auth_capabilities(
+        app, ["/api/server/auth/capabilities"], lambda: merged_config or reader._config
+    )
     # Phase B: position-categories live on account-service (merged portfolio).
 
     # Phase B Wave B3: Docs OpenAPI aggregate absorbed into monitor.

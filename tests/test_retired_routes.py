@@ -2,7 +2,9 @@
 
 TD-40: every retired path had 0 hits in all retained access logs (25+ days, every
 env) and no caller in any sibling repo. TD-58: the dims writes went with core's
-writers. Each list below pairs what went with what had to stay.
+writers. TD-64: every process-exit route (lifecycle belongs to Kubernetes), while
+each capabilities path stays, now served by one shared function. Each list below
+pairs what went with what had to stay.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from typing import Any, Dict, Set, Tuple
 from unittest.mock import MagicMock
 
 import pytest
+from starlette.testclient import TestClient
 
 from bifrost_api.account.app import create_account_app
 from bifrost_api.market.app import create_market_app
@@ -42,12 +45,19 @@ RETIRED: Dict[str, Set[Tuple[str, str]]] = {
         ("POST", "/indices/refresh"),
         ("POST", "/market/holidays"),
         ("DELETE", "/market/holidays"),
+        ("POST", "/market/shutdown"),
     },
     "account": {
         ("POST", "/strategies/dims/{dim_type}"),
         ("PUT", "/strategies/dims/by-id/{strategy_dim_id}"),
         ("DELETE", "/strategies/dims/by-id/{strategy_dim_id}"),
         ("GET", "/strategies/dims/{dim_type}/items"),
+        *(("POST", f"/{d}/shutdown") for d in ("account", "trading", "portfolio", "strategy")),
+    },
+    "monitor": {
+        ("POST", "/api/server/shutdown"),
+        ("POST", "/ops/shutdown"),
+        ("POST", "/research/docs/shutdown"),
     },
 }
 
@@ -60,7 +70,7 @@ KEPT: Dict[str, Set[Tuple[str, str]]] = {
             "tier-filter", "fundamental-conditions", "symbol-technical-conditions", "fundamental-filter",
             "symbol-option-pcr",
         )
-    },
+    } | {("GET", "/auth/capabilities"), ("GET", "/health")},
     "market": {
         ("GET", "/market/holidays"),
         ("GET", "/market/trading-day"),
@@ -69,19 +79,31 @@ KEPT: Dict[str, Set[Tuple[str, str]]] = {
         ("GET", "/bars/latest"),
         ("GET", "/bars/benchmark"),
         ("GET", "/bars/stats"),
+        ("GET", "/market/auth/capabilities"),
+        ("GET", "/health"),
     },
     "account": {
         ("GET", "/strategies/dims"),
         ("GET", "/strategies/gate-safety/defaults"),
+        *(("GET", f"/{d}/auth/capabilities") for d in ("account", "trading", "portfolio", "strategy")),
+        ("GET", "/health"),
+    },
+    "monitor": {
+        ("GET", "/api/server/auth/capabilities"),
+        ("GET", "/ops/auth/capabilities"),
+        ("GET", "/research/docs/auth/capabilities"),
+        ("GET", "/health"),
+        ("GET", "/ops/health"),
+        ("GET", "/research/docs/health"),
     },
 }
 
 
-def _served(app_name: str) -> Set[Tuple[str, str]]:
+def _app(app_name: str) -> Any:
     reader = MagicMock()
     reader._config = full_server_config()
     cfg = reader._config
-    app: Any = {
+    return {
         "research": lambda: create_research_app(reader=reader, control_via_db=None, merged_config=cfg),
         "market": lambda: create_market_app(reader=reader, control_via_db=None, merged_config=cfg),
         "account": lambda: create_account_app(reader=reader, control_via_db=None, merged_config=cfg),
@@ -89,7 +111,10 @@ def _served(app_name: str) -> Set[Tuple[str, str]]:
             reader=reader, control_via_db=None, data_lag_threshold_ms=5000, merged_config=cfg
         ),
     }[app_name]()
-    return {(m, r.path) for r in app.routes for m in (getattr(r, "methods", None) or ())}
+
+
+def _served(app_name: str) -> Set[Tuple[str, str]]:
+    return {(m, r.path) for r in _app(app_name).routes for m in (getattr(r, "methods", None) or ())}
 
 
 @pytest.mark.parametrize("app_name", sorted(RETIRED))
@@ -100,3 +125,32 @@ def test_retired_routes_are_gone(app_name: str) -> None:
 @pytest.mark.parametrize("app_name", sorted(KEPT))
 def test_their_neighbours_are_served(app_name: str) -> None:
     assert not sorted(KEPT[app_name] - _served(app_name))
+
+
+@pytest.mark.parametrize(
+    "app_name, path",
+    [
+        ("monitor", "/api/server/auth/capabilities"),
+        ("monitor", "/ops/auth/capabilities"),
+        ("monitor", "/research/docs/auth/capabilities"),
+        ("account", "/strategy/auth/capabilities"),
+        ("market", "/market/auth/capabilities"),
+        ("research", "/auth/capabilities"),
+    ],
+)
+def test_each_capabilities_path_answers_the_same_shape(app_name: str, path: str) -> None:
+    body = TestClient(_app(app_name)).get(path).json()
+    assert body["ok"] is True
+    assert body["identity"]["role"] == "viewer"
+    assert body["capabilities"] == {"can_view": True, "can_operate": False, "can_admin": False}
+
+
+def test_health_reports_only_ports_a_process_listens_on() -> None:
+    """docs / ops run in monitor and strategy / portfolio in account (TD-64)."""
+    c = TestClient(_app("monitor"))
+    body = c.get("/health").json()
+    for gone in ("docs_port", "ops_port", "strategy_port", "portfolio_port"):
+        assert gone not in body
+    assert {"monitor_port", "trading_port", "market_port", "research_port"} <= set(body)
+    assert "port" not in c.get("/ops/health").json()
+    assert "port" not in c.get("/research/docs/health").json()

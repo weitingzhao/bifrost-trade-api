@@ -35,7 +35,7 @@
   `tests/contract/test_account_serves_every_domain_router.py` 遍历这三个包的 router 模块，要求每条路由都挂在 `create_account_app` 上。新 router 加进
   `account/app.py`，不要再建独立 app。
 - `ops/app.py` 只剩 `wire_ops_control_plane`（monitor 调用）；`docs_api/app.py` 的 `create_docs_app` 也由 monitor 挂载。
-- 配置里的 `docs_port` / `ops_port` / `strategy_port` / `portfolio_port` 仍被读入（monitor 的 `app.state`、docs / ops 的健康输出），但没有进程监听这些端口。
+- 配置里的 `docs_port` / `ops_port` / `strategy_port` / `portfolio_port` 没有进程监听，API 也不再读它们：monitor `/health` 只报 `monitor_port` / `trading_port` / `market_port` / `research_port`，`/ops/health` 与 `/research/docs/health` 不报 `port`（TD-64）。
 - 镜像：CI 用 `bifrost-trade-infra/k8s/cicd/docker/Dockerfile.api-stg`（与 core 一起从 Gitea 克隆构建）；本 repo 的
   `Dockerfile` 供本地构建，两者都执行 `scripts/run_server.py "${API_DOMAIN}"`。
 - db-init Job 也用 `bifrost-api-monitor` 镜像，跑 `scripts/run_db_refresh_schema.py`（core 的 `_ensure_tables()` +
@@ -59,7 +59,10 @@ Research **不写** `strategy_opportunity`。表结构与列见 `bifrost-trade-c
 
 ## 路由约定
 
-- 每个进程都有 `GET /health`。
+- 每个进程都有 `GET /health`。没有 `*/shutdown`：进程生命周期归 K8s（TD-64 删除）。
+- 各 app 的 `GET <prefix>/auth/capabilities`（monitor `/api/server`、`/ops`、`/research/docs`；account `/account`、`/trading`、`/portfolio`、`/strategy`；market `/market`；research 无前缀）都由
+  `bifrost_api/common/service_endpoints.mount_auth_capabilities` 挂载，读的配置与 write guard 相同。新 app 用它，不要再抄一份。
+- Research router 取 DB 配置用 `research/deps.db_config`；strategy router 的 503（无 Postgres 写配置）用 `strategy/deps.write_config` / `db_not_configured`。
 - `GET /status`、`GET /operations`、`POST /control/{action}` **只在 monitor**（daemon 状态与控制），不是各进程的通用模式。
 - SSE：`GET /quotes/stream`（market）、`GET /api/messages/stream`（monitor）、ops market-ingest 的流。响应自己带
   `X-Accel-Buffering: no` 和 `Cache-Control: no-cache`；新增 SSE 端点照此设置。

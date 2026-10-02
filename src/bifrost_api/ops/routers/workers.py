@@ -1,23 +1,20 @@
-"""Ops API routes for authentication, shutdown, and audit."""
+"""Ops role and audit helpers the market-ingest routes share.
+
+No routes: the ops capabilities route is mounted by ``wire_ops_control_plane``
+with the other apps' (``common.service_endpoints``), and POST /ops/shutdown is
+gone (TD-64)."""
 
 from __future__ import annotations
 
 import logging
-import os
-import threading
-import time
-from typing import Any, Dict, Optional
+from typing import Optional
 
-from fastapi import APIRouter, Request
+from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from bifrost_api.ops.models.schemas import AuditEntry
 
 logger = logging.getLogger(__name__)
-
-router = APIRouter(tags=["ops"])
-
-OPS_SHUTDOWN_EXIT_DELAY_SEC = 2.5
 
 
 def _audit_log(request: Request) -> list:
@@ -75,25 +72,3 @@ def _require_role(request: Request, minimum: str) -> Optional[JSONResponse]:
     """Return a 403 response when the caller lacks the required role."""
     _, denied = _ops_auth(request).require_role(request, minimum)
     return denied
-
-
-@router.get("/ops/auth/capabilities")
-def auth_capabilities(request: Request) -> Dict[str, Any]:
-    return _ops_auth(request).capabilities(request)
-
-
-@router.post("/ops/shutdown")
-def post_ops_shutdown(request: Request) -> Any:
-    denied = _require_role(request, "operator")
-    if denied:
-        _audit(request, "ops_shutdown", "process", "denied", detail=f"role={_role(request)}")
-        return denied
-    _audit(request, "ops_shutdown", "process", "scheduled", detail="process exit")
-
-    def _exit_after_send() -> None:
-        time.sleep(OPS_SHUTDOWN_EXIT_DELAY_SEC)
-        logger.info("Ops API shutdown: exiting process.")
-        os._exit(0)
-
-    threading.Thread(target=_exit_after_send, daemon=True).start()
-    return {"ok": True}

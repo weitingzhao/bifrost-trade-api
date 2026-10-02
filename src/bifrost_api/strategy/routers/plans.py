@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from bifrost_api.strategy.deps import db_not_configured, read_config, write_config
 from bifrost_core.monitor.reader import strategy_plan as strategy_plan_module
 from bifrost_core.monitor.reader.strategy_plan import PlanRuleError
 from bifrost_core.monitor.schemas.strategy_plans import (
@@ -33,18 +34,6 @@ router = APIRouter(prefix="/strategies", tags=["strategy-plans"])
 
 PLANS_LIMIT_DEFAULT = 200
 PLANS_LIMIT_MAX = 500
-
-
-def _read_config(request: Request) -> Optional[dict]:
-    return getattr(request.app.state, "status_cfg_for_read", None)
-
-
-def _write_config(request: Request) -> dict:
-    """The write path needs Postgres; say so plainly when it is absent."""
-    control_via_db = getattr(request.app.state, "control_via_db", None)
-    if not control_via_db:
-        raise HTTPException(status_code=503, detail="Database control not configured")
-    return control_via_db
 
 
 @router.get("/plans")
@@ -62,7 +51,7 @@ def list_plans_endpoint(
     nothing else -- it must never stand in for a query that did not run."""
     try:
         items = strategy_plan_module.list_plans(
-            _read_config(request),
+            read_config(request),
             status=status,
             symbol=symbol,
             account_id=account_id,
@@ -78,7 +67,7 @@ def list_plans_endpoint(
 def get_plan_endpoint(request: Request, strategy_plan_id: int) -> Dict[str, Any]:
     """One plan by id. 404 when there is no such row, 500 when the read fails."""
     try:
-        row = strategy_plan_module.get_plan(_read_config(request), strategy_plan_id)
+        row = strategy_plan_module.get_plan(read_config(request), strategy_plan_id)
     except Exception as e:
         logger.warning("get_plan failed: %s", e)
         raise HTTPException(status_code=500, detail="Failed to read strategy plan") from e
@@ -90,7 +79,7 @@ def get_plan_endpoint(request: Request, strategy_plan_id: int) -> Dict[str, Any]
 @router.post("/plans")
 def create_plan_endpoint(request: Request, body: PlanCreateBody) -> Dict[str, Any]:
     """Write one draft. `intend` is a separate step, on purpose."""
-    config = _write_config(request)
+    config = write_config(request)
     payload = body.model_dump()
     try:
         plan_id = strategy_plan_module.create_plan(config, payload)
@@ -100,7 +89,7 @@ def create_plan_endpoint(request: Request, body: PlanCreateBody) -> Dict[str, An
         logger.warning("create_plan failed: %s", e)
         raise HTTPException(status_code=500, detail="Failed to create strategy plan") from e
     if plan_id is None:
-        raise HTTPException(status_code=503, detail="Database control not configured")
+        raise db_not_configured()
     return {"strategy_plan_id": plan_id}
 
 
@@ -109,7 +98,7 @@ def update_plan_endpoint(
     request: Request, strategy_plan_id: int, body: PlanUpdateBody
 ) -> Dict[str, Any]:
     """Edit a draft. 409 once the plan has been marked intended."""
-    config = _write_config(request)
+    config = write_config(request)
     payload = body.model_dump(exclude_unset=True)
     try:
         updated = strategy_plan_module.update_plan(config, strategy_plan_id, payload)
@@ -126,7 +115,7 @@ def update_plan_endpoint(
 @router.post("/plans/{strategy_plan_id}/intend")
 def intend_plan_endpoint(request: Request, strategy_plan_id: int) -> Dict[str, Any]:
     """Mark a draft intended. 409 carries what the plan is still missing."""
-    config = _write_config(request)
+    config = write_config(request)
     try:
         moved = strategy_plan_module.intend_plan(config, strategy_plan_id)
     except PlanRuleError as e:
@@ -144,7 +133,7 @@ def link_fill_endpoint(
     request: Request, strategy_plan_id: int, body: PlanLinkFillBody
 ) -> Dict[str, Any]:
     """Say which instance the plan turned into. The fill itself happened in TWS."""
-    config = _write_config(request)
+    config = write_config(request)
     try:
         linked = strategy_plan_module.link_fill(
             config, strategy_plan_id, body.strategy_instance_id
@@ -167,7 +156,7 @@ def link_fill_endpoint(
 @router.post("/plans/{strategy_plan_id}/cancel")
 def cancel_plan_endpoint(request: Request, strategy_plan_id: int) -> Dict[str, Any]:
     """Drop a plan that will not be taken. A filled plan stays as it is."""
-    config = _write_config(request)
+    config = write_config(request)
     try:
         cancelled = strategy_plan_module.cancel_plan(config, strategy_plan_id)
     except PlanRuleError as e:
@@ -184,7 +173,7 @@ def cancel_plan_endpoint(request: Request, strategy_plan_id: int) -> Dict[str, A
 def delete_plan_endpoint(request: Request, strategy_plan_id: int) -> Dict[str, Any]:
     """Remove a draft. 409 for anything past draft. The UI calls this only once
     its Undo toast has closed (design Rev .138), so it is final."""
-    config = _write_config(request)
+    config = write_config(request)
     try:
         deleted = strategy_plan_module.delete_plan(config, strategy_plan_id)
     except PlanRuleError as e:

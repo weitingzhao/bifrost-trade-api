@@ -5,12 +5,10 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Request
 
+from bifrost_api.research.deps import db_config
+
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["research"])
-
-
-def _db_config(request: Request) -> Optional[dict]:
-    return request.app.state.control_via_db or getattr(request.app.state, "status_cfg_for_read", None)
 
 
 def _plugin_get(path: str, *, params: Dict[str, str] | None = None, timeout: int = 30) -> Dict[str, Any]:
@@ -702,7 +700,7 @@ def get_symbol_option_pcr(
     sym = (symbol or "").strip().upper()
     if not sym:
         return {"ok": False, "error": "symbol is required"}
-    db = _db_config(request)
+    db = db_config(request)
     if not db:
         return {"ok": False, "error": "PostgreSQL not configured"}
     return fetch_symbol_option_pcr(db, sym, lookback_days=lookback_days)
@@ -858,7 +856,7 @@ def get_ticker_overview(symbol: str, request: Request) -> Dict[str, Any]:
     if not ticker:
         return {"ok": True, "found": False, "symbol": sym}
 
-    db = _db_config(request)
+    db = db_config(request)
     related: list = []
     if db:
         params = _get_conn_params(db)

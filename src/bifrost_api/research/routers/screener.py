@@ -12,6 +12,8 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
+from bifrost_api.research.deps import db_config
+
 router = APIRouter(tags=["research"])
 
 RISK_FREE_RATE = 0.045
@@ -118,10 +120,6 @@ def _risk(prob_itm: float) -> str:
 # ---------------------------------------------------------------------------
 # DB / request helpers
 # ---------------------------------------------------------------------------
-
-
-def _db_config(request: Request) -> Optional[dict]:
-    return request.app.state.control_via_db or getattr(request.app.state, "status_cfg_for_read", None)
 
 
 def _norm_expiry_key(expiration: str) -> str:
@@ -455,7 +453,7 @@ def post_screener(request: Request, body: ScreenerRequest) -> Dict[str, Any]:
     V1: cash_secured_put only.  structure_type dispatch point is present for
     future extensions (covered_call, iron_condor, bull_put_spread, bear_call_spread).
     """
-    db = _db_config(request)
+    db = db_config(request)
     if not db:
         return {"ok": False, "error": "PostgreSQL not configured", "groups": []}
 

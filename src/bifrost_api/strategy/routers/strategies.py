@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from bifrost_api.strategy.deps import write_config
 from bifrost_core.monitor.reader import gate_safety_write as gate_safety_write_module
 from bifrost_core.monitor.reader import strategy_allocation_write as strategy_allocation_write_module
 from bifrost_core.monitor.reader import strategy_opportunity_write as strategy_opportunity_write_module
@@ -31,14 +32,6 @@ from bifrost_core.monitor.services.strategy_parsing import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
-
-
-def _require_control_via_db(request: Request) -> Optional[dict]:
-    """Return control_via_db config or raise 503."""
-    control_via_db = getattr(request.app.state, "control_via_db", None)
-    if not control_via_db:
-        raise HTTPException(status_code=503, detail="Database control not configured")
-    return control_via_db
 
 
 @router.get("/dims")
@@ -101,7 +94,7 @@ def get_template_detail_endpoint(request: Request, template_id: int) -> Dict[str
 
 @router.post("/templates")
 def create_template_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
-    config = _require_control_via_db(request)
+    config = write_config(request)
     try:
         tid = template_config_write_module.create_template(config, body)
     except ValueError as e:
@@ -113,7 +106,7 @@ def create_template_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str
 def update_template_endpoint(
     request: Request, template_id: int, body: Dict[str, Any]
 ) -> Dict[str, Any]:
-    config = _require_control_via_db(request)
+    config = write_config(request)
     try:
         ok = template_config_write_module.update_template(config, template_id, body)
     except ValueError as e:
@@ -125,7 +118,7 @@ def update_template_endpoint(
 
 @router.delete("/templates/{template_id}")
 def delete_template_endpoint(request: Request, template_id: int) -> Dict[str, Any]:
-    config = _require_control_via_db(request)
+    config = write_config(request)
     try:
         template_config_write_module.delete_template(config, template_id)
     except ValueError as e:
@@ -137,7 +130,7 @@ def delete_template_endpoint(request: Request, template_id: int) -> Dict[str, An
 def replace_template_legs_endpoint(
     request: Request, template_id: int, body: Dict[str, Any]
 ) -> Dict[str, Any]:
-    config = _require_control_via_db(request)
+    config = write_config(request)
     legs = body.get("legs")
     if not isinstance(legs, list):
         raise HTTPException(status_code=400, detail="legs array is required")
@@ -152,7 +145,7 @@ def replace_template_legs_endpoint(
 def replace_template_params_endpoint(
     request: Request, template_id: int, body: Dict[str, Any]
 ) -> Dict[str, Any]:
-    config = _require_control_via_db(request)
+    config = write_config(request)
     items = body.get("items")
     if not isinstance(items, list):
         raise HTTPException(status_code=400, detail="items must be an array")
@@ -167,7 +160,7 @@ def replace_template_params_endpoint(
 def replace_template_characteristics_endpoint(
     request: Request, template_id: int, body: Dict[str, Any]
 ) -> Dict[str, Any]:
-    config = _require_control_via_db(request)
+    config = write_config(request)
     items = body.get("items")
     if items is not None and not isinstance(items, list):
         raise HTTPException(status_code=400, detail="items must be an array of strings")
@@ -209,9 +202,7 @@ def create_structure_endpoint(request: Request, body: Dict[str, Any]) -> Dict[st
     Per leg: quantity = ratio per leg (structural); strike and expiration are optional presets
     (null/blank = resolve when structure is applied, e.g. ATM or DTE).
     """
-    control_via_db = getattr(request.app.state, "control_via_db", None)
-    if not control_via_db:
-        raise HTTPException(status_code=503, detail="Database control not configured")
+    control_via_db = write_config(request)
     try:
         sid = strategy_structure_write_module.create_structure(control_via_db, body)
     except (ValueError, TypeError) as e:
@@ -224,9 +215,7 @@ def create_structure_endpoint(request: Request, body: Dict[str, Any]) -> Dict[st
 @router.put("/structures/{structure_id}")
 def update_structure_endpoint(request: Request, structure_id: int, body: Dict[str, Any]) -> Dict[str, Any]:
     """Update an existing strategy structure. Body same as POST (legs: quantity=ratio, strike/expiration=optional preset)."""
-    control_via_db = getattr(request.app.state, "control_via_db", None)
-    if not control_via_db:
-        raise HTTPException(status_code=503, detail="Database control not configured")
+    control_via_db = write_config(request)
     try:
         ok = strategy_structure_write_module.update_structure(control_via_db, structure_id, body)
     except (ValueError, TypeError) as e:
@@ -239,9 +228,7 @@ def update_structure_endpoint(request: Request, structure_id: int, body: Dict[st
 @router.delete("/structures/{structure_id}")
 def delete_structure_endpoint(request: Request, structure_id: int) -> Dict[str, Any]:
     """Soft-delete a strategy structure (set is_active = false). Clears settings.active_strategy_structure_id if it pointed to this structure."""
-    control_via_db = getattr(request.app.state, "control_via_db", None)
-    if not control_via_db:
-        raise HTTPException(status_code=503, detail="Database control not configured")
+    control_via_db = write_config(request)
     try:
         ok = strategy_structure_write_module.deactivate_structure(control_via_db, structure_id)
     except Exception as e:
@@ -275,9 +262,7 @@ def get_opportunity(request: Request, opportunity_id: int) -> Dict[str, Any]:
 @router.post("/opportunities")
 def create_opportunity_endpoint(request: Request, body: OpportunityBody) -> Dict[str, Any]:
     """Create a new strategy opportunity. Body: name (required), strategy_structure_id (required), optional default_gate_safety_strategy_id, scope_type (e.g. watchlist_stk | explicit_symbols), symbols (array of strings), entry_conditions (array of { condition_type, value_text?, value_numeric? }), is_active."""
-    control_via_db = getattr(request.app.state, "control_via_db", None)
-    if not control_via_db:
-        raise HTTPException(status_code=503, detail="Database control not configured")
+    control_via_db = write_config(request)
     payload = body.model_dump()
     payload["entry_conditions"] = [c.model_dump() for c in (body.entry_conditions or [])]
     try:
@@ -292,9 +277,7 @@ def create_opportunity_endpoint(request: Request, body: OpportunityBody) -> Dict
 @router.put("/opportunities/{opportunity_id}")
 def update_opportunity_endpoint(request: Request, opportunity_id: int, body: OpportunityUpdateBody) -> Dict[str, Any]:
     """Update an existing strategy opportunity. Body same as POST: name, strategy_structure_id, optional default_gate_safety_strategy_id, scope_type, symbols, entry_conditions, is_active (partial update supported)."""
-    control_via_db = getattr(request.app.state, "control_via_db", None)
-    if not control_via_db:
-        raise HTTPException(status_code=503, detail="Database control not configured")
+    control_via_db = write_config(request)
     payload = body.model_dump(exclude_unset=True)
     if "entry_conditions" in payload:
         payload["entry_conditions"] = [c.model_dump() for c in (body.entry_conditions or [])]
@@ -365,9 +348,7 @@ def get_strategy_instance(request: Request, strategy_instance_id: int) -> Dict[s
 def create_strategy_instance_endpoint(request: Request, body: StrategyInstanceCreateBody) -> Dict[str, Any]:
     """Create a new strategy instance. Body: strategy_opportunity_id, account_id, opened_at (required), label?, notes?. opened_at: ISO 8601 or Unix seconds."""
     reader = request.app.state.reader
-    control_via_db = getattr(request.app.state, "control_via_db", None)
-    if not control_via_db:
-        raise HTTPException(status_code=503, detail="Database control not configured")
+    write_config(request)  # 503 without Postgres; the reader does the write
     try:
         opened_at_val = parse_opened_at_to_unix(body.opened_at)
     except ValueError as exc:
@@ -396,9 +377,7 @@ def get_instance_open_option_legs(request: Request, strategy_instance_id: int) -
 def delete_strategy_instance_endpoint(request: Request, strategy_instance_id: int) -> Dict[str, Any]:
     """Delete a strategy instance by id. Fails with 409 if the instance has linked executions."""
     reader = request.app.state.reader
-    control_via_db = getattr(request.app.state, "control_via_db", None)
-    if not control_via_db:
-        raise HTTPException(status_code=503, detail="Database control not configured")
+    write_config(request)  # 503 without Postgres; the reader does the write
     row = reader.get_strategy_instance_by_id(strategy_instance_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Strategy instance not found")
@@ -467,9 +446,7 @@ def get_allocation(request: Request, allocation_id: int) -> Dict[str, Any]:
 @router.post("/allocations")
 def create_allocation_endpoint(request: Request, body: AllocationBody) -> Dict[str, Any]:
     """Create a new strategy allocation. Body: name, strategy_opportunity_ids, optional gate_safety_strategy_id, allocation_limits, is_active."""
-    control_via_db = getattr(request.app.state, "control_via_db", None)
-    if not control_via_db:
-        raise HTTPException(status_code=503, detail="Database control not configured")
+    control_via_db = write_config(request)
     payload = body.model_dump()
     try:
         aid = strategy_allocation_write_module.create_allocation(control_via_db, payload)
@@ -483,9 +460,7 @@ def create_allocation_endpoint(request: Request, body: AllocationBody) -> Dict[s
 @router.put("/allocations/{allocation_id}")
 def update_allocation_endpoint(request: Request, allocation_id: int, body: AllocationUpdateBody) -> Dict[str, Any]:
     """Update an existing strategy allocation. Partial update supported."""
-    control_via_db = getattr(request.app.state, "control_via_db", None)
-    if not control_via_db:
-        raise HTTPException(status_code=503, detail="Database control not configured")
+    control_via_db = write_config(request)
     payload = body.model_dump(exclude_unset=True)
     try:
         ok = strategy_allocation_write_module.update_allocation(control_via_db, allocation_id, payload)
@@ -525,9 +500,7 @@ def get_gate_safety_by_id(request: Request, gate_safety_id: int) -> Dict[str, An
 @router.post("/gate-safety")
 def create_gate_safety_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
     """Create a new gate safety set. Body: name, optional version/structure_type/is_active, gates, optional earnings_dates."""
-    control_via_db = getattr(request.app.state, "control_via_db", None)
-    if not control_via_db:
-        raise HTTPException(status_code=503, detail="Database control not configured")
+    control_via_db = write_config(request)
     name = (body.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
@@ -543,9 +516,7 @@ def create_gate_safety_endpoint(request: Request, body: Dict[str, Any]) -> Dict[
 @router.put("/gate-safety/{gate_safety_id}")
 def update_gate_safety_endpoint(request: Request, gate_safety_id: int, body: Dict[str, Any]) -> Dict[str, Any]:
     """Update an existing gate safety set. Body same as POST."""
-    control_via_db = getattr(request.app.state, "control_via_db", None)
-    if not control_via_db:
-        raise HTTPException(status_code=503, detail="Database control not configured")
+    control_via_db = write_config(request)
     name = (body.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
@@ -562,9 +533,7 @@ def _delete_rule(request: Request, fn, row_id: int, what: str) -> Dict[str, Any]
     """Delete one Desk rule object: 409 with the reason while it is in use, 404
     when absent. The Desk calls this only once its Undo toast has closed (design
     Rev .140), so it is final."""
-    control_via_db = getattr(request.app.state, "control_via_db", None)
-    if not control_via_db:
-        raise HTTPException(status_code=503, detail="Database control not configured")
+    control_via_db = write_config(request)
     try:
         ok = fn(control_via_db, row_id)
     except RuleInUseError as e:

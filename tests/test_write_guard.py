@@ -1,7 +1,7 @@
 """Every write on a deployed Trade API app needs a role (debt TD-23).
 
-The guard is ``bifrost_api.write_guard``: operator for a write, admin for a
-process exit or an IB disconnect / reconnect, nothing for the few POSTs that only
+The guard is ``bifrost_api.write_guard``: operator for a write, admin for an
+IB disconnect / reconnect, nothing for the few POSTs that only
 read. Tokens here are invented; nothing in this file reaches IB, Redis or a DB.
 """
 
@@ -84,7 +84,7 @@ def _write_routes(app: Any) -> Iterator[tuple]:
         ("POST", "/research/screener", None),
         ("POST", "/research/screener/", None),
         ("POST", "/control/monitor_stop", "admin"),
-        ("POST", "/account/shutdown", "admin"),
+        ("POST", "/control/monitor_connect", "admin"),
     ],
 )
 def test_required_role(method: str, path: str, role: Optional[str]) -> None:
@@ -161,12 +161,6 @@ def test_disconnecting_ib_needs_admin() -> None:
     assert refused.status_code == 403 and refused.json()["required_role"] == "admin"
     # Past the guard the handler finds no IB Operator client in a test app and says so.
     assert c.post("/control/monitor_connect", headers=_bearer(ADMIN)).status_code == 503
-
-
-def test_a_route_appended_onto_monitor_is_guarded() -> None:
-    """The docs routes are appended as route objects; a router dependency would miss them."""
-    r = _client("monitor", "viewer").post("/research/docs/shutdown", headers=_bearer(OPERATOR))
-    assert r.status_code == 403 and r.json()["required_role"] == "admin"
 
 
 def test_default_role_operator_keeps_todays_behaviour() -> None:

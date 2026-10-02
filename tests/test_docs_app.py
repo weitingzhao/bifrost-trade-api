@@ -70,7 +70,8 @@ class TestDocsHealth:
         body = r.json()
         assert body["status"] == "ok"
         assert body["service"] == "bifrost-docs"
-        assert body["port"] == 9902
+        # docs_port names a port no pod listens on; monitor serves the docs routes (TD-64).
+        assert "port" not in body
 
     def test_config_profile_dev(self, tmp_path):
         fake = tmp_path / "config.dev.yaml"
@@ -91,7 +92,6 @@ class TestDocsHealth:
         client = _make_client()
         body = client.get(f"{DOCS_PATH_PREFIX}/health").json()
         assert "config_profile" not in body
-        assert body.get("port") == 8767
 
 
 class TestDocsOpenApi:

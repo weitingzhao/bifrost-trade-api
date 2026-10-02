@@ -1,23 +1,19 @@
 """Research domain FastAPI app — option discovery, screener, greeks, data readiness."""
 
 import logging
-import os
-import threading
-import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from bifrost_core.config.startup import config_profile_from_resolved_path, normalize_server_config
 from bifrost_core.monitor.reader import StatusReader
 from bifrost_core.observability.prometheus import instrument_app
+from bifrost_api.common.service_endpoints import mount_auth_capabilities
 from bifrost_api.write_guard import install_write_guard
 
 logger = logging.getLogger(__name__)
-
-SIDECAR_STOP_EXIT_DELAY_SEC = 2.5
 
 
 def create_research_app(
@@ -76,9 +72,6 @@ def create_research_app(
     app.include_router(data_readiness_router)
     app.include_router(feedback_router)
 
-    from bifrost_api.ops.services.audit_store import AuditStore
-
-    app.state.audit_store = AuditStore.from_config(_cfg_holder)
 
     def _health_payload() -> Dict[str, Any]:
         import time
@@ -95,56 +88,7 @@ def create_research_app(
     def research_health() -> Dict[str, Any]:
         return _health_payload()
 
-    @app.get("/auth/capabilities")
-    def research_auth_capabilities(request: Request) -> Dict[str, Any]:
-        """Same shape as GET /ops/auth/capabilities (shared ops.auth tokens)."""
-        from bifrost_api.ops.auth import AuthConfig, OpsAuth
-
-        cfg = merged_config or reader._config
-        return OpsAuth(AuthConfig.from_config(cfg)).capabilities(request)
-
-    @app.post("/shutdown")
-    def post_research_shutdown(request: Request) -> Any:
-        """Terminate the Research API process. Requires operator role (same tokens as Ops API)."""
-        from bifrost_api.ops.auth import AuthConfig, OpsAuth
-        from bifrost_api.ops.models.schemas import AuditEntry
-
-        cfg = merged_config or reader._config
-        ops_auth = OpsAuth(AuthConfig.from_config(cfg))
-        ident, denied = ops_auth.require_role(request, "operator")
-        audit_store = getattr(app.state, "audit_store", None)
-        if denied:
-            if audit_store is not None:
-                audit_store.append(
-                    AuditEntry(
-                        operator=ident.name,
-                        source_ip=request.client.host if request.client else None,
-                        action="research_shutdown",
-                        target="process",
-                        outcome="denied",
-                        detail=f"role={ident.role}",
-                    ),
-                )
-            return denied
-        if audit_store is not None:
-            audit_store.append(
-                AuditEntry(
-                    operator=ident.name,
-                    source_ip=request.client.host if request.client else None,
-                    action="research_shutdown",
-                    target="process",
-                    outcome="scheduled",
-                    detail="process exit",
-                ),
-            )
-
-        def _exit_after_send() -> None:
-            time.sleep(SIDECAR_STOP_EXIT_DELAY_SEC)
-            logger.info("Research API shutdown: exiting process.")
-            os._exit(0)
-
-        threading.Thread(target=_exit_after_send, daemon=True).start()
-        return {"ok": True}
+    mount_auth_capabilities(app, ["/auth/capabilities"], lambda: merged_config or reader._config)
 
     @app.on_event("startup")
     async def startup_event() -> None:

@@ -126,11 +126,13 @@ def wire_ops_control_plane(
     if getattr(app.state, "status_cfg_for_read", None) is None:
         app.state.status_cfg_for_read = config if has_postgres else None
 
-    from bifrost_api.ops.routers.workers import router as ops_router
     from bifrost_api.ops.routers.market_ingest import router as market_ingest_router
 
     app.include_router(market_ingest_router)
-    app.include_router(ops_router)
+
+    from bifrost_api.common.service_endpoints import mount_auth_capabilities
+
+    mount_auth_capabilities(app, ["/ops/auth/capabilities"], lambda: config)
 
     def _health_payload_sync() -> Dict[str, Any]:
         out: Dict[str, Any] = {
@@ -141,7 +143,7 @@ def wire_ops_control_plane(
         profile = getattr(app.state, "bifrost_config_profile", None)
         if profile is not None:
             out["config_profile"] = profile
-        out["port"] = int(config["server"]["ops_port"])
+        # No "port": ops_port names a port no pod listens on; monitor serves these routes.
         if resolved_config_path:
             out["config_path"] = str(Path(resolved_config_path).resolve())
         out["executor_mode"] = "kubernetes"

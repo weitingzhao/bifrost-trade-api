@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body, Query, Request
 from fastapi.responses import JSONResponse
 
+from bifrost_api.research.deps import db_config
 from bifrost_api.research.iv_atm import (
     atm_iv_from_expiry_items,
     build_exp_iv_map,
@@ -59,12 +60,6 @@ def _snapshot_ts_iso(row: Dict[str, Any]) -> Optional[str]:
             return ts.replace(tzinfo=timezone.utc).isoformat()
         return ts.isoformat()
     return str(ts)
-
-
-def _db_config(request: Request) -> Optional[dict]:
-    return request.app.state.control_via_db or getattr(request.app.state, "status_cfg_for_read", None)
-
-
 
 
 def _norm_expiry_key(expiration: str) -> str:
@@ -220,7 +215,7 @@ async def get_option_expirations(
         out["provider"] = "ib"
         return _option_expirations_cache_response(out)
 
-    db = _db_config(request)
+    db = db_config(request)
     ms = get_polygon_settings(config)
     ecfg = get_expiration_cache_settings(config)
     ttl_sec = _ttl_sec_expiration_cache(config)
@@ -338,7 +333,7 @@ def get_option_snapshots_pg(
     from bifrost_api.research.polygon_http import contract_key_from_parts
     from bifrost_api.research.market_pg import get_option_snapshots_latest
 
-    db = _db_config(request)
+    db = db_config(request)
     if not db:
         return {"symbol": symbol, "expiration": expiration, "rows": [], "error": "PostgreSQL not configured"}
 
@@ -494,7 +489,7 @@ def get_option_contract_liquidity_summary(
     from bifrost_api.research.polygon_http import contract_key_from_parts
     from bifrost_api.research.market_pg import get_option_snapshots_latest
 
-    db = _db_config(request)
+    db = db_config(request)
     if not db:
         return {"ok": False, "error": "PostgreSQL not configured"}
     sym = (symbol or "").strip().upper()
@@ -611,7 +606,7 @@ def get_option_contract_relative_value(
     from bifrost_api.research.market_pg import get_option_snapshots_latest
     import math
 
-    db = _db_config(request)
+    db = db_config(request)
     if not db:
         return {"ok": False, "error": "PostgreSQL not configured"}
     sym = (symbol or "").strip().upper()
@@ -702,7 +697,7 @@ def get_research_option_oi(
 ) -> Dict[str, Any]:
     from bifrost_api.research.market_pg import get_option_open_interest_daily
 
-    db = _db_config(request)
+    db = db_config(request)
     if not db:
         return {"rows": [], "error": "PostgreSQL not configured"}
     rows = get_option_open_interest_daily(
@@ -738,7 +733,7 @@ def get_research_option_trades(
             },
         )
 
-    db = _db_config(request)
+    db = db_config(request)
     if not db:
         return {"trades": [], "error": "PostgreSQL not configured"}
     rows = get_option_trades(db, symbol, limit=limit)
@@ -847,7 +842,7 @@ def get_iv_term_structure(
     from bifrost_api.research.polygon_http import contract_key_from_parts
     from bifrost_api.research.market_pg import get_option_snapshots_latest
 
-    db = _db_config(request)
+    db = db_config(request)
     if not db:
         return {"ok": False, "symbol": symbol, "points": [], "error": "PostgreSQL not configured"}
 
