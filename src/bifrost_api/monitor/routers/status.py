@@ -15,7 +15,7 @@ from bifrost_core.monitor.reader.ib_config_public import (
     ib_client_for_api,
     ib_client_public_defaults,
 )
-from bifrost_core.monitor.self_check import derive_daemon_self_check, derive_health_roll_up
+from bifrost_core.monitor.self_check import derive_daemon_self_check, derive_health_roll_up, is_daemon_alive
 from bifrost_core.core.realtime.redis_keys import SUBSCRIBE_CHANNEL_DEFAULT
 from bifrost_core.core.redis_health_keys import (
     hgetall_ib_account_agent_health,
@@ -245,7 +245,8 @@ def get_status(request: Request) -> Dict[str, Any]:
             daemon_heartbeat = {
                 "last_ts": last_ts,
                 "hedge_running": hb.get("hedge_running", False),
-                "daemon_alive": (last_ts is not None and (now_ts - last_ts) < 35),
+                # max(35 s, 3 x heartbeat interval) -- the interval is 5-120 s (TD-76, core 0.35.0)
+                "daemon_alive": is_daemon_alive(last_ts, hb.get("heartbeat_interval_sec"), now_ts),
                 "ib_connected": hb.get("ib_connected", False),
                 "ib_client_id": hb.get("ib_client_id"),
                 "next_retry_ts": hb.get("next_retry_ts"),
