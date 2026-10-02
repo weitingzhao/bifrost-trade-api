@@ -79,8 +79,23 @@ Research **不写** `strategy_opportunity`。表结构与列见 `bifrost-trade-c
 - **过渡一个版本**：`ok` / `error` 和路由原来的列表键（`executions`、`attributions`、`transactions` …，与 `items` 同一个列表）
   这一版照发，让发布前打开的标签页还能用；**下一个版本删掉**。已转换：portfolio config、trading executions、
   market watchlist、monitor config、`/strategies` 列表（0.2.2，batch 3b-1）。
-- core 的写函数常把「没有这行」和「数据库报错」合成一个 False / 0：调用方能走到的是前者时答 404（消息照旧写两种可能），
-  只可能是写失败时答 500；核心返回原因后再细分。
+- core 的旧写函数常把「没有这行」和「数据库报错」合成一个 False / 0：调用方能走到的是前者时答 404（消息照旧写两种可能），
+  只可能是写失败时答 500。PATCH 与 DELETE 已改用 core 0.33.0 的 TD-15 写函数（见下节），不再猜。
+
+### 写语义（TD-15，0.3.0，决策 B 两步走）
+
+- **PATCH = merge**：请求模型继承 `common/write_errors.PatchBody`（`extra="forbid"`、字段全可选、strict 类型），
+  `body.patch_fields()`（= `model_dump(exclude_unset=True)`）原样交给 core 的 `patch_*`：只改发来的字段，显式 `null`
+  清空可空列；空 body / 未知字段 → 422；成功答 200 + 该资源 GET-by-id 形状的行（老调用方读 `ok` 的路由再带一版 `ok: true`）。
+  执行归属走 `PATCH /executions/{id}/attribution`（只改归属，成交列仍归 PUT）；watchlist 单项是 `PATCH /watchlist/{contract_key}`。
+- **DELETE = strict**：调 core 的 `*_strict`，答 `{"deleted": "hard"|"soft", <id>, …, "ok": true}`（`ok` 下一版删）；
+  不存在 → 404（不再 200），被占用 → 409 带原因。
+- **错误映射只有一处**：`common/write_errors.install_write_errors`（account、market 两个 app）把 core 的 `Write*` 经
+  `error_response` 答出：`WriteNotFound` 404 · `WriteConflict` 409 · `WriteInvalid` 400 · `WriteFailed` 503（`unavailable`：
+  没配 / 连不上）否则 500。路由里不要再 `try/except` 这些；没配 Postgres 用 `write_target(request, what)`（同一个 503）。
+- **老 PUT**：这一版行为不变，在 `deprecations.REPLACED_ROUTES` 里登记「被谁取代」——响应带 `Deprecation: true` 与
+  `Link: <successor>; rel="successor-version"`，日志 `replaced route hit … use <successor>`。与 `DEPRECATED_ROUTES`（没人调用、
+  准备删的路由）互斥。下一版 PUT 变真正的整体替换。新增 merge 式写入一律做 PATCH，不要再加 merge 式 PUT。
 
 ## `bifrost_api.research` 的实际内容
 
