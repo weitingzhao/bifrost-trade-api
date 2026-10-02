@@ -295,27 +295,6 @@ def fetch_readiness_financials_coverage() -> Dict[str, Any]:
     return _get_json("/readiness/financials-coverage-symbols", timeout=45)
 
 
-def fetch_readiness_financials_fill_rate(
-    universe_symbols: Optional[List[str]] = None,
-) -> Dict[str, Any]:
-    """GET /readiness/financials-fill-rate → fill rate counts."""
-    params: Dict[str, str] = {}
-    if universe_symbols:
-        params["universe_symbols"] = ",".join(universe_symbols)
-    return _get_json("/readiness/financials-fill-rate", params, timeout=60)
-
-
-def fetch_readiness_date_coverage(
-    days_back: int = 420, min_symbols: int = 1000
-) -> Dict[str, Any]:
-    """GET /readiness/date-coverage → low coverage dates."""
-    return _get_json(
-        "/readiness/date-coverage",
-        {"days_back": str(days_back), "min_symbols": str(min_symbols)},
-        timeout=60,
-    )
-
-
 def fetch_readiness_financials_by_instrument_type() -> Dict[str, Any]:
     """GET /readiness/financials-by-instrument-type → counts by report type."""
     return _get_json("/readiness/financials-by-instrument-type", timeout=45)

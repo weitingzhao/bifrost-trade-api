@@ -40,7 +40,6 @@ READ_ONLY_POSTS = frozenset(
     {
         "/research/screener",
         "/executions/option-stock-links/query",
-        "/bars/watchlist/eod-refresh/preview",
         # The same on-demand registration GET /quotes makes on every poll.
         "/quotes/refresh-options",
     }

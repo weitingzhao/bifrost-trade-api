@@ -414,68 +414,24 @@ def count_income_statements_gaps(cur: Any = None) -> int:
     return _fetch_gaps(REPORT_INCOME).get("count", 0)
 
 
-def get_income_statements_gap_details(cur: Any = None, *, limit: int = 2000) -> Tuple[List[Dict[str, Any]], int]:
-    """``cur`` kept for signature compat but ignored."""
-    g = _fetch_gaps(REPORT_INCOME, limit=limit)
-    syms = g.get("symbols", [])
-    total = g.get("count", len(syms))
-    rows = [{"symbol": s} for s in syms[:limit]]
-    return rows, total
-
-
 def count_balance_sheet_gaps(cur: Any = None) -> int:
     return _fetch_gaps(REPORT_BALANCE).get("count", 0)
-
-
-def get_balance_sheet_gap_details(cur: Any = None, *, limit: int = 2000) -> Tuple[List[Dict[str, Any]], int]:
-    g = _fetch_gaps(REPORT_BALANCE, limit=limit)
-    syms = g.get("symbols", [])
-    total = g.get("count", len(syms))
-    return [{"symbol": s} for s in syms[:limit]], total
 
 
 def count_cash_flow_gaps(cur: Any = None) -> int:
     return _fetch_gaps(REPORT_CASH_FLOW).get("count", 0)
 
 
-def get_cash_flow_gap_details(cur: Any = None, *, limit: int = 2000) -> Tuple[List[Dict[str, Any]], int]:
-    g = _fetch_gaps(REPORT_CASH_FLOW, limit=limit)
-    syms = g.get("symbols", [])
-    total = g.get("count", len(syms))
-    return [{"symbol": s} for s in syms[:limit]], total
-
-
 def count_ratios_gaps(cur: Any = None) -> int:
     return _fetch_gaps(REPORT_RATIOS).get("count", 0)
-
-
-def get_ratios_gap_details(cur: Any = None, *, limit: int = 2000) -> Tuple[List[Dict[str, Any]], int]:
-    g = _fetch_gaps(REPORT_RATIOS, limit=limit)
-    syms = g.get("symbols", [])
-    total = g.get("count", len(syms))
-    return [{"symbol": s} for s in syms[:limit]], total
 
 
 def count_short_interest_gaps(cur: Any = None) -> int:
     return _fetch_gaps(REPORT_SHORT_INTEREST).get("count", 0)
 
 
-def get_short_interest_gap_details(cur: Any = None, *, limit: int = 2000) -> Tuple[List[Dict[str, Any]], int]:
-    g = _fetch_gaps(REPORT_SHORT_INTEREST, limit=limit)
-    syms = g.get("symbols", [])
-    total = g.get("count", len(syms))
-    return [{"symbol": s} for s in syms[:limit]], total
-
-
 def count_short_volume_gaps(cur: Any = None) -> int:
     return _fetch_gaps(REPORT_SHORT_VOLUME).get("count", 0)
-
-
-def get_short_volume_gap_details(cur: Any = None, *, limit: int = 2000) -> Tuple[List[Dict[str, Any]], int]:
-    g = _fetch_gaps(REPORT_SHORT_VOLUME, limit=limit)
-    syms = g.get("symbols", [])
-    total = g.get("count", len(syms))
-    return [{"symbol": s} for s in syms[:limit]], total
 
 
 _KIND_TO_REPORT_TYPE: Dict[str, str] = {

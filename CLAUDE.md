@@ -49,8 +49,8 @@
 |------|------|
 | monitor | per-env `settings`（`POST /config/ib`、`POST /config/active-strategy`）；daemon 控制命令写 per-env Redis 控制流（`/control/*`）；IB Operator 客户端的连接管理（`/control/monitor_*`、`/control/refresh_accounts`）；ops 控制面：market-ingest 的 K8s 操作，审计发往 platform-api |
 | account | `strategy_template` / `_structure` / `_opportunity` / `_allocation` / `_instance`、`gate_safety_strategy`（strategies）；`strategy_plan`（plans）；`trade_review`（reviews）；`preference_saved_search`（saved_searches）；`preference_position_categories` / `_tags` / `preference_market_streams_symbol_order`、`preference_instrument_class`（portfolio config）；Golden Source `raw_broker.executions_raw_*` / `commissions` 的手工成交与策略归属，以及 per-env 桥表 `account_execution_instance_allocation` / `account_execution_option_stock_link`（executions、`PATCH /executions/strategy-attribution`） |
-| market | `watchlist`；实时报价的按需登记 / 清理写 Redis（`/quotes/refresh-options`、`/quotes/cleanup`）；bars 类 POST 转发给 Market Data Plugin |
-| research | Golden Source `ops_feedback.*`（feedback，见 core `docs/DATABASE.md`）；`/research/data/readiness/*` 的 POST 是转发给 Market Data Plugin 的回补 / 确认请求 |
+| market | `watchlist`；实时报价的按需登记 / 清理写 Redis（`/quotes/refresh-options`、`/quotes/cleanup`）。bars / holidays / indices 只读：回补、删除、EOD 刷新、指数刷新与假日写入路由已删（TD-40，0 调用方 0 流量），采集归 Market Data Plugin |
+| research | Golden Source `ops_feedback.*`（feedback，见 core `docs/DATABASE.md`）。`/research/data/readiness/*` 只剩读：回补、gap-ack、snapshot 与各 gaps 路由已删（TD-40） |
 
 Research **不写** `strategy_opportunity`。表结构与列见 `bifrost-trade-core/docs/DATABASE.md`。
 
@@ -67,7 +67,7 @@ Research **不写** `strategy_opportunity`。表结构与列见 `bifrost-trade-c
 ## `bifrost_api.research` 的实际内容
 
 - `routers/` — 五个 router（见上表）
-- `sepa/` — `financials_data.py`（经 Plugin 读基本面）、`readiness_snapshot.py`
+- `sepa/` — `financials_data.py`（经 Plugin 读基本面）；`readiness_snapshot.py` 随 TD-40 删除
 - `sepa_engine/stock_option_pcr.py` — put/call 比与按到期日的链汇总
 - 顶层模块：`market_data_client.py`（Plugin HTTP）、`analytics_reader.py`（Research API 代理）、`feedback_store.py`、
   `contract_key_bridge.py`、`iv_atm.py`、`market_pg.py` 等

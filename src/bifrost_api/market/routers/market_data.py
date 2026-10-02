@@ -1,27 +1,22 @@
-"""Market and bars: OHLC, backfill jobs, trading-day, holidays, indices."""
+"""Market and bars: OHLC, coverage, trading-day, holidays.
+
+Reads only. The bars fetch / backfill / delete, watchlist EOD refresh, index
+refresh and holiday write routes had no caller and no traffic and are gone (TD-40);
+the Market Data Plugin owns ingest and the holiday calendar."""
 
 import logging
 import time
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Body, Query, Request
-from fastapi.exceptions import HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Query, Request
 
-from bifrost_core.monitor.reader import (
-    delete_stock_bars_for_symbol,
-)
 from bifrost_core.monitor.reader.reference_indices_merge import merge_reference_indices
 from bifrost_core.monitor.reader.symbol_normalize import norm_bars_symbol
 from bifrost_core.monitor.services.market_jobs import (
     TOLERANCE_END_SEC_NON_TRADING,
     TOLERANCE_END_SEC_TRADING_DAY,
-    WATCHLIST_EOD_PERIODS,
-    build_plugin_backfill_preview,
     coverage_status,
-    enqueue_plugin_bars_backfill,
-    enqueue_watchlist_eod_plugin,
     get_watchlist_stock_symbols,
 )
 
@@ -249,31 +244,7 @@ def get_market_holidays(
     return reader.get_market_holidays(exchange=exchange or None, year=year)
 
 
-@router.post("/market/holidays")
-def post_market_holiday(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Retired: holiday calendar is maintained by Market Data Plugin (Polygon ingest)."""
-    _ = request, body
-    raise HTTPException(
-        status_code=405,
-        detail="Holiday CRUD retired — calendar maintained by Market Data Plugin",
-    )
-
-
-@router.delete("/market/holidays")
-def delete_market_holiday(
-    request: Request,
-    date_param: str = Query(..., alias="date", description="Date YYYY-MM-DD"),
-    exchange: str = Query("NYSE", description="Exchange"),
-) -> Dict[str, Any]:
-    """Retired: holiday calendar is maintained by Market Data Plugin (Polygon ingest)."""
-    _ = request, date_param, exchange
-    raise HTTPException(
-        status_code=405,
-        detail="Holiday CRUD retired — calendar maintained by Market Data Plugin",
-    )
-
-
-# --- Bars coverage and indices ---
+# --- Bars coverage ---
 
 @router.get("/bars/coverage")
 def get_bars_coverage(
@@ -357,190 +328,3 @@ def get_bars_coverage(
         }
         enriched.append({"symbol": item.get("symbol"), "stock_day": stock_day_enriched, "stock_min": stock_min_enriched})
     return {"coverage": enriched, "policy": policy}
-
-
-@router.post("/indices/refresh")
-def post_indices_refresh(
-    request: Request,
-    symbol: Optional[str] = Query(None, description="Refresh only this index (e.g. ^GSPC); omit to refresh all"),
-    days: Optional[int] = Query(None, description="For single-symbol refresh: number of days to fetch"),
-) -> Dict[str, Any]:
-    """Refresh reference index daily bars from Polygon into stock_day."""
-    control_via_db = request.app.state.control_via_db
-    reader = request.app.state.reader
-    if not control_via_db:
-        return {"ok": False, "updated": [], "errors": ["Postgres config required."]}
-    try:
-        from bifrost_core.monitor.integrations.index_data_client import refresh_reference_indices, refresh_one_index
-        if symbol and (symbol := symbol.strip()):
-            result = refresh_one_index(control_via_db, symbol, days=days, reader=reader)
-        else:
-            result = refresh_reference_indices(control_via_db, reader=reader)
-        return {"ok": result.get("ok", True), "updated": result.get("updated", []), "errors": result.get("errors", [])}
-    except Exception as e:
-        logger.warning("POST /indices/refresh failed: %s", e, exc_info=True)
-        return {"ok": False, "updated": [], "errors": [str(e)]}
-
-
-class DeleteBarsBody(BaseModel):
-    periods: Optional[List[str]] = None
-
-    class Config:
-        extra = "ignore"
-
-
-@router.delete("/bars/symbol")
-def delete_bars_for_symbol(
-    request: Request,
-    symbol: Optional[str] = Query(..., description="Symbol to delete bars for"),
-    body: Optional[DeleteBarsBody] = Body(None, description="Optional: periods to delete (1 D, 1 min, 5 mins, 1 hour). Omit to delete all."),
-) -> Dict[str, Any]:
-    """Delete stock_day and/or stock_min rows for the given symbol."""
-    control_via_db = request.app.state.control_via_db
-    if not control_via_db:
-        return {"ok": False, "error": "PostgreSQL is required to delete bar data."}
-    sym = (symbol or "").strip().upper()
-    if not sym:
-        return {"ok": False, "error": "Missing symbol parameter."}
-    period_list = None
-    if body and body.periods and len(body.periods) > 0:
-        period_list = [p.strip() for p in body.periods if (p or "").strip()]
-    result = delete_stock_bars_for_symbol(control_via_db, sym, periods=period_list)
-    if result.get("ok"):
-        return {"ok": True, "deleted_day": result.get("deleted_day", 0), "deleted_min": result.get("deleted_min", 0), "message": f"Deleted selected periods for {sym}; you can pull again."}
-    return {"ok": False, "error": result.get("error", "Delete failed")}
-
-
-# --- Bars fetch and backfill ---
-
-@router.post("/bars/fetch")
-async def post_bars_fetch(
-    request: Request,
-    symbol: Optional[str] = Query(..., description="Symbol, e.g. NVDA"),
-    period: Optional[str] = Query("1 D", description="Bar period (e.g. 1 D, 1 min)"),
-    duration: Optional[str] = Query("30 D", description="Lookback hint (e.g. 30 D) — mapped to Plugin enqueue range"),
-    smart_duration: bool = Query(False, description="Compute range from latest bar gap"),
-) -> Dict[str, Any]:
-    """Enqueue Polygon ingest for symbol+period (replaces IB Gateway fetch_bars)."""
-    app = request.app
-    reader = app.state.reader
-    sym = (symbol or "").strip().upper()
-    if not sym:
-        return {"ok": False, "error": "Missing symbol parameter.", "bars": [], "count": 0}
-    if not getattr(app.state, "monitor_enabled", True):
-        return {"ok": False, "error": "Monitor stopped; cannot fetch bars.", "bars": [], "count": 0}
-    per = (period or "1 D").strip()
-    days: Optional[int] = None
-    if duration and str(duration).strip().upper().endswith(" D"):
-        try:
-            days = int(str(duration).strip().split()[0])
-        except ValueError:
-            days = None
-    if smart_duration:
-        latest_ts = reader.get_bars_latest(symbol=sym, period=per)
-        if latest_ts is not None:
-            gap_sec = max(0, time.time() - float(latest_ts))
-            days = min(max(1, int(gap_sec / 86400) + 1), 720 if per.upper() == "1 D" else 7)
-    ok, job_id, error = enqueue_plugin_bars_backfill(reader, sym, per, days=days)
-    if not ok:
-        return {"ok": False, "error": error or "Enqueue failed.", "bars": [], "count": 0}
-    if not job_id:
-        return {"ok": True, "message": error or "Nothing to fetch.", "bars": [], "count": 0, "job_id": None}
-    return {
-        "ok": True,
-        "job_id": job_id,
-        "message": "Queued Plugin ingest; poll market-data worker / ops_jobs for completion.",
-        "bars": [],
-        "count": 0,
-    }
-
-
-@router.post("/bars/watchlist/eod-refresh/preview")
-async def post_watchlist_eod_refresh_preview(
-    request: Request,
-    override_days: float = Query(1.0, ge=0, le=7),
-    api_interval_sec: int = Query(10, ge=0, le=300),
-) -> Dict[str, Any]:
-    """Preview watchlist EOD Plugin enqueue plan (no IB requests)."""
-    app = request.app
-    reader = app.state.reader
-    symbols = get_watchlist_stock_symbols(reader)
-    periods = WATCHLIST_EOD_PERIODS
-    items = []
-    failures = []
-    for sym in symbols:
-        for per in periods:
-            item = build_plugin_backfill_preview(reader, sym, per, override_days=override_days)
-            if item.get("ok") is False:
-                failures.append({"symbol": sym, "period": per, "error": item.get("error", "Preview failed")})
-                continue
-            item["api_interval_sec"] = api_interval_sec
-            items.append(item)
-    return {
-        "ok": True,
-        "preview_only": True,
-        "ready_to_enqueue": bool(getattr(app.state, "monitor_enabled", True)),
-        "symbols_count": len(symbols),
-        "queued_jobs_if_confirmed": len(symbols) * len(periods),
-        "override_days": override_days,
-        "api_interval_sec": api_interval_sec,
-        "periods": periods,
-        "symbols": symbols,
-        "items": items,
-        "failed_count": len(failures),
-        "failures": failures,
-        "message": f"Dry run: {len(items)} Plugin ingest job(s) would be enqueued for watchlist EOD.",
-    }
-
-
-@router.post("/bars/backfill")
-async def post_bars_backfill(
-    request: Request,
-    symbol: Optional[str] = Query(..., description="Symbol, e.g. NVDA"),
-    period: Optional[str] = Query("1 D", description="Bar period: 1 D | 1 min | 5 mins | 1 hour"),
-    years: Optional[float] = Query(None),
-    days: Optional[int] = Query(None),
-    override_days: Optional[float] = Query(None),
-    span_hours: Optional[float] = Query(None),
-    queue: bool = Query(True, description="Ignored; enqueue always uses Market Data Plugin."),
-    is_test: bool = Query(False),
-    api_interval_sec: int = Query(10, ge=0, le=300),
-) -> Dict[str, Any]:
-    """Backfill: enqueue Market Data Plugin ingest job."""
-    del queue, is_test, api_interval_sec
-    app = request.app
-    reader = app.state.reader
-    sym = (symbol or "").strip().upper()
-    if not sym:
-        return {"ok": False, "error": "Missing symbol parameter.", "count": 0}
-    if not getattr(app.state, "monitor_enabled", True):
-        return {"ok": False, "error": "Monitor stopped; cannot backfill bars.", "count": 0}
-    per = (period or "1 D").strip()
-    ok, job_id, error = enqueue_plugin_bars_backfill(
-        reader, sym, per, years=years, days=days, override_days=override_days, span_hours=span_hours
-    )
-    if not ok:
-        return {"ok": False, "error": error or "Enqueue failed.", "count": 0}
-    if not job_id:
-        return {"ok": True, "job_id": None, "message": error or "Nothing to backfill.", "count": 0}
-    return {
-        "ok": True,
-        "job_id": job_id,
-        "message": "Queued (Market Data Plugin). Poll ops_jobs.job_ingest for status.",
-    }
-
-
-@router.post("/bars/watchlist/eod-refresh")
-async def post_watchlist_eod_refresh(
-    request: Request,
-    override_days: float = Query(1.0, ge=0, le=7),
-    is_test: bool = Query(False),
-    api_interval_sec: int = Query(10, ge=0, le=300),
-) -> Dict[str, Any]:
-    """Queue EOD refresh via Market Data Plugin for every Watchlist stock."""
-    del is_test, api_interval_sec
-    app = request.app
-    reader = app.state.reader
-    if not getattr(app.state, "monitor_enabled", True):
-        return {"ok": False, "error": "Monitor stopped; cannot backfill bars.", "queued_count": 0}
-    return enqueue_watchlist_eod_plugin(reader, override_days=override_days)

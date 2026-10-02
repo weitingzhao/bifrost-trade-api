@@ -3,49 +3,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Body, Request
-
-from bifrost_api.research.sepa.readiness_snapshot import (
-    READINESS_DATA_CATALOG,
-    compute_data_inventory_stats,
-    get_sepa_price_gap_details,
-)
+from fastapi import APIRouter, Request
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["research"])
-
-
-def _readiness_snapshot_deprecated() -> Dict[str, Any]:
-    return {
-        "ok": True,
-        "status": "deprecated",
-        "message": (
-            "Readiness snapshot is computed by dbt CronJob (dw_stock.mart_sepa_*). "
-            "stock_readiness_daily table has been retired."
-        ),
-    }
-
-
-def _fundamentals_backfill_deprecated() -> Dict[str, Any]:
-    return {
-        "ok": True,
-        "status": "deprecated",
-        "message": (
-            "Fundamental evaluation is handled by dbt CronJob. "
-            "Run mart_sepa_fundamental_eval refresh in bifrost-research."
-        ),
-    }
-
-
-def _technical_backfill_deprecated() -> Dict[str, Any]:
-    return {
-        "ok": True,
-        "status": "deprecated",
-        "message": (
-            "Technical evaluation is handled by dbt CronJob. "
-            "Run mart_sepa_technical_eval refresh in bifrost-research."
-        ),
-    }
 
 
 def _db_config(request: Request) -> Optional[dict]:
@@ -58,371 +19,19 @@ def _plugin_get(path: str, *, params: Dict[str, str] | None = None, timeout: int
     return _get_json(path, params=params, timeout=timeout)
 
 
-def _plugin_post(path: str, body: Dict[str, Any] | None = None, *, timeout: int = 30) -> Dict[str, Any]:
-    from bifrost_api.research.market_data_client import _post_json
-
-    return _post_json(path, body or {}, timeout=timeout)
-
-
-def _enqueue_ingest(kind: str, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    """POST /market/ingest/enqueue — restores Stock Data Readiness backfill buttons."""
-    try:
-        body: Dict[str, Any] = {"kind": kind}
-        if payload:
-            body["payload"] = payload
-        resp = _plugin_post("/ingest/enqueue", body)
-        if not isinstance(resp, dict):
-            return {"ok": False, "error": "invalid plugin response", "kind": kind}
-        if "ok" not in resp:
-            resp = {**resp, "ok": True}
-        resp.setdefault("kind", kind)
-        return resp
-    except Exception as e:
-        logger.warning("plugin ingest enqueue failed kind=%s: %s", kind, e)
-        return {"ok": False, "error": str(e), "kind": kind, "job_ids": [], "chunks": 0}
-
-
 @router.get("/research/data/readiness/summary")
 def get_sepa_readiness_summary(request: Request) -> Dict[str, Any]:
-    """Thin passthrough → Market Data Plugin ``GET /market/readiness/summary``."""
+    """Thin passthrough → Market Data Plugin ``GET /market/readiness/summary``.
+
+    No longer adds a ``data_catalog`` block when the plugin leaves it out: nothing
+    read it, and the backfill and gap routes it described are gone (TD-40)."""
     _ = request
     try:
         out = _plugin_get("/readiness/summary", timeout=90)
-        if isinstance(out, dict) and out.get("ok") is not False and "data_catalog" not in out:
-            out = {**out, "data_catalog": READINESS_DATA_CATALOG}
         return out if isinstance(out, dict) else {"ok": False, "error": "invalid plugin response"}
     except Exception as e:
         logger.warning("plugin readiness summary failed: %s", e)
         return {"ok": False, "error": f"Market Data Plugin summary unavailable: {e}"}
-
-
-@router.post("/research/data/readiness/snapshot")
-def post_sepa_readiness_snapshot(request: Request) -> Dict[str, Any]:
-    _ = request
-    return _readiness_snapshot_deprecated()
-
-
-@router.post("/research/data/readiness/stock-unified-snapshot")
-def post_sepa_stock_unified_snapshot(request: Request) -> Dict[str, Any]:
-    """Enqueue Plugin ``stock_snapshot`` (alias snapshot_backfill)."""
-    _ = request
-    return _enqueue_ingest("snapshot_backfill")
-
-
-@router.get("/research/data/readiness/price-gaps")
-def get_sepa_price_gaps(request: Request) -> Dict[str, Any]:
-    """Return detailed per-symbol gap list for symbols in the SEPA universe that are NOT price_ready."""
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    return get_sepa_price_gap_details(db)
-
-
-@router.post("/research/data/readiness/backfill-price-gaps")
-def post_sepa_backfill_price_gaps(
-    request: Request,
-    body: Dict[str, Any] = Body(default={}),
-) -> Dict[str, Any]:
-    """Enqueue Plugin vendor_gap_fix → stock_daily_grouped."""
-    _ = request
-    payload = body if isinstance(body, dict) else {}
-    return _enqueue_ingest("vendor_gap_fix", payload.get("payload") if isinstance(payload.get("payload"), dict) else payload or None)
-
-
-@router.post("/research/data/readiness/backfill-fundamentals")
-def post_sepa_backfill_fundamentals(
-    request: Request,
-    body: Dict[str, Any] = Body(default={}),
-) -> Dict[str, Any]:
-    _ = (request, body)
-    return _fundamentals_backfill_deprecated()
-
-
-@router.post("/research/data/readiness/backfill-technical")
-def post_sepa_backfill_technical(
-    request: Request,
-    body: Dict[str, Any] = Body(default={}),
-) -> Dict[str, Any]:
-    _ = (request, body)
-    return _technical_backfill_deprecated()
-
-
-@router.post("/research/data/readiness/sync-holidays")
-def post_sepa_sync_holidays(request: Request) -> Dict[str, Any]:
-    """Retired: Massive holidays sync — use market-data plugin calendar enqueue."""
-    _ = request
-    return _enqueue_ingest("calendar")
-
-
-@router.post("/research/data/readiness/backfill-grouped-history")
-def post_sepa_backfill_grouped_history(
-    request: Request,
-    body: Dict[str, Any] = Body(default={}),
-) -> Dict[str, Any]:
-    """Enqueue Plugin grouped_daily_backfill → stock_daily_grouped."""
-    _ = request
-    payload = body if isinstance(body, dict) else {}
-    return _enqueue_ingest(
-        "grouped_daily_backfill",
-        payload.get("payload") if isinstance(payload.get("payload"), dict) else payload or None,
-    )
-
-
-# Trade FE feed kind → Plugin ops_jobs.job_ingest handler kind.
-# income/balance/cash all use Polygon financials → kind=financials (writes all statements).
-_FIN_FEED_TO_PLUGIN_KIND: Dict[str, str] = {
-    "feed_stocks_income_statements": "financials",
-    "feed_stocks_balance_sheets": "financials",
-    "feed_stocks_cash_flows": "financials",
-    "feed_stocks_ratios": "ratios",
-    "feed_stocks_short_interest": "short_interest",
-    "feed_stocks_short_volume": "short_volume",
-}
-
-_FIN_FEED_TO_REPORT_TYPE: Dict[str, str] = {
-    "feed_stocks_income_statements": "income_statement",
-    "feed_stocks_balance_sheets": "balance_sheet",
-    "feed_stocks_cash_flows": "cash_flow_statement",
-    "feed_stocks_ratios": "ratios",
-    "feed_stocks_short_interest": "short_interest",
-    "feed_stocks_short_volume": "short_volume",
-}
-
-_FIN_ENQUEUE_MAX_SYMBOLS = 500
-
-
-def _post_sepa_financials_backfill(
-    request: Request,
-    body: Dict[str, Any],
-    *,
-    kind: str,
-) -> Dict[str, Any]:
-    """Enqueue Plugin ingest jobs per gap symbol."""
-    _ = request
-    plugin_kind = _FIN_FEED_TO_PLUGIN_KIND.get(kind)
-    if not plugin_kind:
-        return {"ok": False, "error": f"unknown feed kind: {kind}", "kind": kind, "job_ids": [], "chunks": 0}
-
-    raw_syms = body.get("symbols") if isinstance(body, dict) else None
-    symbols: list[str] = []
-    if isinstance(raw_syms, list):
-        symbols = sorted(
-            {str(s).strip().upper() for s in raw_syms if str(s or "").strip()}
-        )
-
-    if not symbols:
-        report_type = _FIN_FEED_TO_REPORT_TYPE.get(kind, "")
-        try:
-            from bifrost_api.research.market_data_client import fetch_sepa_gaps
-
-            gap = fetch_sepa_gaps(report_type, limit=_FIN_ENQUEUE_MAX_SYMBOLS)
-            symbols = [
-                str(s).strip().upper()
-                for s in (gap.get("symbols") or [])
-                if str(s or "").strip()
-            ]
-        except Exception as e:
-            logger.warning("fin backfill gap lookup failed kind=%s: %s", kind, e)
-            return {
-                "ok": False,
-                "error": f"failed to resolve gap symbols: {e}",
-                "kind": kind,
-                "job_ids": [],
-                "chunks": 0,
-            }
-
-    if len(symbols) > _FIN_ENQUEUE_MAX_SYMBOLS:
-        symbols = symbols[:_FIN_ENQUEUE_MAX_SYMBOLS]
-
-    if not symbols:
-        return {
-            "ok": True,
-            "kind": kind,
-            "plugin_kind": plugin_kind,
-            "gap_count": 0,
-            "chunks": 0,
-            "job_ids": [],
-            "message": "No gap symbols to enqueue.",
-        }
-
-    job_ids: list[str] = []
-    errors: list[str] = []
-    for sym in symbols:
-        resp = _enqueue_ingest(plugin_kind, {"symbol": sym})
-        if resp.get("ok"):
-            jid = resp.get("job_id")
-            if jid:
-                job_ids.append(str(jid))
-        else:
-            errors.append(f"{sym}:{resp.get('error') or 'enqueue failed'}")
-
-    ok = len(job_ids) > 0 or not errors
-    out: Dict[str, Any] = {
-        "ok": ok,
-        "kind": kind,
-        "plugin_kind": plugin_kind,
-        "gap_count": len(symbols),
-        "chunks": len(job_ids),
-        "job_ids": job_ids,
-        "message": (
-            f"Enqueued {len(job_ids)}/{len(symbols)} {plugin_kind} jobs via Market Data Plugin."
-        ),
-    }
-    if errors:
-        out["error"] = f"{len(errors)} enqueue failures (first: {errors[0]})"
-        if not job_ids:
-            out["ok"] = False
-    return out
-
-
-def _get_sepa_financials_gaps(
-    request: Request,
-    *,
-    detail_fetcher: str,
-    limit: int = 2000,
-) -> Dict[str, Any]:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
-    from bifrost_api.research.sepa import financials_data as fd
-
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    params = _get_conn_params(db)
-    params["connect_timeout"] = 15
-    try:
-        conn = psycopg2.connect(**params)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            fn = getattr(fd, detail_fetcher)
-            rows, total = fn(cur, limit=limit)
-    finally:
-        conn.close()
-    return {
-        "ok": True,
-        "gaps": rows,
-        "total_gap_count": total,
-        "returned": len(rows),
-    }
-
-
-@router.get("/research/data/readiness/income-statements-gaps")
-def get_sepa_income_statements_gaps(request: Request) -> Dict[str, Any]:
-    return _get_sepa_financials_gaps(request, detail_fetcher="get_income_statements_gap_details")
-
-
-@router.post("/research/data/readiness/backfill-income-statements")
-def post_sepa_backfill_income_statements(
-    request: Request,
-    body: Dict[str, Any] = Body(default={}),
-) -> Dict[str, Any]:
-    return _post_sepa_financials_backfill(request, body, kind="feed_stocks_income_statements")
-
-
-@router.get("/research/data/readiness/balance-sheets-gaps")
-def get_sepa_balance_sheets_gaps(request: Request) -> Dict[str, Any]:
-    return _get_sepa_financials_gaps(request, detail_fetcher="get_balance_sheet_gap_details")
-
-
-@router.post("/research/data/readiness/backfill-balance-sheets")
-def post_sepa_backfill_balance_sheets(
-    request: Request,
-    body: Dict[str, Any] = Body(default={}),
-) -> Dict[str, Any]:
-    return _post_sepa_financials_backfill(request, body, kind="feed_stocks_balance_sheets")
-
-
-@router.get("/research/data/readiness/cash-flows-gaps")
-def get_sepa_cash_flows_gaps(request: Request) -> Dict[str, Any]:
-    return _get_sepa_financials_gaps(request, detail_fetcher="get_cash_flow_gap_details")
-
-
-@router.post("/research/data/readiness/backfill-cash-flows")
-def post_sepa_backfill_cash_flows(
-    request: Request,
-    body: Dict[str, Any] = Body(default={}),
-) -> Dict[str, Any]:
-    return _post_sepa_financials_backfill(request, body, kind="feed_stocks_cash_flows")
-
-
-@router.get("/research/data/readiness/ratios-gaps")
-def get_sepa_ratios_gaps(request: Request) -> Dict[str, Any]:
-    return _get_sepa_financials_gaps(request, detail_fetcher="get_ratios_gap_details")
-
-
-@router.post("/research/data/readiness/backfill-ratios")
-def post_sepa_backfill_ratios(
-    request: Request,
-    body: Dict[str, Any] = Body(default={}),
-) -> Dict[str, Any]:
-    return _post_sepa_financials_backfill(request, body, kind="feed_stocks_ratios")
-
-
-@router.get("/research/data/readiness/short-interest-gaps")
-def get_sepa_short_interest_gaps(request: Request) -> Dict[str, Any]:
-    return _get_sepa_financials_gaps(request, detail_fetcher="get_short_interest_gap_details")
-
-
-@router.post("/research/data/readiness/backfill-short-interest")
-def post_sepa_backfill_short_interest(
-    request: Request,
-    body: Dict[str, Any] = Body(default={}),
-) -> Dict[str, Any]:
-    return _post_sepa_financials_backfill(request, body, kind="feed_stocks_short_interest")
-
-
-@router.get("/research/data/readiness/short-volume-gaps")
-def get_sepa_short_volume_gaps(request: Request) -> Dict[str, Any]:
-    return _get_sepa_financials_gaps(request, detail_fetcher="get_short_volume_gap_details")
-
-
-@router.post("/research/data/readiness/backfill-short-volume")
-def post_sepa_backfill_short_volume(
-    request: Request,
-    body: Dict[str, Any] = Body(default={}),
-) -> Dict[str, Any]:
-    return _post_sepa_financials_backfill(request, body, kind="feed_stocks_short_volume")
-
-
-_VALID_GAP_ACK_TYPES = frozenset(
-    ("income_statements", "balance_sheets", "cash_flows", "ratios", "short_interest", "short_volume")
-)
-
-
-@router.get("/research/data/readiness/gap-ack")
-def get_sepa_gap_ack(request: Request) -> Dict[str, Any]:
-    """Passthrough → Plugin ``GET /market/readiness/source-void`` (Trade FE shape)."""
-    _ = request
-    try:
-        resp = _plugin_get("/readiness/source-void")
-        acks = resp.get("acks")
-        if acks is None and isinstance(resp.get("voids"), dict):
-            acks = [{"data_type": k, **v} for k, v in sorted(resp["voids"].items())]
-        return {"ok": True, "acks": acks or []}
-    except Exception as e:
-        logger.warning("plugin source-void GET failed: %s", e)
-        return {"ok": False, "error": str(e)}
-
-
-@router.post("/research/data/readiness/gap-ack")
-def post_sepa_gap_ack(
-    request: Request,
-    body: Dict[str, Any] = Body(default={}),
-) -> Dict[str, Any]:
-    """Passthrough → Plugin ``POST /market/readiness/source-void``."""
-    _ = request
-    data_type = str(body.get("data_type", "")).strip()
-    if data_type not in _VALID_GAP_ACK_TYPES:
-        return {"ok": False, "error": f"Invalid data_type: {data_type!r}"}
-    try:
-        return _plugin_post("/readiness/source-void", body if isinstance(body, dict) else {})
-    except Exception as e:
-        logger.warning("plugin source-void POST failed: %s", e)
-        return {"ok": False, "error": str(e)}
 
 
 @router.get("/research/data/readiness/criteria-stats")
@@ -687,13 +296,6 @@ def get_technical_distribution_symbols(
 
     return _technical_distribution_analytics(conditions_passed)
 
-@router.get("/research/data/readiness/data-inventory")
-def get_sepa_data_inventory(request: Request) -> Dict[str, Any]:
-    db = _db_config(request)
-    if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
-    return compute_data_inventory_stats(db)
-
 
 @router.get("/research/data/readiness/fundamental-conditions")
 def get_fundamental_conditions_by_symbol(
@@ -845,41 +447,6 @@ _SEPA_FUND_GROUPS: Dict[str, frozenset] = {
 
 _SEPA_VALID_CONDITION_IDS = frozenset().union(*_SEPA_FUND_GROUPS.values())
 
-_FUND_CONDITION_CATALOG = [
-    {"id": "eps_q2q_ge_25pct", "group": "sepa_core", "label": "EPS quarterly YoY growth >= 25%", "threshold": 0.25, "source_table": "stock_income_statements"},
-    {"id": "rev_q2q_ge_25pct", "group": "sepa_core", "label": "Revenue quarterly YoY growth >= 25%", "threshold": 0.25, "source_table": "stock_income_statements"},
-    {"id": "eps_acc_2q", "group": "sepa_core", "label": "EPS YoY growth accelerating 2 quarters", "threshold": None, "source_table": "stock_income_statements"},
-    {"id": "rev_acc_2q", "group": "sepa_core", "label": "Revenue YoY growth accelerating 2 quarters", "threshold": None, "source_table": "stock_income_statements"},
-    {"id": "eps_3y_ge_15pct", "group": "sepa_core", "label": "EPS 3-year CAGR >= 15%", "threshold": 0.15, "source_table": "stock_income_statements"},
-    {"id": "rev_3y_ge_15pct", "group": "sepa_core", "label": "Revenue 3-year CAGR >= 15%", "threshold": 0.15, "source_table": "stock_income_statements"},
-    {"id": "eps_acc_fy", "group": "sepa_core", "label": "EPS annual growth acceleration", "threshold": None, "source_table": "stock_income_statements"},
-    {"id": "rev_acc_fy", "group": "sepa_core", "label": "Revenue annual growth acceleration", "threshold": None, "source_table": "stock_income_statements"},
-    {"id": "gross_margin_ge_30pct", "group": "quality", "label": "Gross margin >= 30%", "threshold": 0.30, "source_table": "stock_income_statements"},
-    {"id": "operating_margin_ge_10pct", "group": "quality", "label": "Operating margin >= 10%", "threshold": 0.10, "source_table": "stock_income_statements"},
-    {"id": "net_margin_ge_5pct", "group": "quality", "label": "Net margin >= 5%", "threshold": 0.05, "source_table": "stock_income_statements"},
-    {"id": "ocf_to_ni_ge_0_7", "group": "quality", "label": "OCF / net income >= 0.7 (earnings quality)", "threshold": 0.70, "source_table": "stock_cash_flows,stock_income_statements"},
-    {"id": "interest_coverage_ge_5x", "group": "quality", "label": "Interest coverage >= 5x", "threshold": 5.0, "source_table": "stock_income_statements"},
-    {"id": "current_ratio_ge_1_5", "group": "balance", "label": "Current ratio >= 1.5", "threshold": 1.5, "source_table": "stock_balance_sheets"},
-    {"id": "quick_ratio_ge_1_0", "group": "balance", "label": "Quick ratio >= 1.0", "threshold": 1.0, "source_table": "stock_balance_sheets"},
-    {"id": "debt_to_equity_le_1", "group": "balance", "label": "Debt-to-equity <= 1.0", "threshold": 1.0, "source_table": "stock_ratios"},
-    {"id": "net_debt_to_ebitda_le_3", "group": "balance", "label": "Net debt / EBITDA <= 3.0", "threshold": 3.0, "source_table": "stock_balance_sheets,stock_income_statements"},
-    {"id": "fcf_positive", "group": "cashflow", "label": "Free cash flow positive", "threshold": 0, "source_table": "stock_cash_flows"},
-    {"id": "fcf_margin_ge_5pct", "group": "cashflow", "label": "FCF margin >= 5%", "threshold": 0.05, "source_table": "stock_cash_flows,stock_income_statements"},
-    {"id": "fcf_yield_ge_3pct", "group": "cashflow", "label": "FCF yield >= 3%", "threshold": 0.03, "source_table": "stock_cash_flows,stock_ratios"},
-    {"id": "capex_intensity_le_15pct", "group": "cashflow", "label": "CapEx intensity <= 15%", "threshold": 0.15, "source_table": "stock_cash_flows,stock_income_statements"},
-    {"id": "pe_le_60", "group": "valuation", "label": "P/E <= 60", "threshold": 60.0, "source_table": "stock_ratios"},
-    {"id": "ps_le_15", "group": "valuation", "label": "P/S <= 15", "threshold": 15.0, "source_table": "stock_ratios"},
-    {"id": "pb_le_8", "group": "valuation", "label": "P/B <= 8", "threshold": 8.0, "source_table": "stock_ratios"},
-    {"id": "ev_to_ebitda_le_30", "group": "valuation", "label": "EV/EBITDA <= 30", "threshold": 30.0, "source_table": "stock_ratios"},
-    {"id": "roe_ge_15pct", "group": "profitability", "label": "Return on equity >= 15%", "threshold": 0.15, "source_table": "stock_ratios"},
-    {"id": "roa_ge_5pct", "group": "profitability", "label": "Return on assets >= 5%", "threshold": 0.05, "source_table": "stock_ratios"},
-    {"id": "asset_turnover_ge_0_5", "group": "efficiency", "label": "Asset turnover >= 0.5", "threshold": 0.5, "source_table": "stock_income_statements,stock_balance_sheets"},
-    {"id": "dso_le_75_days", "group": "efficiency", "label": "Days sales outstanding <= 75", "threshold": 75.0, "source_table": "stock_income_statements,stock_balance_sheets"},
-    {"id": "dio_le_120_days", "group": "efficiency", "label": "Days inventory outstanding <= 120", "threshold": 120.0, "source_table": "stock_income_statements,stock_balance_sheets"},
-    {"id": "days_to_cover_le_5", "group": "sentiment", "label": "Days to cover <= 5", "threshold": 5.0, "source_table": "stock_short_interest"},
-    {"id": "short_volume_ratio_recent_le_30pct", "group": "sentiment", "label": "Short volume ratio avg <= 30%", "threshold": 0.30, "source_table": "stock_short_volume"},
-    {"id": "short_interest_pct_of_float_le_15pct", "group": "sentiment", "label": "Short interest % of float <= 15%", "threshold": 0.15, "source_table": "stock_short_interest,stock_income_statements"},
-]
 
 _TECH_VALID_CONDITION_IDS = frozenset(
     (
@@ -896,16 +463,6 @@ _TECH_VALID_CONDITION_IDS = frozenset(
         "price_gt_sma200",
     )
 )
-
-@router.get("/research/data/readiness/fundamental-condition-catalog")
-def get_fundamental_condition_catalog() -> Dict[str, Any]:
-    """Return static catalog of all fundamental condition IDs with group/label/threshold metadata."""
-    return {
-        "ok": True,
-        "groups": list(_SEPA_FUND_GROUPS.keys()),
-        "conditions": _FUND_CONDITION_CATALOG,
-        "total": len(_FUND_CONDITION_CATALOG),
-    }
 
 
 @router.get("/research/data/readiness/fundamental-filter")
@@ -1283,7 +840,6 @@ def get_symbol_statements(
     }
 
 
-
 @router.get("/research/data/ticker-overview/{symbol}")
 def get_ticker_overview(symbol: str, request: Request) -> Dict[str, Any]:
     """Return ticker detail (+ related peers when available) for a single symbol via Plugin API."""
@@ -1629,24 +1185,5 @@ def get_tier_filter(
     if tier not in _TIER_COLUMNS:
         return {"ok": False, "error": f"tier must be one of: {list(_TIER_COLUMNS.keys())}"}
     return _tier_filter_response(tier, include, min_score, match, limit)
-
-
-@router.get("/research/data/readiness/symbol-technical-tiers")
-def get_symbol_technical_tiers(
-    request: Request,
-    symbol: str = "",
-) -> Dict[str, Any]:
-    """Return the full 4-tier technical evaluation for a single symbol."""
-    _ = request
-    sym = (symbol or "").strip().upper()
-    if not sym:
-        return {"ok": False, "error": "symbol is required"}
-
-    return {
-        "ok": True,
-        "symbol": sym,
-        "found": False,
-        "note": "Tier data from analytics (awaiting 252+ trading days of data).",
-    }
 
 
