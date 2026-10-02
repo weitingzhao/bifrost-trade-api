@@ -1,8 +1,8 @@
 """Plan routes: mounted where the gateway looks, and refusals that keep their reason.
 
 `/api/strategy/*` is served by the **account** app (`account/app.py` mounts
-`strategies_router`), so a plan router added only to `strategy/app.py` would
-pass its own tests and 404 everywhere. That is the first test here.
+`strategies_router`); a plan router mounted anywhere else would 404 everywhere.
+That is the first test here.
 """
 
 from __future__ import annotations

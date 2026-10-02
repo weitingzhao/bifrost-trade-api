@@ -2,9 +2,9 @@
 
 Phase B merged the portfolio domain into the account service, so
 `create_account_app` is the factory behind `/api/portfolio/*` in DEV, STG and
-PROD; `create_portfolio_app` is not deployed anywhere. A router registered only
-on the latter passes its own unit tests, ships, and 404s in every environment.
-That happened once. This is the guard.
+PROD. A router once registered only on a separate `create_portfolio_app` (never
+deployed, deleted 2026-10-02) passed its own unit tests, shipped, and 404'd in
+every environment. This is the guard.
 """
 
 from __future__ import annotations

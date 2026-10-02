@@ -13,14 +13,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from bifrost_core.config.startup import (
     config_profile_from_resolved_path,
     normalize_server_config,
 )
-from bifrost_core.observability.prometheus import instrument_app
 
 logger = logging.getLogger(__name__)
 
@@ -191,47 +189,3 @@ def wire_ops_control_plane(
     @app.on_event("shutdown")
     async def ops_shutdown_event() -> None:
         logger.info("Ops control plane shutting down")
-
-
-def create_ops_app(
-    config: dict,
-    resolved_config_path: Optional[str] = None,
-) -> FastAPI:
-    """Build the Ops control plane FastAPI app."""
-
-    app = FastAPI(
-        title="Bifrost Ops API",
-        description="Ops authentication, audit, and Kubernetes market-ingest control.",
-        docs_url="/ops/docs",
-        redoc_url="/ops/redoc",
-        openapi_url="/ops/openapi.json",
-    )
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    app.add_middleware(AccessControlAllowPrivateNetworkMiddleware)
-
-    wire_ops_control_plane(
-        app,
-        config,
-        resolved_config_path=resolved_config_path,
-        register_root_health=True,
-    )
-
-    instrument_app(app, "api-ops")
-    return app
-
-
-def run_ops_server(config: dict, resolved_config_path: Optional[str] = None) -> None:
-    """Start the Ops API server."""
-    import uvicorn
-
-    port = int(config["server"]["ops_port"])
-    app = create_ops_app(config, resolved_config_path=resolved_config_path)
-    host = "0.0.0.0"
-    logger.info("Ops API server on %s:%s", host, port)
-    uvicorn.run(app, host=host, port=port, log_level="info", log_config=None)

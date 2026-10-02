@@ -82,11 +82,11 @@ def create_account_app(
     from bifrost_api.strategy.routers import plans_router, reviews_router, saved_searches_router, strategies_router
 
     app.include_router(executions_router)
-    # Phase B merged the portfolio domain in here, and this app -- not
-    # `create_portfolio_app` -- is what serves /api/portfolio in every deployed
-    # environment. A portfolio router added only to the other factory is dead
-    # code with a green test suite; `tests/test_account_app_portfolio_routes.py`
-    # is what stops that happening twice.
+    # Phase B merged the trading, strategy and portfolio domains in here: this app
+    # serves /api/{trading,strategy,portfolio} in every environment, and the
+    # per-domain factories that never ran are gone (TD-29). Every router module in
+    # those packages must be mounted below --
+    # tests/contract/test_account_serves_every_domain_router.py checks each one.
     app.include_router(portfolio_model_router)
     app.include_router(portfolio_config_router)
     app.include_router(portfolio_short_legs_router)
