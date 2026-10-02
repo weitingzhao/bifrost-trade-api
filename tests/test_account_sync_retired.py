@@ -12,6 +12,7 @@ from bifrost_api.ops.market_ingest_config import market_ingest_services_from_con
 from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
 from bifrost_api.ops.workload_map import deployment_for_unit
 from tests.contract.helpers import full_server_config
+from tests.route_listing import served_routes
 
 
 def _monitor() -> TestClient:
@@ -23,7 +24,7 @@ def _monitor() -> TestClient:
 
 @pytest.mark.parametrize("cmd", ["suspend", "resume", "stop", "force-sync", "set_heartbeat_interval"])
 def test_control_routes_are_gone(cmd: str) -> None:
-    paths = {r.path for r in _monitor().app.routes}
+    paths = {path for _, path in served_routes(_monitor().app)}
     assert f"/account-sync/control/{cmd}" not in paths
 
 

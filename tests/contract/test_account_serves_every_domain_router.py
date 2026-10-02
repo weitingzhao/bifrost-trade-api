@@ -20,6 +20,7 @@ from fastapi import APIRouter
 
 from bifrost_api.account.app import create_account_app
 from tests.contract.helpers import full_server_config
+from tests.route_listing import served_routes
 
 PACKAGES = ("bifrost_api.strategy.routers", "bifrost_api.trading.routers", "bifrost_api.portfolio.routers")
 
@@ -28,7 +29,7 @@ def _served() -> set:
     reader = MagicMock()
     reader._config = full_server_config()
     app = create_account_app(reader=reader, control_via_db=None, merged_config=reader._config)
-    return {(m, r.path) for r in app.routes for m in (getattr(r, "methods", None) or ())}
+    return served_routes(app)
 
 
 def _domain_routers():

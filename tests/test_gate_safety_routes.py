@@ -15,6 +15,7 @@ from starlette.testclient import TestClient
 from bifrost_api.account.app import create_account_app
 from bifrost_core.monitor.schemas.gate_params import default_gates
 from tests.contract.helpers import operator_server_config
+from tests.route_listing import route_paths
 
 
 def _client(control_via_db: Any = None) -> TestClient:
@@ -44,7 +45,7 @@ def test_defaults_carry_no_earnings_dates() -> None:
 
 def test_defaults_is_not_read_as_an_id() -> None:
     """Declared before /gate-safety/{gate_safety_id}; else "defaults" would be a 422."""
-    paths = [getattr(r, "path", "") for r in _client().app.routes]
+    paths = route_paths(_client().app)
     assert paths.index("/strategies/gate-safety/defaults") < paths.index(
         "/strategies/gate-safety/{gate_safety_id}"
     )

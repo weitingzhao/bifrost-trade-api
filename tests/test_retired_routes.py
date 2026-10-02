@@ -20,6 +20,7 @@ from bifrost_api.market.app import create_market_app
 from bifrost_api.monitor.app import create_app as create_monitor_app
 from bifrost_api.research.app import create_research_app
 from tests.contract.helpers import full_server_config
+from tests.route_listing import served_routes
 
 R = "/research/data/readiness"
 
@@ -114,7 +115,7 @@ def _app(app_name: str) -> Any:
 
 
 def _served(app_name: str) -> Set[Tuple[str, str]]:
-    return {(m, r.path) for r in _app(app_name).routes for m in (getattr(r, "methods", None) or ())}
+    return served_routes(_app(app_name))
 
 
 @pytest.mark.parametrize("app_name", sorted(RETIRED))

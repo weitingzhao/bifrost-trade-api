@@ -19,6 +19,7 @@ from bifrost_api.monitor.app import create_app as create_monitor_app
 from bifrost_api.research.app import create_research_app
 from bifrost_api.write_guard import ADMIN_PATHS, READ_ONLY_POSTS, WriteGuard, required_role
 from tests.contract.helpers import full_server_config
+from tests.route_listing import served_routes
 
 OPERATOR = "test-operator-token-0001"
 ADMIN = "test-admin-token-0002"
@@ -63,10 +64,9 @@ def _bearer(token: str) -> Dict[str, str]:
 
 
 def _write_routes(app: Any) -> Iterator[tuple]:
-    for r in app.routes:
-        for method in getattr(r, "methods", None) or ():
-            if method not in ("GET", "HEAD", "OPTIONS"):
-                yield method, r.path
+    for method, path in sorted(served_routes(app)):
+        if method not in ("GET", "HEAD", "OPTIONS"):
+            yield method, path
 
 
 # ── the policy ──
