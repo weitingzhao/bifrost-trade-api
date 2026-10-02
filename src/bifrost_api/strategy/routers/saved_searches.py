@@ -14,10 +14,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from bifrost_api.common.write_errors import deleted_body, write_target
 from bifrost_api.strategy.deps import db_not_configured, read_config, write_config
+from bifrost_api.strategy.schemas.requests import SavedSearchBody
 from bifrost_core.monitor.reader import saved_search as saved_search_module
 from bifrost_core.monitor.reader.saved_search import SavedSearchError
 
@@ -39,13 +40,11 @@ def list_saved_searches_endpoint(request: Request) -> Dict[str, Any]:
 
 
 @router.post("/saved-searches")
-def create_saved_search_endpoint(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+def create_saved_search_endpoint(request: Request, body: SavedSearchBody) -> Dict[str, Any]:
     """Keep a scope: body {route, label, state}. Saving a label again on a page replaces it."""
     config = write_config(request)
     try:
-        new_id = saved_search_module.create_saved_search(
-            config, str(body.get("route") or ""), str(body.get("label") or ""), body.get("state") or {}
-        )
+        new_id = saved_search_module.create_saved_search(config, body.route or "", body.label or "", body.state or {})
     except SavedSearchError as e:
         raise HTTPException(status_code=400, detail=e.reason) from e
     except Exception as e:

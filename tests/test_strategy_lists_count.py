@@ -2,23 +2,28 @@
 
 from __future__ import annotations
 
+from typing import Any, Callable, Dict, List
 from unittest.mock import MagicMock
 
 import pytest
 from starlette.testclient import TestClient
 
 from bifrost_api.account.app import create_account_app
+from tests import strategy_rows
 from tests.contract.helpers import full_server_config
 from tests.envelope_asserts import assert_list
 
+# Lists with a response model (TD-24) take their reader's real answer; the others any rows.
+_ANY_ROWS = lambda: [{"id": 1}, {"id": 2}]  # noqa: E731
+
 LISTS = [
-    ("/strategies/templates", "list_templates"),
-    ("/strategies/structures", "list_structures"),
-    ("/strategies/opportunities", "list_opportunities"),
-    ("/strategies/instances", "list_strategy_instances"),
-    ("/strategies/instances/5/open-option-legs", "get_instance_open_option_legs"),
-    ("/strategies/allocations", "list_allocations"),
-    ("/strategies/gate-safety", "list_gate_safety_sets"),
+    ("/strategies/templates", "list_templates", _ANY_ROWS),
+    ("/strategies/structures", "list_structures", _ANY_ROWS),
+    ("/strategies/opportunities", "list_opportunities", strategy_rows.opportunities),
+    ("/strategies/instances", "list_strategy_instances", strategy_rows.instances),
+    ("/strategies/instances/5/open-option-legs", "get_instance_open_option_legs", _ANY_ROWS),
+    ("/strategies/allocations", "list_allocations", strategy_rows.allocations),
+    ("/strategies/gate-safety", "list_gate_safety_sets", strategy_rows.gate_sets),
 ]
 
 
@@ -28,12 +33,12 @@ def _client(reader: MagicMock) -> TestClient:
     return TestClient(app, raise_server_exceptions=False)
 
 
-@pytest.mark.parametrize("path, method", LISTS)
-def test_list_has_items_and_count(path: str, method: str) -> None:
+@pytest.mark.parametrize("path, method, answer", LISTS)
+def test_list_has_items_and_count(path: str, method: str, answer: Callable[[], List[Dict[str, Any]]]) -> None:
     reader = MagicMock()
-    rows = [{"id": 1}, {"id": 2}]
+    rows = answer()
     getattr(reader, method).return_value = rows
-    assert_list(_client(reader).get(path), expected=rows)
+    assert_list(_client(reader).get(path), expected=strategy_rows.as_sent_before(rows)["items"])
 
 
 def test_open_option_legs_keeps_the_instance_id() -> None:

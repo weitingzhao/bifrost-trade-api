@@ -27,6 +27,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from bifrost_api.common.write_errors import deleted_body, write_target
 from bifrost_api.strategy.deps import db_not_configured, read_config, write_config
 from bifrost_api.strategy.patch_bodies import PlanPatch
+from bifrost_api.strategy.schemas.responses import PlanList, PlanRow
 from bifrost_core.monitor.reader import strategy_plan as strategy_plan_module
 from bifrost_core.monitor.reader.strategy_plan import PlanRuleError
 from bifrost_core.monitor.schemas.strategy_plans import (
@@ -43,7 +44,7 @@ PLANS_LIMIT_DEFAULT = 200
 PLANS_LIMIT_MAX = 500
 
 
-@router.get("/plans")
+@router.get("/plans", response_model=PlanList, response_model_exclude_unset=True)
 def list_plans_endpoint(
     request: Request,
     status: Optional[str] = Query(None, description="draft, intended, filled or cancelled"),
@@ -70,7 +71,7 @@ def list_plans_endpoint(
     return {"items": items, "count": len(items)}
 
 
-@router.get("/plans/{strategy_plan_id}")
+@router.get("/plans/{strategy_plan_id}", response_model=PlanRow, response_model_exclude_unset=True)
 def get_plan_endpoint(request: Request, strategy_plan_id: int) -> Dict[str, Any]:
     """One plan by id. 404 when there is no such row, 500 when the read fails."""
     try:
@@ -119,7 +120,7 @@ def update_plan_endpoint(
     return {"ok": True, "strategy_plan_id": strategy_plan_id}
 
 
-@router.patch("/plans/{strategy_plan_id}")
+@router.patch("/plans/{strategy_plan_id}", response_model=PlanRow, response_model_exclude_unset=True)
 def patch_plan_endpoint(request: Request, strategy_plan_id: int, body: PlanPatch) -> Dict[str, Any]:
     """Change the fields sent; answer the plan as GET /plans/{id} does.
 

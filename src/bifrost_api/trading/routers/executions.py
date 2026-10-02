@@ -13,17 +13,27 @@ strategy attribution (the fill's own columns stay with PUT), and the two DELETEs
 are strict; both raise core's Write* outcomes, mapped in
 ``bifrost_api.common.write_errors``. PUT keeps its old behaviour for one release
 and is marked replaced by the PATCH.
+
+TD-24 (batch 3c-1): the POST / PUT bodies are ``trading.schemas.requests`` models --
+a wrong type is 422 and writes nothing (a malformed strategy id no longer clears the
+attribution); unknown fields are ignored and logged this release.
 """
 
 import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Body, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import StrictInt
 
 from bifrost_api.common.envelopes import error_response, list_body
 from bifrost_api.common.write_errors import PatchBody, deleted_body, write_target
+from bifrost_api.trading.schemas.requests import (
+    ExecutionCreateBody,
+    ExecutionUpdateBody,
+    OptionStockLinkBody,
+    OptionStockLinksQueryBody,
+)
 from bifrost_core.portfolio.reader import accounts as accounts_module
 from bifrost_core.portfolio.reader.option_stock_link import (
     delete_option_stock_link_strict,
@@ -233,25 +243,21 @@ def get_executions_link_candidates(
 
 
 @router.post("/executions/option-stock-links/query")
-def post_option_stock_links_query(request: Request, body: Dict[str, Any] = Body(...)) -> Any:
+def post_option_stock_links_query(request: Request, body: OptionStockLinksQueryBody) -> Any:
     """Bulk load link rows for many option_account_executions_id values (grouped by account_id).
 
     Body: { "batches": [ { "account_id": "...", "option_account_executions_ids": [1, 2, ...] }, ... ] }
     Returns: { "by_option_id": { "<id>": { "links": [...], "slippage_total": number | null } } }
     """
     reader = request.app.state.reader
-    raw_batches = body.get("batches")
-    if not isinstance(raw_batches, list):
+    if body.batches is None:
         return error_response(400, "batches must be a list", {"by_option_id": {}})
     batches: List[Any] = []
-    for item in raw_batches:
-        if not isinstance(item, dict):
+    for item in body.batches:
+        acc = (item.account_id or "").strip()
+        if not acc or item.option_account_executions_ids is None:
             continue
-        acc = (item.get("account_id") or "").strip()
-        ids_raw = item.get("option_account_executions_ids")
-        if not acc or not isinstance(ids_raw, list):
-            continue
-        batches.append((acc, ids_raw))
+        batches.append((acc, list(item.option_account_executions_ids)))
     out = reader.get_option_stock_links_bulk(batches)
     err = out.get("error")
     if err:
@@ -308,12 +314,12 @@ def get_stock_link_candidates_route(
 
 
 @router.post("/executions/option-stock-links")
-def post_option_stock_links(request: Request, body: Dict[str, Any] = Body(...)) -> Any:
+def post_option_stock_links(request: Request, body: OptionStockLinkBody) -> Any:
     """Link one OPT execution to one STK execution (both must exist on account_executions_final)."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return error_response(503, "PostgreSQL is required.", {"link_id": None, "warning": None})
-    ok, link_id, err, warning = insert_option_stock_link(control_via_db, body)
+    ok, link_id, err, warning = insert_option_stock_link(control_via_db, body.declared(exclude_unset=True))
     if not ok:
         msg = str(err or "Failed to link the stock execution.")
         return error_response(_link_error_status(msg), msg, {"link_id": None, "warning": warning})
@@ -404,7 +410,7 @@ def get_transactions(
 
 
 @router.post("/executions")
-def post_execution(request: Request, body: Dict[str, Any] = Body(...)) -> Any:
+def post_execution(request: Request, body: ExecutionCreateBody) -> Any:
     """Add one execution record manually (history). body: account_id, time, symbol, sec_type, side, quantity, price; optional fields."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
@@ -412,29 +418,18 @@ def post_execution(request: Request, body: Dict[str, Any] = Body(...)) -> Any:
     # The inputs core's writer refuses before it writes (portfolio/reader/accounts.py
     # insert_one_execution) answer 400; so does a refusal when splits were sent, which
     # core also rejects with one None (wrong account, duplicate instance, sum != quantity).
-    if body.get("quantity") is None or body.get("price") is None:
+    if body.quantity is None or body.price is None:
         return error_response(
             400, "Failed to add execution (required fields: symbol, quantity, price).", {"account_executions_id": None}
         )
-    bad_splits = _instance_allocations_error(body)
-    if bad_splits:
-        return error_response(400, bad_splits, {"account_executions_id": None})
-    new_account_executions_id = insert_one_execution(control_via_db, body)
+    new_account_executions_id = insert_one_execution(control_via_db, body.declared(exclude_unset=True))
     if new_account_executions_id is None:
-        if body.get("instance_allocations"):
+        if body.instance_allocations:
             return error_response(
                 400, "Failed to add execution (instance_allocations rejected or database error).", {"account_executions_id": None}
             )
         return error_response(500, "Failed to add execution (database error).", {"account_executions_id": None})
     return {"ok": True, "account_executions_id": new_account_executions_id, "message": "Execution record added."}
-
-
-def _instance_allocations_error(body: Dict[str, Any]) -> Optional[str]:
-    """Core refuses ``instance_allocations`` that is not a list without writing anything."""
-    ia = body.get("instance_allocations")
-    if ia is not None and not isinstance(ia, list):
-        return "instance_allocations must be a list."
-    return None
 
 
 def _parse_account_executions_path_id(execution_id: str) -> int:
@@ -445,18 +440,16 @@ def _parse_account_executions_path_id(execution_id: str) -> int:
 
 
 @router.put("/executions/{execution_id}")
-def put_execution(request: Request, execution_id: str, body: Dict[str, Any] = Body(...)) -> Any:
-    """Update one execution by account_executions_id (manual correction). Negative ids = TWS raw rows."""
+def put_execution(request: Request, execution_id: str, body: ExecutionUpdateBody) -> Any:
+    """Update one execution by account_executions_id (manual correction): the fields sent
+    change. Negative ids = TWS raw rows."""
     eid = _parse_account_executions_path_id(execution_id)
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return error_response(503, PG_REQUIRED_FOR_EXECUTIONS)
-    bad_splits = _instance_allocations_error(body)
-    if bad_splits:
-        return error_response(400, bad_splits)
-    if update_one_execution(control_via_db, eid, body):
+    if update_one_execution(control_via_db, eid, body.declared(exclude_unset=True)):
         return {"ok": True, "message": "Execution record updated."}
-    if body.get("instance_allocations"):
+    if body.instance_allocations:
         return error_response(
             400, "Update failed (instance_allocations rejected, account_executions_id missing, or database error)."
         )

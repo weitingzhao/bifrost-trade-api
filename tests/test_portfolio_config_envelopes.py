@@ -70,7 +70,7 @@ BAD_INPUT_CASES = [
     ("PUT", "/position-categories/tag", {"contract_key": "ZZQ|STK|||"}, "account_id is required.", {}),
     ("PUT", "/position-categories/tag", {"account_id": "U0000001"}, "contract_key is required.", {}),
     ("PUT", "/position-categories/symbol-order", {"symbols": []}, "category_name is required.", {}),
-    ("PUT", "/position-categories/symbol-order", {"category_name": "Core", "symbols": "ZZQ"}, "symbols must be an array.", {}),
+    ("PUT", "/position-categories/symbol-order", {"category_name": "Core"}, "symbols must be an array.", {}),
     ("PUT", "/instrument-classes/ZZFI", {"instrument_class": "bond"}, "must be one of", {}),
 ]
 

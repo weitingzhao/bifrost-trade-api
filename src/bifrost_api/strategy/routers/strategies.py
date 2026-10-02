@@ -16,6 +16,24 @@ from bifrost_api.strategy.patch_bodies import (
     StructurePatch,
     TemplatePatch,
 )
+from bifrost_api.strategy.schemas.requests import (
+    GateSafetyBody,
+    StructureBody,
+    TemplateBody,
+    TemplateCharacteristicsBody,
+    TemplateLegsBody,
+    TemplateParamsBody,
+)
+from bifrost_api.strategy.schemas.responses import (
+    AllocationList,
+    AllocationRow,
+    GateSafetyDetail,
+    GateSafetyList,
+    InstanceList,
+    InstanceRow,
+    OpportunityDetail,
+    OpportunityList,
+)
 from bifrost_core.monitor.reader import gate_safety_write as gate_safety_write_module
 from bifrost_core.monitor.reader import strategy_allocation_write as strategy_allocation_write_module
 from bifrost_core.monitor.reader import strategy_opportunity_write as strategy_opportunity_write_module
@@ -41,6 +59,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
+# Bodies and answers (TD-24, batch 3c-1): POST / PUT bodies are typed
+# (bifrost_api.strategy.schemas.requests -- strict types, unknown fields ignored and
+# logged this release); allocations, opportunities, gate-safety sets and instances
+# answer through the response models in bifrost_api.strategy.schemas.responses.
+#
 # Writes (TD-15, batch 3b-2): PATCH changes only the fields sent and answers the
 # row as GET-by-id does; DELETE is strict and answers {"deleted": "hard"|"soft",
 # <id>, ..., "ok": true}. Their failures are core's Write* outcomes, mapped once
@@ -108,10 +131,10 @@ def get_template_detail_endpoint(request: Request, template_id: int) -> Dict[str
 
 
 @router.post("/templates")
-def create_template_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
+def create_template_endpoint(request: Request, body: TemplateBody) -> Dict[str, Any]:
     config = write_config(request)
     try:
-        tid = template_config_write_module.create_template(config, body)
+        tid = template_config_write_module.create_template(config, body.declared(exclude_unset=True))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"strategy_template_id": tid}
@@ -119,11 +142,11 @@ def create_template_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str
 
 @router.put("/templates/{template_id}")
 def update_template_endpoint(
-    request: Request, template_id: int, body: Dict[str, Any]
+    request: Request, template_id: int, body: TemplateBody
 ) -> Dict[str, Any]:
     config = write_config(request)
     try:
-        ok = template_config_write_module.update_template(config, template_id, body)
+        ok = template_config_write_module.update_template(config, template_id, body.declared(exclude_unset=True))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if not ok:
@@ -148,12 +171,12 @@ def delete_template_endpoint(request: Request, template_id: int) -> Dict[str, An
 
 @router.put("/templates/{template_id}/legs")
 def replace_template_legs_endpoint(
-    request: Request, template_id: int, body: Dict[str, Any]
+    request: Request, template_id: int, body: TemplateLegsBody
 ) -> Dict[str, Any]:
     config = write_config(request)
-    legs = body.get("legs")
-    if not isinstance(legs, list):
+    if body.legs is None:
         raise HTTPException(status_code=400, detail="legs array is required")
+    legs = body.declared(exclude_unset=True)["legs"]
     try:
         template_config_write_module.replace_template_legs(config, template_id, legs)
     except ValueError as e:
@@ -163,12 +186,12 @@ def replace_template_legs_endpoint(
 
 @router.put("/templates/{template_id}/params")
 def replace_template_params_endpoint(
-    request: Request, template_id: int, body: Dict[str, Any]
+    request: Request, template_id: int, body: TemplateParamsBody
 ) -> Dict[str, Any]:
     config = write_config(request)
-    items = body.get("items")
-    if not isinstance(items, list):
+    if body.items is None:
         raise HTTPException(status_code=400, detail="items must be an array")
+    items = body.declared(exclude_unset=True)["items"]
     try:
         template_config_write_module.replace_template_params(config, template_id, items)
     except ValueError as e:
@@ -178,16 +201,11 @@ def replace_template_params_endpoint(
 
 @router.put("/templates/{template_id}/characteristics")
 def replace_template_characteristics_endpoint(
-    request: Request, template_id: int, body: Dict[str, Any]
+    request: Request, template_id: int, body: TemplateCharacteristicsBody
 ) -> Dict[str, Any]:
     config = write_config(request)
-    items = body.get("items")
-    if items is not None and not isinstance(items, list):
-        raise HTTPException(status_code=400, detail="items must be an array of strings")
     try:
-        template_config_write_module.replace_template_characteristics(
-            config, template_id, [str(x) for x in (items or [])]
-        )
+        template_config_write_module.replace_template_characteristics(config, template_id, list(body.items or []))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"ok": True}
@@ -215,7 +233,7 @@ def get_structure(request: Request, structure_id: int) -> Dict[str, Any]:
 
 
 @router.post("/structures")
-def create_structure_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
+def create_structure_endpoint(request: Request, body: StructureBody) -> Dict[str, Any]:
     """Create a new strategy structure.
 
     Body: name, structure_type, legs (array), optional version, is_active, meta (array of {meta_key, meta_value_text}).
@@ -224,7 +242,7 @@ def create_structure_endpoint(request: Request, body: Dict[str, Any]) -> Dict[st
     """
     control_via_db = write_config(request)
     try:
-        sid = strategy_structure_write_module.create_structure(control_via_db, body)
+        sid = strategy_structure_write_module.create_structure(control_via_db, body.declared(exclude_unset=True))
     except (ValueError, TypeError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if sid is None:
@@ -233,11 +251,13 @@ def create_structure_endpoint(request: Request, body: Dict[str, Any]) -> Dict[st
 
 
 @router.put("/structures/{structure_id}")
-def update_structure_endpoint(request: Request, structure_id: int, body: Dict[str, Any]) -> Dict[str, Any]:
+def update_structure_endpoint(request: Request, structure_id: int, body: StructureBody) -> Dict[str, Any]:
     """Update an existing strategy structure. Body same as POST (legs: quantity=ratio, strike/expiration=optional preset)."""
     control_via_db = write_config(request)
     try:
-        ok = strategy_structure_write_module.update_structure(control_via_db, structure_id, body)
+        ok = strategy_structure_write_module.update_structure(
+            control_via_db, structure_id, body.declared(exclude_unset=True)
+        )
     except (ValueError, TypeError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if not ok:
@@ -261,7 +281,7 @@ def delete_structure_endpoint(request: Request, structure_id: int) -> Dict[str, 
     return deleted_body(strategy_structure_write_module.delete_structure_strict(config, structure_id))
 
 
-@router.get("/opportunities")
+@router.get("/opportunities", response_model=OpportunityList, response_model_exclude_unset=True)
 def list_opportunities(
     request: Request,
     active_only: bool = Query(True, description="If true, return only active opportunities"),
@@ -272,7 +292,7 @@ def list_opportunities(
     return list_body(items)
 
 
-@router.get("/opportunities/{opportunity_id}")
+@router.get("/opportunities/{opportunity_id}", response_model=OpportunityDetail, response_model_exclude_unset=True)
 def get_opportunity(request: Request, opportunity_id: int) -> Dict[str, Any]:
     """Return one strategy_opportunity row by id. 404 if not found."""
     reader = request.app.state.reader
@@ -313,7 +333,7 @@ def update_opportunity_endpoint(request: Request, opportunity_id: int, body: Opp
     return {"ok": True}
 
 
-@router.patch("/opportunities/{opportunity_id}")
+@router.patch("/opportunities/{opportunity_id}", response_model=OpportunityDetail, response_model_exclude_unset=True)
 def patch_opportunity_endpoint(request: Request, opportunity_id: int, body: OpportunityPatch) -> Dict[str, Any]:
     """Change the fields sent (a field left out keeps its value, unlike PUT); answer the
     opportunity as GET does. `symbols` / `entry_conditions` replace the list whole."""
@@ -337,7 +357,7 @@ def get_strategy_win_rate(
     return reader.get_strategy_win_rate(since_ts=since_ts, until_ts=until_ts)
 
 
-@router.get("/instances")
+@router.get("/instances", response_model=InstanceList, response_model_exclude_unset=True)
 def list_strategy_instances(
     request: Request,
     account_id: Optional[str] = Query(None, description="Filter by account ID"),
@@ -365,7 +385,7 @@ def list_strategy_instances(
     return list_body(items)
 
 
-@router.get("/instances/{strategy_instance_id}")
+@router.get("/instances/{strategy_instance_id}", response_model=InstanceRow, response_model_exclude_unset=True)
 def get_strategy_instance(request: Request, strategy_instance_id: int) -> Dict[str, Any]:
     """Return one strategy_instance by id. 404 if not found."""
     reader = request.app.state.reader
@@ -414,7 +434,7 @@ def delete_strategy_instance_endpoint(request: Request, strategy_instance_id: in
     return deleted_body(strategy_instance_module.delete_instance_strict(config, strategy_instance_id))
 
 
-@router.patch("/instances/{strategy_instance_id}")
+@router.patch("/instances/{strategy_instance_id}", response_model=InstanceRow, response_model_exclude_unset=True)
 def update_strategy_instance_endpoint(
     request: Request, strategy_instance_id: int, body: InstancePatch
 ) -> Dict[str, Any]:
@@ -424,7 +444,7 @@ def update_strategy_instance_endpoint(
     return strategy_instance_module.patch_instance(config, strategy_instance_id, body.patch_fields())
 
 
-@router.get("/allocations")
+@router.get("/allocations", response_model=AllocationList, response_model_exclude_unset=True)
 def list_allocations(
     request: Request,
     active_only: bool = Query(True, description="If true, return only active allocations"),
@@ -435,7 +455,7 @@ def list_allocations(
     return list_body(items)
 
 
-@router.get("/allocations/{allocation_id}")
+@router.get("/allocations/{allocation_id}", response_model=AllocationRow, response_model_exclude_unset=True)
 def get_allocation(request: Request, allocation_id: int) -> Dict[str, Any]:
     """Return one strategy_allocation row by id. 404 if not found."""
     reader = request.app.state.reader
@@ -473,7 +493,7 @@ def update_allocation_endpoint(request: Request, allocation_id: int, body: Alloc
     return {"ok": True}
 
 
-@router.patch("/allocations/{allocation_id}")
+@router.patch("/allocations/{allocation_id}", response_model=AllocationRow, response_model_exclude_unset=True)
 def patch_allocation_endpoint(request: Request, allocation_id: int, body: AllocationPatch) -> Dict[str, Any]:
     """Change the fields sent; answer the allocation as GET does. `allocation_limits` keys
     are patched one by one (null clears both); `strategy_opportunity_ids` replaces the membership."""
@@ -481,7 +501,7 @@ def patch_allocation_endpoint(request: Request, allocation_id: int, body: Alloca
     return strategy_allocation_write_module.patch_allocation(config, allocation_id, body.patch_fields())
 
 
-@router.get("/gate-safety")
+@router.get("/gate-safety", response_model=GateSafetyList, response_model_exclude_unset=True)
 def list_gate_safety(request: Request) -> Dict[str, Any]:
     """Return list of gate_safety_strategy rows for management dropdown."""
     reader = request.app.state.reader
@@ -497,7 +517,7 @@ def get_gate_safety_defaults() -> Dict[str, Any]:
     return {"gates": default_gates()}
 
 
-@router.get("/gate-safety/{gate_safety_id}")
+@router.get("/gate-safety/{gate_safety_id}", response_model=GateSafetyDetail, response_model_exclude_unset=True)
 def get_gate_safety_by_id(request: Request, gate_safety_id: int) -> Dict[str, Any]:
     """Return full gate set for UI edit: metadata + gates + earnings_dates. 404 if not found."""
     reader = request.app.state.reader
@@ -508,14 +528,13 @@ def get_gate_safety_by_id(request: Request, gate_safety_id: int) -> Dict[str, An
 
 
 @router.post("/gate-safety")
-def create_gate_safety_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Create a new gate safety set. Body: name, optional version/structure_type/is_active, gates, optional earnings_dates."""
+def create_gate_safety_endpoint(request: Request, body: GateSafetyBody) -> Dict[str, Any]:
+    """Create a new gate safety set. Body: name, optional version / six dims / is_active, gates, optional earnings_dates."""
     control_via_db = write_config(request)
-    name = (body.get("name") or "").strip()
-    if not name:
+    if not (body.name or "").strip():
         raise HTTPException(status_code=400, detail="name is required")
     try:
-        gid = gate_safety_write_module.create_gate_safety(control_via_db, body)
+        gid = gate_safety_write_module.create_gate_safety(control_via_db, body.declared(exclude_unset=True))
     except (ValueError, TypeError) as e:
         raise HTTPException(status_code=400, detail=f"Invalid payload: {e}") from e
     if gid is None:
@@ -524,14 +543,15 @@ def create_gate_safety_endpoint(request: Request, body: Dict[str, Any]) -> Dict[
 
 
 @router.put("/gate-safety/{gate_safety_id}")
-def update_gate_safety_endpoint(request: Request, gate_safety_id: int, body: Dict[str, Any]) -> Dict[str, Any]:
+def update_gate_safety_endpoint(request: Request, gate_safety_id: int, body: GateSafetyBody) -> Dict[str, Any]:
     """Update an existing gate safety set. Body same as POST."""
     control_via_db = write_config(request)
-    name = (body.get("name") or "").strip()
-    if not name:
+    if not (body.name or "").strip():
         raise HTTPException(status_code=400, detail="name is required")
     try:
-        ok = gate_safety_write_module.update_gate_safety(control_via_db, gate_safety_id, body)
+        ok = gate_safety_write_module.update_gate_safety(
+            control_via_db, gate_safety_id, body.declared(exclude_unset=True)
+        )
     except (ValueError, TypeError) as e:
         raise HTTPException(status_code=400, detail=f"Invalid payload: {e}") from e
     if not ok:
@@ -539,7 +559,7 @@ def update_gate_safety_endpoint(request: Request, gate_safety_id: int, body: Dic
     return {"ok": True}
 
 
-@router.patch("/gate-safety/{gate_safety_id}")
+@router.patch("/gate-safety/{gate_safety_id}", response_model=GateSafetyDetail, response_model_exclude_unset=True)
 def patch_gate_safety_endpoint(request: Request, gate_safety_id: int, body: GateSafetyPatch) -> Dict[str, Any]:
     """Change the fields sent; answer the set as GET /gate-safety/{id} does. `gates` is a
     partial object deep-merged into the stored gates; `earnings_dates` replaces the list."""

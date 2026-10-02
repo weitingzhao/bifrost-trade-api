@@ -5,7 +5,9 @@ answers ``{"items", "count"}`` (``bifrost_api.common.envelopes``, TD-16/17).
 
 Writes (TD-15, batch 3b-2) call core's TD-15 writers; their Write* outcomes are
 mapped once in ``bifrost_api.common.write_errors`` (400 bad input, 404 not on the
-list, 503 Postgres unavailable, 500 write failed):
+list, 503 Postgres unavailable, 500 write failed). The POST body is
+``market.schemas.requests.WatchlistBody`` (TD-24: strict types, unknown fields
+ignored and logged this release):
 
     POST   /watchlist                      add, or change the fields sent on a watched contract
     PATCH  /watchlist/{contract_key}       change the fields sent; 404 when not on the list
@@ -16,31 +18,16 @@ import logging
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, Query, Request
-from pydantic import BaseModel, StrictBool, StrictFloat, StrictInt, StrictStr
+from pydantic import StrictBool, StrictFloat, StrictInt, StrictStr
 
 from bifrost_api.common.envelopes import list_body
 from bifrost_api.common.write_errors import PatchBody, deleted_body, write_target
+from bifrost_api.market.schemas.requests import WatchlistBody
 from bifrost_core.monitor.reader import watchlist as watchlist_module
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["watchlist"])
-
-
-class WatchlistBody(BaseModel):
-    contract_key: str
-    symbol: Optional[str] = None
-    sec_type: Optional[str] = None
-    expiry: Optional[str] = None
-    strike: Optional[float] = None
-    option_right: Optional[str] = None
-    display_label: Optional[str] = None
-    source: Optional[str] = None
-    category_id: Optional[int] = None
-    optionable: Optional[bool] = None
-
-    class Config:
-        extra = "ignore"
 
 
 class WatchlistItemPatch(PatchBody):
@@ -65,7 +52,8 @@ def _post_fields(body: WatchlistBody) -> Dict[str, Any]:
     mean "not sent" here, as they did before: ``optionable: null`` (it was kept) and
     a blank string (stored as ''; Add from position sends one for a stock's expiry).
     """
-    fields = body.model_dump(exclude_unset=True, exclude={"contract_key"})
+    fields = body.declared(exclude_unset=True)
+    fields.pop("contract_key", None)
     if fields.get("optionable", False) is None:
         del fields["optionable"]
     return {k: v for k, v in fields.items() if not (isinstance(v, str) and not v.strip())}

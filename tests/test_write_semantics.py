@@ -54,6 +54,7 @@ from bifrost_core.monitor.reader.strategy_rules_delete import RuleInUseError
 from bifrost_core.portfolio.reader import accounts
 from bifrost_core.portfolio.reader import instrument_class
 from bifrost_core.portfolio.reader import position_categories
+from tests import strategy_rows
 from tests.contract.helpers import full_server_config, operator_server_config
 from tests.envelope_asserts import assert_error
 
@@ -141,13 +142,22 @@ PATCH_IDS = [c[1] for c in PATCH_CASES]
 # Routes whose old FE callers read `ok` from the answer keep it one release.
 KEEPS_OK = {"/position-categories/7"}
 
+# Routes with a response model (TD-24) answer their reader's real row; the others any row.
+MODEL_ROWS = {
+    "/strategies/opportunities/7": strategy_rows.opportunity,
+    "/strategies/allocations/7": strategy_rows.allocation,
+    "/strategies/gate-safety/7": strategy_rows.gate_set,
+    "/strategies/instances/7": strategy_rows.instance,
+    "/strategies/plans/7": strategy_rows.plan,
+}
+
 
 @pytest.mark.parametrize("app,path,module,fn,rid,body", PATCH_CASES, ids=PATCH_IDS)
 def test_patch_passes_exactly_what_was_sent_and_answers_the_row(
     monkeypatch: pytest.MonkeyPatch, app: str, path: str, module: Any, fn: str, rid: Any, body: Dict[str, Any]
 ) -> None:
     calls: List[Tuple[Any, Any, Dict[str, Any]]] = []
-    row = {"row_id": str(rid), "name": "stored"}
+    row = MODEL_ROWS[path]() if path in MODEL_ROWS else {"row_id": str(rid), "name": "stored"}
 
     def _writer(cfg: Any, wid: Any, fields: Dict[str, Any]) -> Dict[str, Any]:
         calls.append((cfg, wid, fields))
@@ -156,7 +166,7 @@ def test_patch_passes_exactly_what_was_sent_and_answers_the_row(
     monkeypatch.setattr(module, fn, _writer)
     r = _client(app).patch(path, json=body)
     assert r.status_code == 200, r.text
-    assert r.json() == ({**row, "ok": True} if path in KEEPS_OK else row)
+    assert r.json() == strategy_rows.as_sent_before({**row, "ok": True} if path in KEEPS_OK else row)
     # The explicit null reaches core as a key with None: that is what clears the column.
     assert calls == [(PG, rid, body)]
     assert any(v is None for v in calls[0][2].values())
@@ -403,11 +413,11 @@ def test_an_intended_plan_takes_a_new_expiry(monkeypatch: pytest.MonkeyPatch) ->
     """The plan card's "Extend 7 days" / "Re-issue intent": PUT refused these with 409."""
     conn = _plan_conn("intended")
     _connect(monkeypatch, conn)
-    plan = {"strategy_plan_id": 12, "status": "intended", "effective_status": "intended"}
+    plan = strategy_rows.plan(status="intended")
     monkeypatch.setattr(strategy_plan, "_get_plan_on", lambda _conn, _pid: plan)
     r = _account().patch("/strategies/plans/12", json={"expires_at": "2026-10-09T20:00:00Z"})
     assert r.status_code == 200, r.text
-    assert r.json() == plan
+    assert r.json() == strategy_rows.as_sent_before(plan)
     assert conn.ran("UPDATE strategy_plan SET expires_at = %s") and conn.commits == 1
 
 

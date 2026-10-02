@@ -7,16 +7,27 @@ PATCH and DELETE (TD-15, batch 3b-2) call core's TD-15 writers, whose Write*
 outcomes are mapped once in ``bifrost_api.common.write_errors``: PATCH changes
 only the fields sent (null clears a nullable column) and answers the row; DELETE
 is strict (404 for a missing row) and answers ``{"deleted": "hard", ..., "ok": true}``.
+
+POST / PUT bodies (TD-24, batch 3c-1) are ``portfolio.schemas.requests`` models: a
+wrong type is 422 and writes nothing (a malformed ``category_id`` no longer clears a
+tag); unknown fields are ignored and logged this release.
 """
 
 import logging
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Body, Request
+from fastapi import APIRouter, Request
 from pydantic import StrictInt, StrictStr
 
 from bifrost_api.common.envelopes import error_response, list_body
 from bifrost_api.common.write_errors import PatchBody, deleted_body, write_target
+from bifrost_api.portfolio.schemas.requests import (
+    InstrumentClassBody,
+    PositionCategoryBody,
+    PositionTagBody,
+    StrategyAttributionBatchBody,
+    SymbolOrderBody,
+)
 from bifrost_core.portfolio.reader import instrument_class as instrument_class_module
 from bifrost_core.portfolio.reader import position_categories as position_categories_module
 from bifrost_core.portfolio.reader.instrument_class import INSTRUMENT_CLASSES, normalize_instrument_class
@@ -44,22 +55,6 @@ _NO_CONNECTION = frozenset(
 )
 
 
-def _coerce_optional_int(value: Any) -> Optional[int]:
-    """Accept JSON int/float/str for sort_order; invalid values become None (omit from insert)."""
-    if value is None:
-        return None
-    try:
-        if isinstance(value, bool):
-            return None
-        if isinstance(value, float):
-            if not value.is_integer():
-                return None
-            return int(value)
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _write_failed(err: Optional[str], fallback: str, legacy: Optional[Dict[str, Any]] = None) -> Any:
     """A writer's refusal after input was checked: 503 when it had no connection, else 500."""
     if err in _NO_CONNECTION:
@@ -76,20 +71,19 @@ def get_position_categories(request: Request) -> Dict[str, Any]:
 
 
 @router.post("/position-categories")
-def post_position_category(request: Request, body: Dict[str, Any] = Body(...)) -> Any:
-    """Create one position category. body: name (required), description, sort_order."""
+def post_position_category(request: Request, body: PositionCategoryBody) -> Any:
+    """Create one position category. body: name (required), description, sort_order (an integer)."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return error_response(503, POSTGRES_REQUIRED, {"id": None})
     reader = request.app.state.reader
-    b = body or {}
-    name = (b.get("name") or "").strip()
+    name = (body.name or "").strip()
     if not name:
         return error_response(400, "name is required.", {"id": None})
     gid, err = reader.create_position_category(
         name=name,
-        description=b.get("description"),
-        sort_order=_coerce_optional_int(b.get("sort_order")),
+        description=body.description,
+        sort_order=body.sort_order,
     )
     if gid is not None:
         return {"ok": True, "id": gid, "name": name}
@@ -113,38 +107,24 @@ def delete_position_category(request: Request, category_id: int) -> Any:
 
 
 @router.patch("/executions/strategy-attribution")
-def patch_execution_strategy_attribution(request: Request, body: Dict[str, Any] = Body(...)) -> Any:
+def patch_execution_strategy_attribution(request: Request, body: StrategyAttributionBatchBody) -> Any:
     """Batch update strategy attribution on executions.
-    body: account_id (required), contract_key OR execution_ids[], strategy_opportunity_id, strategy_instance_id."""
+    body: account_id (required), contract_key OR execution_ids[], strategy_opportunity_id, strategy_instance_id
+    (null or absent clears; a non-integer is 422)."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return error_response(503, POSTGRES_REQUIRED)
     reader = request.app.state.reader
-    b = body or {}
-    account_id = (b.get("account_id") or "").strip()
+    account_id = (body.account_id or "").strip()
     if not account_id:
         return error_response(400, "account_id is required.")
-    contract_key = (b.get("contract_key") or "").strip() or None
-    execution_ids = b.get("execution_ids")
-    if isinstance(execution_ids, list):
-        execution_ids = [int(x) for x in execution_ids if x is not None]
-    else:
-        execution_ids = None
+    contract_key = (body.contract_key or "").strip() or None
+    execution_ids = list(body.execution_ids) if body.execution_ids else None
     if not contract_key and not execution_ids:
         return error_response(400, "contract_key or execution_ids is required.")
-    so_id = b.get("strategy_opportunity_id")
-    si_id = b.get("strategy_instance_id")
-    if so_id is not None:
-        try:
-            so_id = int(so_id)
-        except (TypeError, ValueError):
-            so_id = None
-    if si_id is not None:
-        try:
-            si_id = int(si_id)
-        except (TypeError, ValueError):
-            si_id = None
-    count = reader.batch_update_execution_strategy(account_id, contract_key, execution_ids, so_id, si_id)
+    count = reader.batch_update_execution_strategy(
+        account_id, contract_key, execution_ids, body.strategy_opportunity_id, body.strategy_instance_id
+    )
     if count < 0:
         return error_response(
             409,
@@ -159,26 +139,23 @@ def patch_execution_strategy_attribution(request: Request, body: Dict[str, Any] 
 
 
 @router.put("/position-categories/tag")
-def put_position_category_tag(request: Request, body: Dict[str, Any] = Body(...)) -> Any:
-    """Tag a position with a category (STK). Pass category_id null to clear tag. body: account_id, contract_key, category_id."""
+def put_position_category_tag(request: Request, body: PositionTagBody) -> Any:
+    """Tag a position with a category (STK). body: account_id, contract_key, category_id --
+    an integer tags, an explicit null clears the tag; a non-integer is 422 and left out is 400,
+    so neither can clear a tag by accident."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return error_response(503, POSTGRES_REQUIRED)
     reader = request.app.state.reader
-    b = body or {}
-    account_id = (b.get("account_id") or "").strip()
-    contract_key = (b.get("contract_key") or "").strip()
-    category_id = b.get("category_id")
+    account_id = (body.account_id or "").strip()
+    contract_key = (body.contract_key or "").strip()
     if not account_id:
         return error_response(400, "account_id is required.")
     if not contract_key:
         return error_response(400, "contract_key is required.")
-    if category_id is not None:
-        try:
-            category_id = int(category_id)
-        except (TypeError, ValueError):
-            category_id = None
-    if reader.set_position_category_tag(account_id, contract_key, category_id):
+    if "category_id" not in body.model_fields_set:
+        return error_response(400, "category_id is required: an id tags the position, null clears its tag.")
+    if reader.set_position_category_tag(account_id, contract_key, body.category_id):
         return {"ok": True}
     return error_response(500, "Failed to set tag.")
 
@@ -192,20 +169,18 @@ def get_market_streams_symbol_order(request: Request) -> Dict[str, Any]:
 
 
 @router.put("/position-categories/symbol-order")
-def put_market_streams_symbol_order(request: Request, body: Dict[str, Any] = Body(...)) -> Any:
+def put_market_streams_symbol_order(request: Request, body: SymbolOrderBody) -> Any:
     """Save symbol order for one category. body: category_name (required), symbols (array of symbol strings)."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return error_response(503, POSTGRES_REQUIRED)
     reader = request.app.state.reader
-    b = body or {}
-    category_name = (b.get("category_name") or "").strip()
-    symbols = b.get("symbols")
+    category_name = (body.category_name or "").strip()
     if not category_name:
         return error_response(400, "category_name is required.")
-    if not isinstance(symbols, list):
+    if body.symbols is None:
         return error_response(400, "symbols must be an array.")
-    if reader.set_market_streams_symbol_order(category_name, symbols):
+    if reader.set_market_streams_symbol_order(category_name, list(body.symbols)):
         return {"ok": True}
     return error_response(500, "Failed to save symbol order.")
 
@@ -225,17 +200,16 @@ def get_instrument_classes(request: Request) -> Dict[str, Any]:
 
 
 @router.put("/instrument-classes/{contract_key}")
-def put_instrument_class(request: Request, contract_key: str, body: Dict[str, Any] = Body(...)) -> Any:
+def put_instrument_class(request: Request, contract_key: str, body: InstrumentClassBody) -> Any:
     """Register or change one instrument's class. body: instrument_class, note (optional)."""
     if not request.app.state.control_via_db:
         return error_response(503, POSTGRES_REQUIRED)
-    b = body or {}
-    instrument_class = str(b.get("instrument_class") or "")
+    instrument_class = body.instrument_class or ""
     # The same rule core's writer applies, checked first so a bad class is a 400
     # and anything the writer still refuses is a write failure.
     if normalize_instrument_class(instrument_class) is None:
         return error_response(400, f"instrument_class must be one of {', '.join(INSTRUMENT_CLASSES)}.")
-    ok, err = request.app.state.reader.set_instrument_class(contract_key, instrument_class, note=b.get("note"))
+    ok, err = request.app.state.reader.set_instrument_class(contract_key, instrument_class, note=body.note)
     if ok:
         return {"ok": True}
     return _write_failed(err, "Failed to save the instrument class.")

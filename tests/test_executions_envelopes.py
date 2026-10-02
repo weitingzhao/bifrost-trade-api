@@ -119,13 +119,14 @@ def test_post_execution_missing_price_is_400(monkeypatch: pytest.MonkeyPatch) ->
     insert.assert_not_called()
 
 
-def test_post_execution_splits_not_a_list_is_400(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_post_execution_splits_not_a_list_is_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A typed body since 0.3.1 (TD-24): the wrong type is FastAPI's 422, nothing written."""
     insert = MagicMock()
     monkeypatch.setattr(ex, "insert_one_execution", insert)
     r = _client().post(
         "/executions", json={"account_id": ACC, "symbol": "ZZQ", "quantity": 1, "price": 2, "instance_allocations": {}}
     )
-    assert_error(r, 400, "instance_allocations must be a list.", {"account_executions_id": None})
+    assert r.status_code == 422 and "instance_allocations" in r.text
     insert.assert_not_called()
 
 
