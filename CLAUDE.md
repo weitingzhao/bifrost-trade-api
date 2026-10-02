@@ -67,6 +67,21 @@ Research **不写** `strategy_opportunity`。表结构与列见 `bifrost-trade-c
 - SSE：`GET /quotes/stream`（market）、`GET /api/messages/stream`（monitor）、ops market-ingest 的流。响应自己带
   `X-Accel-Buffering: no` 和 `Cache-Control: no-cache`；新增 SSE 端点照此设置。
 
+### 响应信封（TD-16 / TD-17，Owner 决策 B：先加后删）
+
+`bifrost_api/common/envelopes.py`，新路由和改动到的路由都用它：
+
+- **失败**：`error_response(status, message, legacy=None)` → 真实状态码 + `{"detail": message, "ok": false, "error": message, ...legacy}`。
+  客户端只读 `detail`。状态码：400 输入不对 · 404 不存在 / 没匹配到 · 409 冲突 / 被占用 · 503 依赖没配或连不上
+  （PostgreSQL、IB Gateway）· 500 意外失败（helper 会记日志）。不再用 200 `{"ok": false}` 报失败。
+- **列表**：`list_body(items, legacy_keys=None, total=None, **extra)` → `{"items": [...], "count": len(items), "total"?, ...}`。
+  成功的单个对象保持原形状，不包一层。
+- **过渡一个版本**：`ok` / `error` 和路由原来的列表键（`executions`、`attributions`、`transactions` …，与 `items` 同一个列表）
+  这一版照发，让发布前打开的标签页还能用；**下一个版本删掉**。已转换：portfolio config、trading executions、
+  market watchlist、monitor config、`/strategies` 列表（0.2.2，batch 3b-1）。
+- core 的写函数常把「没有这行」和「数据库报错」合成一个 False / 0：调用方能走到的是前者时答 404（消息照旧写两种可能），
+  只可能是写失败时答 500；核心返回原因后再细分。
+
 ## `bifrost_api.research` 的实际内容
 
 - `routers/` — 五个 router（见上表）
