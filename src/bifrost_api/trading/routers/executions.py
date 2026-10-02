@@ -84,7 +84,14 @@ def get_executions(
     strategy_instance_id: Optional[int] = Query(None, description="Filter by strategy instance ID"),
     source_scope: Optional[str] = Query(
         None,
-        description="Optional: all (default, full account_executions) | performance_book (account_executions_final) | on_the_fly (account_executions_fly: TWS not covered by final, no BAG) | tws_raw (executions_raw_tws only, synthetic negative account_executions_id)",
+        description=(
+            "Which execution view to read. all (default): brokerage.executions, every fill | "
+            "performance_book: brokerage.executions_final, the Flex-confirmed book | "
+            "on_the_fly: brokerage.executions_fly, TWS fills Flex has not confirmed yet (no BAG) | "
+            "tws_raw: brokerage.executions_raw_tws only, with synthetic negative ids. "
+            "quantity is signed, sells negative (tws_client rows are stored signed; other sources are "
+            "negated on read) -- except under tws_raw, which returns the raw TWS quantity unchanged."
+        ),
     ),
 ) -> Dict[str, Any]:
     """Account-level executions/trades (R-A2). If include_opt_pairs=true: returns paired_execution_ids and opt_pairs."""
