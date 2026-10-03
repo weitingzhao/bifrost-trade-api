@@ -5,21 +5,22 @@ screener-wide) go to Research only. A Research failure raises
 ``ResearchUnavailable`` and the route answers 503 naming Research; nothing
 falls back to direct SQL (TD-49 step 1, Owner 2026-10-03).
 
-What still reads Golden Source directly through ``get_conn`` until Research
-serves it (TD-49 step 3): the criteria-stats pass-count distribution and the
-tier / momentum-grade routes in ``routers/data_readiness``; and the feedback
-store (``ops_feedback.*``), which this service owns.
+The tier marts (``dw_stock.mart_sepa_tier_*``), the momentum grades
+(``features.stock_signal_momentum_daily``) and the criteria-stats pass-count
+distributions go to Research too (0.157.0 endpoints; TD-49 step 3).
+
+``get_conn`` now serves only the feedback store (``ops_feedback.*``), which this
+service owns.
 
 Env:
   RESEARCH_API_URL   — default ``http://research-api.research.svc.cluster.local:8795``
-  ANALYTICS_PG_*     — the ``get_conn`` pool
+  ANALYTICS_PG_*     — the ``get_conn`` pool (feedback store)
 """
 
 from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from datetime import date, datetime
 from typing import Any, Dict, Generator, List, Optional, Tuple
 from urllib.parse import urlencode
 
@@ -39,11 +40,6 @@ _DEFAULT_RESEARCH_URL = "http://research-api.research.svc.cluster.local:8795"
 _RESEARCH_TIMEOUT = float(os.environ.get("RESEARCH_API_TIMEOUT", "30"))
 
 _pool: Optional[ThreadedConnectionPool] = None
-
-# dbt SEPA marts are single-day snapshots — prefer MAX(eval_date), not CURRENT_DATE.
-_FUND_EVAL_TABLE = "dw_stock.mart_sepa_fundamental_eval"
-_TECH_EVAL_TABLE = "dw_stock.mart_sepa_technical_eval"
-_ALLOWED_EVAL_TABLES = frozenset({_FUND_EVAL_TABLE, _TECH_EVAL_TABLE})
 
 FUND_CONDITION_COLUMNS = [
     "eps_q2q_ge_25pct",
@@ -93,24 +89,6 @@ TECH_CONDITION_COLUMNS = [
 ]
 
 
-def latest_eval_date(cur: Any, table: str) -> Optional[date]:
-    """Return MAX(eval_date) for a known mart table, or None if empty."""
-    if table not in _ALLOWED_EVAL_TABLES:
-        raise ValueError(f"unsupported eval table: {table}")
-    cur.execute(f"SELECT MAX(eval_date) AS d FROM {table}")
-    row = cur.fetchone()
-    if not row:
-        return None
-    raw = row["d"] if isinstance(row, dict) else row[0]
-    if raw is None:
-        return None
-    if isinstance(raw, datetime):
-        return raw.date()
-    if isinstance(raw, date):
-        return raw
-    return date.fromisoformat(str(raw)[:10])
-
-
 def research_api_base() -> str:
     return (
         os.environ.get("RESEARCH_API_URL")
@@ -143,7 +121,7 @@ def _get_pool() -> ThreadedConnectionPool:
 
 @contextmanager
 def get_conn() -> Generator:
-    """Yield a pooled Golden Source connection (feedback store; reads Research does not serve yet)."""
+    """Yield a pooled Golden Source connection — the feedback store (``ops_feedback.*``) only."""
     pool = _get_pool()
     conn = pool.getconn()
     try:
@@ -278,6 +256,40 @@ def fetch_screener_wide(
         params["symbols"] = ",".join(s.upper() for s in symbols[:500])
     data = _research_get("/analytics/sepa/screener-wide", params) or {}
     return [dict(r) for r in (data.get("rows") or []) if isinstance(r, dict)]
+
+
+def fetch_tier_stats(tier: str) -> Dict[str, Any]:
+    """Per-signal pass counts and the signals-passed histogram for one tier mart (latest eval_date).
+
+    Research also answers ``signals`` (the tier's vocabulary); it is passed through.
+    """
+    return dict(_research_get("/analytics/sepa/tier-stats", {"tier": tier}) or {})
+
+
+def fetch_tier_filter(
+    tier: str,
+    cond_ids: List[str],
+    min_score: int,
+    match: str,
+    limit: int,
+) -> Dict[str, Any]:
+    """Names on a tier mart's latest eval_date passing the picked signals (all / any) and ``min_score``.
+
+    ``count`` is the whole match and ``truncated`` says ``symbols`` stops short of it.
+    """
+    params: Dict[str, Any] = {
+        "tier": tier,
+        "include": ",".join(cond_ids),
+        "min_score": min_score,
+        "match": match,
+        "limit": limit,
+    }
+    return dict(_research_get("/analytics/sepa/tier-filter", params) or {})
+
+
+def fetch_momentum_grades(grades: str, limit: int) -> Dict[str, Any]:
+    """The momentum radar's grades on its latest session, and the names in ``grades``."""
+    return dict(_research_get("/research/momentum/grades", {"grades": grades, "limit": limit}) or {})
 
 
 def fetch_iv_percentile_latest(symbol: str) -> Optional[Dict[str, Any]]:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -50,7 +50,6 @@ def _criteria_stats_analytics() -> Dict[str, Any]:
         FUND_CONDITION_COLUMNS,
         TECH_CONDITION_COLUMNS,
         fetch_criteria_stats,
-        get_conn,
     )
 
     try:
@@ -146,61 +145,18 @@ def _criteria_stats_analytics() -> Dict[str, Any]:
         "pass_count_distribution": [],
     }
 
-    try:
-        from psycopg2.extras import RealDictCursor
-
-        from bifrost_api.research.analytics_reader import (
-            _FUND_EVAL_TABLE,
-            _TECH_EVAL_TABLE,
-            latest_eval_date,
-        )
-
-        with get_conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                fund_as_of = latest_eval_date(cur, _FUND_EVAL_TABLE)
-                if fund_as_of is not None:
-                    cur.execute(
-                        f"""
-                        SELECT COALESCE(pass_count, 0)::int AS conditions_passed, COUNT(*)::int AS symbol_count
-                        FROM {_FUND_EVAL_TABLE}
-                        WHERE eval_date = %s
-                          AND COALESCE(insufficient_data, false) IS NOT TRUE
-                        GROUP BY 1
-                        """,
-                        (fund_as_of,),
-                    )
-                    dist = {
-                        int(r["conditions_passed"]): int(r["symbol_count"])
-                        for r in (cur.fetchall() or [])
-                    }
-                    fundamental["pass_count_distribution"] = [
-                        {"conditions_passed": i, "symbol_count": dist.get(i, 0)}
-                        for i in range(8, -1, -1)
-                    ]
-                    fundamental["eval_date"] = fund_as_of.isoformat()
-
-                tech_as_of = latest_eval_date(cur, _TECH_EVAL_TABLE)
-                if tech_as_of is not None:
-                    cur.execute(
-                        f"""
-                        SELECT COALESCE(pass_count, 0)::int AS conditions_passed, COUNT(*)::int AS symbol_count
-                        FROM {_TECH_EVAL_TABLE}
-                        WHERE eval_date = %s
-                        GROUP BY 1
-                        """,
-                        (tech_as_of,),
-                    )
-                    tdist = {
-                        int(r["conditions_passed"]): int(r["symbol_count"])
-                        for r in (cur.fetchall() or [])
-                    }
-                    technical["pass_count_distribution"] = [
-                        {"conditions_passed": i, "symbol_count": tdist.get(i, 0)}
-                        for i in range(11, -1, -1)
-                    ]
-                    technical["eval_date"] = tech_as_of.isoformat()
-    except Exception as exc:
-        logger.warning("criteria_stats distribution enrich failed: %s", exc)
+    # Names per conditions-passed count on each mart's latest eval_date, from Research
+    # (0.157.0). Research lists every count (8..0 / 11..0), zeros included.
+    fund_dist = raw.get("fundamental_distribution")
+    if isinstance(fund_dist, list):
+        fundamental["pass_count_distribution"] = fund_dist
+    if raw.get("fundamental_eval_date"):
+        fundamental["eval_date"] = raw["fundamental_eval_date"]
+    tech_dist = raw.get("technical_distribution")
+    if isinstance(tech_dist, list):
+        technical["pass_count_distribution"] = tech_dist
+    if raw.get("technical_eval_date"):
+        technical["eval_date"] = raw["technical_eval_date"]
 
     return {
         "ok": True,
@@ -903,6 +859,11 @@ def get_ticker_overview(symbol: str, request: Request) -> Dict[str, Any]:
 # 2026-09-30 this file validated against an older vocabulary no mart carries,
 # and the filters answered a hard-coded 0 "awaiting 252+ trading days" while
 # the marts held every symbol in the universe.
+#
+# Research reads the marts (``/analytics/sepa/tier-*``, 0.157.0; TD-49 step 3).
+# The vocabulary stays here only to answer a bad tier or signal id with 400 before
+# calling Research: a Research 4xx reaches this service as a 503 (Research failed).
+# Research's ``signals`` in tier-stats is the authoritative copy.
 _TIER_COLUMNS: Dict[str, tuple] = {
     "momentum": (
         "rsi_above_50",
@@ -940,55 +901,6 @@ _TIER_INDICATOR_IDS: Dict[str, frozenset] = {k: frozenset(v) for k, v in _TIER_C
 _TIER_MAX_SCORE: Dict[str, int] = {k: len(v) for k, v in _TIER_COLUMNS.items()}
 
 
-def _tier_table(tier: str) -> str:
-    return f"dw_stock.mart_sepa_tier_{tier}"
-
-
-def _tier_passed_sql(tier: str) -> str:
-    """Signals passed, as an integer 0..N, from the stored fraction."""
-    return f"round({tier}_score * {_TIER_MAX_SCORE[tier]})::int"
-
-
-def _tier_filter(tier: str, cond_ids: List[str], min_score: int, match: str, limit: int) -> Dict[str, Any]:
-    """Names on the latest eval_date passing the picked signals (all / any) and at least min_score of them."""
-    from bifrost_api.research.analytics_reader import get_conn as _a_conn
-    from psycopg2.extras import RealDictCursor
-
-    table = _tier_table(tier)
-    passed = _tier_passed_sql(tier)
-    where = [f"eval_date = (SELECT max(eval_date) FROM {table})"]
-    if cond_ids:
-        joiner = " OR " if match == "any" else " AND "
-        where.append("(" + joiner.join(f"{c} IS TRUE" for c in cond_ids) + ")")
-    if min_score > 0:
-        where.append(f"{passed} >= %s")
-    sql = (
-        f"SELECT symbol, {passed} AS score, eval_date, count(*) OVER () AS total "
-        f"FROM {table} WHERE {' AND '.join(where)} "
-        f"ORDER BY {tier}_score DESC, symbol ASC LIMIT %s"
-    )
-    params: List[Any] = ([min_score] if min_score > 0 else []) + [limit]
-    with _a_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall() or []
-    total = int(rows[0]["total"]) if rows else 0
-    return {
-        "ok": True,
-        "tier": tier,
-        "include": cond_ids,
-        "match": match,
-        "min_score": min_score,
-        "max_score": _TIER_MAX_SCORE[tier],
-        # The whole match, not the page: a limited list is a floor, never a count.
-        "count": total,
-        "truncated": total > len(rows),
-        "eval_date": str(rows[0]["eval_date"]) if rows else None,
-        "symbols": [{"symbol": r["symbol"], "score": int(r["score"] or 0)} for r in rows],
-        "limit": limit,
-    }
-
-
 def _tier_args(tier: str, include: str, min_score: int, match: str, limit: int):
     raw_ids = [s.strip() for s in (include or "").split(",") if s.strip()]
     valid = _TIER_INDICATOR_IDS[tier]
@@ -1008,46 +920,24 @@ def _tier_filter_response(tier: str, include: str, min_score: int, match: str, l
         raise HTTPException(status_code=400, detail=f"unknown {tier} signal ids: {', '.join(unknown)}")
     if not cond_ids and eff_min == 0:
         return {"ok": True, "tier": tier, "include": [], "count": 0, "symbols": [], "limit": eff_limit}
+    from bifrost_api.research.analytics_reader import fetch_tier_filter
+
     try:
-        return _tier_filter(tier, cond_ids, eff_min, eff_match, eff_limit)
+        return fetch_tier_filter(tier, cond_ids, eff_min, eff_match, eff_limit)
     except Exception as e:
         logger.warning("tier filter %s failed: %s", tier, e)
         raise HTTPException(status_code=503, detail=str(e))
 
 
 def _tier_stats(tier: str) -> Dict[str, Any]:
-    """Per-signal pass counts and the signals-passed histogram for one tier, latest eval_date."""
-    from bifrost_api.research.analytics_reader import get_conn as _a_conn
-    from psycopg2.extras import RealDictCursor
+    """Per-signal pass counts and the signals-passed histogram for one tier, latest eval_date (Research)."""
+    from bifrost_api.research.analytics_reader import fetch_tier_stats
 
-    table = _tier_table(tier)
-    cols = _TIER_COLUMNS[tier]
-    per_signal = ", ".join(f"count(*) FILTER (WHERE {c} IS TRUE) AS {c}" for c in cols)
-    latest = f"eval_date = (SELECT max(eval_date) FROM {table})"
     try:
-        with _a_conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(f"SELECT max(eval_date) AS d, count(*) AS n, {per_signal} FROM {table} WHERE {latest}")
-                head = cur.fetchone() or {}
-                cur.execute(
-                    f"SELECT {_tier_passed_sql(tier)} AS s, count(*) AS c FROM {table} WHERE {latest} GROUP BY 1"
-                )
-                hist_rows = cur.fetchall() or []
+        return fetch_tier_stats(tier)
     except Exception as e:
         logger.warning("tier stats %s failed: %s", tier, e)
         raise HTTPException(status_code=503, detail=str(e))
-    hist = {i: 0 for i in range(_TIER_MAX_SCORE[tier] + 1)}
-    for r in hist_rows:
-        hist[int(r["s"] or 0)] = int(r["c"] or 0)
-    return {
-        "ok": True,
-        "tier": tier,
-        "eval_date": str(head["d"]) if head.get("d") else None,
-        "universe_count": int(head.get("n") or 0),
-        "max_score": _TIER_MAX_SCORE[tier],
-        "conditions": [{"id": c, "pass": int(head.get(c) or 0)} for c in cols],
-        "pass_count_distribution": hist,
-    }
 
 
 @router.get("/research/data/readiness/tier-stats")
@@ -1059,9 +949,6 @@ def get_tier_stats(request: Request, tier: str = "momentum") -> Dict[str, Any]:
     return _tier_stats(tier)
 
 
-_MOMENTUM_GRADES = ("A+", "A", "B", "C", "D")
-
-
 @router.get("/research/data/readiness/momentum-grades")
 def get_momentum_grades(request: Request, grades: str = "", limit: int = 2000) -> Dict[str, Any]:
     """The radar's grades on its latest session: names per grade, and the names in ``grades``.
@@ -1069,56 +956,18 @@ def get_momentum_grades(request: Request, grades: str = "", limit: int = 2000) -
     ``/research/momentum/radar`` resolves its latest session only for one
     symbol; across the universe it returns every session it holds, so a grade
     read there counts names that held it on any day in months. A screen asks
-    about today, so this reads the latest ``trade_date`` only.
+    about today, so Research's ``/research/momentum/grades`` reads the latest
+    ``trade_date`` only (0.157.0; was a direct read here until TD-49 step 3).
+    Research drops grades outside A+..D and clamps ``limit`` to 1..5000.
     """
     _ = request
-    picked = [g.strip().upper() for g in (grades or "").split(",") if g.strip()]
-    picked = [g for g in picked if g in _MOMENTUM_GRADES]
-    try:
-        eff_limit = max(1, min(int(limit), 5000))
-    except Exception:
-        eff_limit = 2000
-    from bifrost_api.research.analytics_reader import get_conn as _a_conn
-    from psycopg2.extras import RealDictCursor
+    from bifrost_api.research.analytics_reader import fetch_momentum_grades
 
-    table = "features.stock_signal_momentum_daily"
-    latest = f"trade_date = (SELECT max(trade_date) FROM {table})"
     try:
-        with _a_conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    f"SELECT max(trade_date) AS d, grade, count(DISTINCT symbol) AS n FROM {table} "
-                    f"WHERE {latest} GROUP BY grade"
-                )
-                count_rows = cur.fetchall() or []
-                names: List[str] = []
-                if picked:
-                    cur.execute(
-                        f"SELECT DISTINCT symbol FROM {table} WHERE {latest} AND grade = ANY(%s) "
-                        "ORDER BY symbol LIMIT %s",
-                        (picked, eff_limit),
-                    )
-                    names = [r["symbol"] for r in (cur.fetchall() or [])]
+        return fetch_momentum_grades(grades, limit)
     except Exception as e:
         logger.warning("momentum grades failed: %s", e)
         raise HTTPException(status_code=503, detail=str(e))
-    counts = {g: 0 for g in _MOMENTUM_GRADES}
-    trade_date = None
-    for r in count_rows:
-        if r.get("grade") in counts:
-            counts[r["grade"]] = int(r["n"] or 0)
-        trade_date = trade_date or (str(r["d"]) if r.get("d") else None)
-    total_picked = sum(counts[g] for g in picked)
-    return {
-        "ok": True,
-        "trade_date": trade_date,
-        "counts": counts,
-        "graded": sum(counts.values()),
-        "grades": picked,
-        "count": total_picked,
-        "truncated": total_picked > len(names) if picked else False,
-        "symbols": names,
-    }
 
 
 @router.get("/research/data/readiness/momentum-filter")

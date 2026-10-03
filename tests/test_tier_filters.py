@@ -1,94 +1,114 @@
-"""Momentum / structure / sentiment filters: the ids are the mart's own columns, counts are whole matches."""
+"""Momentum / structure / sentiment tiers and momentum grades: Research reads the marts (TD-49 step 3).
+
+The routes check the tier and the signal ids (400) before calling Research, pass
+the effective arguments on, and return Research's body as it is — including its
+additive ``signals`` vocabulary. Every symbol and number below is invented.
+"""
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from typing import Any, List
+from typing import Any, Dict, List, Tuple
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 
+from bifrost_api.research import analytics_reader as ar
 from bifrost_api.research.routers import data_readiness as dr
 
 
-class _Cur:
-    def __init__(self, sink: List[Any], results: List[Any]) -> None:
-        self.sink, self.results = sink, results
-
-    def __enter__(self) -> "_Cur":
-        return self
-
-    def __exit__(self, *a: Any) -> None:
-        return None
-
-    def execute(self, sql: str, params: Any = None) -> None:
-        self.sink.append((sql, params))
-
-    def fetchall(self) -> Any:
-        return self.results.pop(0)
-
-    def fetchone(self) -> Any:
-        return self.results.pop(0)
+@pytest.fixture(autouse=True)
+def no_sql(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """No tier or grade route reads Golden Source directly any more."""
+    guard = MagicMock(side_effect=AssertionError("direct SQL must not run"))
+    monkeypatch.setattr(ar, "get_conn", guard)
+    return guard
 
 
-def _fake(monkeypatch: pytest.MonkeyPatch, results: List[Any]) -> List[Any]:
-    sink: List[Any] = []
+def _research(body: Dict[str, Any]) -> Tuple[Any, List[Tuple[str, Dict[str, Any]]]]:
+    calls: List[Tuple[str, Dict[str, Any]]] = []
 
-    class _Conn:
-        def cursor(self, **_kw: Any) -> _Cur:
-            return _Cur(sink, results)
+    def fake(path: str, params: Any = None) -> Dict[str, Any]:
+        calls.append((path, dict(params or {})))
+        return body
 
-    @contextmanager
-    def _get_conn():
-        yield _Conn()
-
-    import bifrost_api.research.analytics_reader as ar
-
-    monkeypatch.setattr(ar, "get_conn", _get_conn)
-    return sink
+    return patch.object(ar, "_proxy_get", side_effect=fake), calls
 
 
-def test_the_vocabulary_is_the_marts_columns() -> None:
+def test_the_sql_builders_are_gone() -> None:
+    for name in ("_tier_table", "_tier_passed_sql", "_tier_filter", "_MOMENTUM_GRADES"):
+        assert not hasattr(dr, name), name
+
+
+def test_the_vocabulary_still_refuses_unknown_ids_before_research(no_sql: MagicMock) -> None:
     assert dr._TIER_MAX_SCORE == {"momentum": 10, "structure": 8, "sentiment": 6}
     assert "bb_squeeze" in dr._TIER_INDICATOR_IDS["structure"]
-    # The old ids no mart carries are refused, not silently dropped.
-    with pytest.raises(HTTPException) as refused:
-        dr.get_tier_filter(None, tier="structure", include="vcp_contraction_3m")  # type: ignore[arg-type]
+    patcher, calls = _research({})
+    with patcher:
+        # The old ids no mart carries are refused, not silently dropped.
+        with pytest.raises(HTTPException) as refused:
+            dr.get_tier_filter(None, tier="structure", include="vcp_contraction_3m")  # type: ignore[arg-type]
+        with pytest.raises(HTTPException) as bad_tier:
+            dr.get_tier_stats(None, tier="options")  # type: ignore[arg-type]
     assert refused.value.status_code == 400 and "vcp_contraction_3m" in refused.value.detail
+    assert bad_tier.value.status_code == 400
+    assert calls == []
 
 
-def test_any_of_two_signals_counts_the_whole_match(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Invented symbols (fixtures are never copied from DEV).
-    rows = [{"symbol": "ZZA", "score": 6, "eval_date": "2031-01-02", "total": 3}]
-    sink = _fake(monkeypatch, [rows])
-    body = dr.get_tier_filter(None, tier="structure", include="bb_squeeze,vol_contracting", match="any", limit=1)  # type: ignore[arg-type]
-    sql, params = sink[0]
-    assert "(bb_squeeze IS TRUE OR vol_contracting IS TRUE)" in sql
-    assert params == [1]
-    assert body["count"] == 3 and body["truncated"] is True and body["symbols"] == [{"symbol": "ZZA", "score": 6}]
+def test_tier_filter_passes_the_effective_arguments(no_sql: MagicMock) -> None:
+    body = {
+        "ok": True, "tier": "structure", "include": ["bb_squeeze", "vol_contracting"], "match": "any",
+        "min_score": 0, "max_score": 8, "count": 3, "truncated": True, "eval_date": "2031-01-02",
+        "symbols": [{"symbol": "ZZA", "score": 6}], "limit": 1,
+    }
+    patcher, calls = _research(body)
+    with patcher:
+        out = dr.get_tier_filter(  # type: ignore[arg-type]
+            None, tier="structure", include="bb_squeeze, vol_contracting", match="any", limit=1
+        )
+    assert calls == [("/analytics/sepa/tier-filter", {
+        "tier": "structure", "include": "bb_squeeze,vol_contracting", "min_score": 0, "match": "any", "limit": 1,
+    })]
+    assert out == body
 
 
-def test_min_score_is_signals_passed(monkeypatch: pytest.MonkeyPatch) -> None:
-    sink = _fake(monkeypatch, [[]])
-    body = dr.get_momentum_filter(None, min_score=8)  # type: ignore[arg-type]
-    sql, params = sink[0]
-    assert "round(momentum_score * 10)::int >= %s" in sql and params == [8, 500]
-    assert body["count"] == 0 and body["max_score"] == 10
+def test_momentum_filter_clamps_before_research(no_sql: MagicMock) -> None:
+    patcher, calls = _research({"ok": True, "count": 0, "symbols": []})
+    with patcher:
+        dr.get_momentum_filter(None, min_score=99, match="bogus", limit=0)  # type: ignore[arg-type]
+    assert calls == [("/analytics/sepa/tier-filter", {
+        "tier": "momentum", "include": "", "min_score": 10, "match": "all", "limit": 1,
+    })]
 
 
-def test_distribution_buckets_every_signal_count(monkeypatch: pytest.MonkeyPatch) -> None:
-    head = {"d": "2031-01-02", "n": 5, **{c: 1 for c in dr._TIER_COLUMNS["momentum"]}}
-    _fake(monkeypatch, [head, [{"s": 0, "c": 2}, {"s": 7, "c": 3}]])
-    body = dr.get_tier_stats(None, tier="momentum")  # type: ignore[arg-type]
-    assert body["universe_count"] == 5
-    hist = body["pass_count_distribution"]
-    assert hist[0] == 2 and hist[7] == 3 and len(hist) == 11
+def test_an_empty_filter_does_not_call_research(no_sql: MagicMock) -> None:
+    patcher, calls = _research({})
+    with patcher:
+        out = dr.get_tier_filter(None, tier="sentiment")  # type: ignore[arg-type]
+    assert calls == [] and out["count"] == 0 and out["symbols"] == []
 
 
-def test_momentum_grades_read_the_latest_session(monkeypatch: pytest.MonkeyPatch) -> None:
-    sink = _fake(monkeypatch, [[{"d": "2031-01-02", "grade": "A", "n": 2}, {"d": "2031-01-02", "grade": "C", "n": 5}], [{"symbol": "ZZA"}, {"symbol": "ZZB"}]])
-    body = dr.get_momentum_grades(None, grades="a,A+,bogus")  # type: ignore[arg-type]
-    assert all("max(trade_date)" in sql for sql, _ in sink)
-    assert body["counts"]["A"] == 2 and body["counts"]["C"] == 5 and body["graded"] == 7
-    assert body["grades"] == ["A", "A+"] and body["count"] == 2 and body["symbols"] == ["ZZA", "ZZB"]
-    assert body["trade_date"] == "2031-01-02"
+def test_tier_stats_returns_researchs_body_with_signals(no_sql: MagicMock) -> None:
+    body = {
+        "ok": True, "tier": "momentum", "eval_date": "2031-01-02", "universe_count": 5, "max_score": 10,
+        "conditions": [{"id": c, "pass": 1} for c in dr._TIER_COLUMNS["momentum"]],
+        "pass_count_distribution": {str(i): (2 if i == 0 else 3 if i == 7 else 0) for i in range(11)},
+        "signals": list(dr._TIER_COLUMNS["momentum"]),
+    }
+    patcher, calls = _research(body)
+    with patcher:
+        out = dr.get_tier_stats(None, tier="momentum")  # type: ignore[arg-type]
+    assert calls == [("/analytics/sepa/tier-stats", {"tier": "momentum"})]
+    assert out == body
+
+
+def test_momentum_grades_pass_through(no_sql: MagicMock) -> None:
+    body = {
+        "ok": True, "trade_date": "2031-01-02", "counts": {"A+": 0, "A": 2, "B": 0, "C": 5, "D": 0},
+        "graded": 7, "grades": ["A", "A+"], "count": 2, "truncated": False, "symbols": ["ZZA", "ZZB"],
+    }
+    patcher, calls = _research(body)
+    with patcher:
+        out = dr.get_momentum_grades(None, grades="a,A+,bogus", limit=50)  # type: ignore[arg-type]
+    assert calls == [("/research/momentum/grades", {"grades": "a,A+,bogus", "limit": 50})]
+    assert out == body
