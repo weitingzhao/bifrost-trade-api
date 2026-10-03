@@ -9,11 +9,14 @@ allocations, plans).
                                       trade_ids, from_ts / to_ts on opened_at)
     GET    /trades/win-rate           per-structure win rate over trades
     GET    /trades/{trade_id}         one trade (404)
-    POST   /trades                    open one: {strategy_opportunity_id, account_id, opened_at, label?, notes?}
-    PATCH  /trades/{trade_id}         label / notes / opened_at / created_at
+    POST   /trades                    open one: {strategy_opportunity_id, account_id, opened_at, label?}
+    PATCH  /trades/{trade_id}         label / opened_at / created_at
     DELETE /trades/{trade_id}         strict delete (409 while fills are attributed or split to it)
     GET    /trade-reviews             every review
     PATCH  /trade-reviews/{trade_id}  upsert one review
+
+A trade's notes live in the Research journal (TD-73): ``notes`` on a trade and ``note`` on a
+review are a 422 since api 0.7.1 (core 0.43.0 no longer has the columns' readers or writers).
 
 Rows carry ``trade_id`` beside ``strategy_instance_id`` (the same value) until R4. The
 old routes under ``/strategies/instances``, ``/strategies/win-rate`` and
@@ -28,19 +31,17 @@ from typing import Any, Dict, List, Optional
 
 from bifrost_core.monitor.reader import strategy_instance as strategy_instance_module
 from bifrost_core.monitor.reader import trade_review as trade_review_module
-from bifrost_core.monitor.schemas.strategies import StrategyInstanceCreateBody
 from bifrost_core.monitor.services.strategy_parsing import (
     parse_opened_at_to_unix,
     parse_strategy_instance_ids_csv,
 )
-from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from bifrost_api.common.envelopes import list_body
 from bifrost_api.common.query_vocab import from_ts_query, to_ts_query, trade_ids_query
 from bifrost_api.common.write_errors import deleted_body, write_target
-from bifrost_api.deprecations import deprecated_fields_sent
 from bifrost_api.strategy.deps import write_config
-from bifrost_api.strategy.patch_bodies import ReviewPatch, TradePatch
+from bifrost_api.strategy.patch_bodies import ReviewPatch, TradeCreate, TradePatch
 from bifrost_api.strategy.routers import reviews as reviews_module
 from bifrost_api.strategy.schemas.responses import TradeList, TradeRow
 
@@ -82,9 +83,7 @@ def get_trade(request: Request, trade_id: int) -> Dict[str, Any]:
     return row
 
 
-def create_trade(request: Request, body: StrategyInstanceCreateBody, response: Optional[Response] = None) -> Dict[str, Any]:
-    if response is not None:  # TD-73: notes live in the Research journal
-        deprecated_fields_sent(request, response, {"notes"} & body.model_fields_set)
+def create_trade(request: Request, body: TradeCreate) -> Dict[str, Any]:
     reader = request.app.state.reader
     write_config(request)  # 503 without Postgres; the reader does the write
     try:
@@ -96,16 +95,13 @@ def create_trade(request: Request, body: StrategyInstanceCreateBody, response: O
         account_id=body.account_id.strip(),
         opened_at=opened_at_val,
         label=body.label.strip() if body.label else None,
-        notes=body.notes.strip() if body.notes else None,
     )
     if sid is None:
         raise HTTPException(status_code=500, detail="Failed to create trade")
     return {"trade_id": sid, "strategy_instance_id": sid}
 
 
-def patch_trade(request: Request, trade_id: int, body: TradePatch, response: Optional[Response] = None) -> Dict[str, Any]:
-    if response is not None:  # TD-73
-        deprecated_fields_sent(request, response, {"notes"} & body.model_fields_set)
+def patch_trade(request: Request, trade_id: int, body: TradePatch) -> Dict[str, Any]:
     config = write_target(request, f"trade {trade_id}")
     return strategy_instance_module.patch_instance(config, trade_id, body.patch_fields())
 
@@ -119,9 +115,7 @@ def trade_win_rate(request: Request, from_ts: Optional[float], to_ts: Optional[f
     return request.app.state.reader.get_strategy_win_rate(since_ts=from_ts, until_ts=to_ts)
 
 
-def patch_trade_review(request: Request, trade_id: int, body: ReviewPatch, response: Optional[Response] = None) -> Dict[str, Any]:
-    if response is not None:  # TD-73
-        deprecated_fields_sent(request, response, {"note"} & body.model_fields_set)
+def patch_trade_review(request: Request, trade_id: int, body: ReviewPatch) -> Dict[str, Any]:
     config = write_target(request, f"the review of trade {trade_id}")
     return trade_review_module.patch_review(config, trade_id, body.patch_fields())
 
@@ -165,17 +159,18 @@ def get_trade_endpoint(request: Request, trade_id: int) -> Dict[str, Any]:
 
 
 @router.post("/trades")
-def create_trade_endpoint(request: Request, response: Response, body: StrategyInstanceCreateBody) -> Dict[str, Any]:
+def create_trade_endpoint(request: Request, body: TradeCreate) -> Dict[str, Any]:
     """Open a trade: strategy_opportunity_id, account_id, opened_at (ISO 8601 or Unix seconds),
-    label?, notes? (deprecated, TD-73). Answers ``{trade_id, strategy_instance_id}`` (the same id)."""
-    return create_trade(request, body, response)
+    label?. Answers ``{trade_id, strategy_instance_id}`` (the same id). ``notes`` is a 422
+    (TD-73): a trade's notes live in the Research journal."""
+    return create_trade(request, body)
 
 
 @router.patch("/trades/{trade_id:int}", response_model=TradeRow, response_model_exclude_unset=True)
-def patch_trade_endpoint(request: Request, response: Response, trade_id: int, body: TradePatch) -> Dict[str, Any]:
-    """Change label / notes / opened_at / created_at; ``null`` clears label or notes.
-    Answers the trade as GET /trades/{trade_id} does. `notes` is deprecated (TD-73)."""
-    return patch_trade(request, trade_id, body, response)
+def patch_trade_endpoint(request: Request, trade_id: int, body: TradePatch) -> Dict[str, Any]:
+    """Change label / opened_at / created_at; ``null`` clears label. Answers the trade as
+    GET /trades/{trade_id} does. ``notes`` is a 422 (TD-73, Research journal)."""
+    return patch_trade(request, trade_id, body)
 
 
 @router.delete("/trades/{trade_id:int}")
@@ -194,8 +189,8 @@ def list_trade_reviews_endpoint(request: Request) -> Dict[str, Any]:
 
 
 @router.patch("/trade-reviews/{trade_id:int}")
-def patch_trade_review_endpoint(request: Request, response: Response, trade_id: int, body: ReviewPatch) -> Dict[str, Any]:
+def patch_trade_review_endpoint(request: Request, trade_id: int, body: ReviewPatch) -> Dict[str, Any]:
     """Write the fields sent; creates the review when the trade has none. ``reviewed: true``
     stamps it (the first stamp stays), ``false`` reopens it. 404 when there is no such trade.
-    `note` is deprecated (TD-73)."""
-    return patch_trade_review(request, trade_id, body, response)
+    ``note`` is a 422 (TD-73): a trade's notes live in the Research journal."""
+    return patch_trade_review(request, trade_id, body)

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Pattern, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Pattern, Tuple
 from urllib.parse import quote
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -179,8 +179,8 @@ def _header(scope: Scope, name: bytes) -> str:
 
 
 def _without_deprecation(message: Message) -> List[Tuple[bytes, bytes]]:
-    """The response headers less any ``Deprecation`` a handler set for a deprecated body
-    field (TD-73): a replaced route that was sent one says so once, not twice."""
+    """The response headers less any ``Deprecation`` a handler set itself (the TD-73 body
+    fields did until api 0.7.1): a replaced route says so once, not twice."""
     return [(k, v) for k, v in message.get("headers", []) if k.lower() != b"deprecation"]
 
 
@@ -244,31 +244,6 @@ class DeprecationMarker:
             await send(message)
 
         await self.app(scope, receive, send_marked)
-
-
-def deprecated_fields_sent(request: Any, response: Any, fields: Iterable[str]) -> None:
-    """Body fields that still work for one release before they go (TD-73).
-
-    When the request sent any of ``fields``: the response carries
-    ``Deprecation: true`` and the hit is logged as "deprecated body fields" with
-    who sent it, like a deprecated route. The field is still applied -- a
-    request that answers ok must have written what it sent. After a release
-    with no hit the field is removed.
-    """
-    sent = sorted(fields)
-    if not sent:
-        return
-    client = getattr(request, "client", None)
-    logger.warning(
-        "deprecated body fields: %s %s %s client=%s forwarded_for=%s user_agent=%s",
-        request.method,
-        request.url.path,
-        ",".join(sent),
-        client.host if client else "-",
-        request.headers.get("x-forwarded-for") or "-",
-        request.headers.get("user-agent") or "-",
-    )
-    response.headers["Deprecation"] = "true"
 
 
 def install_deprecations(app: Any) -> None:

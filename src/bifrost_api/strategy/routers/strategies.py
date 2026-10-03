@@ -3,7 +3,7 @@
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from bifrost_api.common.envelopes import list_body
 from bifrost_api.common.query_vocab import from_ts_query, to_ts_query, trade_ids_query
@@ -15,6 +15,7 @@ from bifrost_api.strategy.patch_bodies import (
     OpportunityPatch,
     StructurePatch,
     TemplatePatch,
+    TradeCreate,
     TradePatch,
 )
 from bifrost_api.strategy.routers import trades as trades_module
@@ -47,7 +48,6 @@ from bifrost_core.monitor.schemas.gate_params import default_gates
 from bifrost_core.monitor.schemas.strategies import (
     AllocationBody,
     OpportunityBody,
-    StrategyInstanceCreateBody,
 )
 from bifrost_core.monitor.services import option_strategy_templates
 
@@ -350,11 +350,9 @@ def get_strategy_instance(request: Request, strategy_instance_id: int) -> Dict[s
 
 
 @router.post("/instances")
-def create_strategy_instance_endpoint(
-    request: Request, response: Response, body: StrategyInstanceCreateBody
-) -> Dict[str, Any]:
-    """Replaced by POST /trades. `notes` is deprecated (TD-73): notes live in the Research journal."""
-    return trades_module.create_trade(request, body, response)
+def create_strategy_instance_endpoint(request: Request, body: TradeCreate) -> Dict[str, Any]:
+    """Replaced by POST /trades. `notes` is a 422 (TD-73): notes live in the Research journal."""
+    return trades_module.create_trade(request, body)
 
 
 @router.get("/instances/{strategy_instance_id}/open-option-legs")
@@ -373,11 +371,9 @@ def delete_strategy_instance_endpoint(request: Request, strategy_instance_id: in
 
 
 @router.patch("/instances/{strategy_instance_id}", response_model=TradeRow, response_model_exclude_unset=True)
-def update_strategy_instance_endpoint(
-    request: Request, response: Response, strategy_instance_id: int, body: TradePatch
-) -> Dict[str, Any]:
-    """Replaced by PATCH /trades/{trade_id}. `notes` is deprecated (TD-73)."""
-    return trades_module.patch_trade(request, strategy_instance_id, body, response)
+def update_strategy_instance_endpoint(request: Request, strategy_instance_id: int, body: TradePatch) -> Dict[str, Any]:
+    """Replaced by PATCH /trades/{trade_id}. `notes` is a 422 (TD-73)."""
+    return trades_module.patch_trade(request, strategy_instance_id, body)
 
 
 @router.get("/allocations", response_model=AllocationList, response_model_exclude_unset=True)

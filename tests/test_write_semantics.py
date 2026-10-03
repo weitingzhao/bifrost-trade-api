@@ -127,7 +127,7 @@ PATCH_CASES: List[Tuple[str, str, Any, str, Any, Dict[str, Any]]] = [
     ("account", "/strategies/plans/7", strategy_plan, "patch_plan", 7,
      {"qty": 2, "rationale": None}),
     ("account", "/strategies/reviews/7", trade_review, "patch_review", 7,
-     {"tags_added": ["early exit"], "note": None}),
+     {"tags_added": ["early exit"], "reviewed": None}),
     ("account", "/position-categories/7", position_categories, "patch_position_category", 7,
      {"name": "Core", "description": None}),
     ("account", "/instrument-classes/ZZFI%7CSTK%7C%7C%7C", instrument_class, "patch_instrument_class", "ZZFI|STK|||",

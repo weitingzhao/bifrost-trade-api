@@ -16,7 +16,10 @@ calls the writer and the outcome becomes:
 
 The body is :func:`bifrost_api.common.envelopes.error_response`'s:
 ``{"detail": reason}``. A request body that does
-not parse (wrong type, unknown key, empty PATCH) is still FastAPI's 422.
+not parse (wrong type, unknown key, empty PATCH) is still FastAPI's 422; so is a
+*retired* field (:class:`RetiredFields`), whose 422 names the field and where its
+data lives now -- a request answered ok must have written what it sent, so a
+retired field is never dropped quietly.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from typing import Any, ClassVar, Dict
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic_core import PydanticCustomError
 
 from bifrost_api.common.envelopes import error_response
 from bifrost_core.monitor.reader.errors import (
@@ -85,7 +89,28 @@ def deleted_body(result: Dict[str, Any]) -> Dict[str, Any]:
     return {**result, "ok": True}
 
 
-class PatchBody(BaseModel):
+class RetiredFields(BaseModel):
+    """A body that refuses fields it used to take: ``RETIRED_FIELDS`` maps each to the reason.
+
+    Sent at all -- a value or ``null`` -- the request is a 422 of type ``retired_field``
+    whose message is that reason, and nothing is written.
+    """
+
+    RETIRED_FIELDS: ClassVar[Dict[str, str]] = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_retired(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            sent = sorted(k for k in cls.RETIRED_FIELDS if k in data)
+            if sent:
+                raise PydanticCustomError(
+                    "retired_field", "{reason}", {"reason": " ".join(cls.RETIRED_FIELDS[k] for k in sent)}
+                )
+        return data
+
+
+class PatchBody(RetiredFields):
     """A PATCH body: only the fields sent change, an explicit null clears.
 
     Unknown fields are refused (422) and so is an empty body: a PATCH that names

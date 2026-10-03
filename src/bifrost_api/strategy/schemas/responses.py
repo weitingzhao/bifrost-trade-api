@@ -176,7 +176,7 @@ class TradeRow(ResponseRow):
     account_id: str
     opened_at: Timestamp
     label: Optional[str]
-    notes: Optional[str]
+    # No notes since api 0.7.1 (TD-73): a trade's notes live in the Research journal.
     created_at: Timestamp
     updated_at: Timestamp
     # Unix seconds of opened_at / created_at (sent whenever those are).

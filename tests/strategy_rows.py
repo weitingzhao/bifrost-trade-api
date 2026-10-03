@@ -126,7 +126,7 @@ GATE_DETAIL_SQL = {
 INSTANCE_LIST_SQL = [
     {
         "strategy_instance_id": 41, "strategy_opportunity_id": 5, "account_id": "U0000001",
-        "opened_at": T0, "label": "ZZQ Apr 40P", "notes": None, "created_at": T0, "updated_at": T1,
+        "opened_at": T0, "label": "ZZQ Apr 40P", "created_at": T0, "updated_at": T1,
         "strategy_opportunity_name": "ZZQ puts", "strategy_structure_id": 9,
         "strategy_structure_name": "Short put 30d", "executions_count": 3,
     },

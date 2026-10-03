@@ -142,10 +142,10 @@ def test_rows_carry_trade_id_and_create_answers_it(stores: Any) -> None:
 
 def test_the_writes_reach_core_with_the_trade_id(stores: Dict[str, List[Any]]) -> None:
     client = _client()
-    client.patch("/trades/41", json={"notes": "x"})
+    client.patch("/trades/41", json={"label": "x"})
     client.delete("/trades/41")
     client.patch("/trade-reviews/41", json={"tags_added_json": ["b"], "tags_added": ["c"]})
-    assert stores["patch"] == [(41, {"notes": "x"})]
+    assert stores["patch"] == [(41, {"label": "x"})]
     assert stores["delete"] == [41]
     # the new name wins and reaches core as the name it takes
     assert stores["review"] == [(41, {"tags_added": ["b"]})]

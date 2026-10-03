@@ -37,7 +37,6 @@ def test_the_instance_list_sends_state_and_closed_on() -> None:
         "account_id": "U0000001",
         "opened_at": "2026-09-01T14:30:00+00:00",
         "label": None,
-        "notes": None,
         "created_at": "2026-09-01T14:30:00+00:00",
         "updated_at": "2026-09-01T14:30:00+00:00",
         "executions_count": 2,

@@ -12,9 +12,10 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, Dict, List, Optional, Union
 
-from pydantic import Field, StrictBool, StrictFloat, StrictInt, StrictStr
+from pydantic import StrictBool, StrictFloat, StrictInt, StrictStr
 
-from bifrost_api.common.write_errors import PatchBody
+from bifrost_api.common.write_errors import PatchBody, RetiredFields
+from bifrost_core.monitor.schemas.strategies import StrategyInstanceCreateBody
 
 # Core reads a timestamp as Unix seconds or ISO 8601 (naive = UTC).
 Timestamp = Union[StrictFloat, StrictStr]
@@ -83,13 +84,17 @@ class GateSetPatch(PatchBody):
     earnings_dates: Optional[List[StrictStr]] = None
 
 
-# TD-73: a trade's notes live in the journal only (Research `journal.note`). These two
-# still write for one release, marked deprecated (OpenAPI, `Deprecation: true`, a log
-# line per hit); then they go, and a later DDL wave drops the columns.
-_JOURNAL_ONLY = (
-    "Deprecated (TD-73): a trade's notes live in the Research journal; this field goes "
-    "in the next release."
-)
+# TD-73: a trade's notes live in the journal only (Research `journal.note`). `notes` on a
+# trade and `note` on a review were deprecated in api 0.7.0 and removed in 0.7.1 (core
+# 0.43.0 stops naming the columns; an Owner db-step drops them). Sending one is a 422 that
+# says where notes go, never an ok that wrote nothing.
+def journal_only(field: str) -> str:
+    return (
+        f"`{field}` was removed in api 0.7.1 (TD-73): a trade's notes live in the Research "
+        "journal (research-api POST /research/journal/notes, with a ref of type 'inst'). "
+        "Nothing was written; send the request without it."
+    )
+
 
 
 # The gate set's old class name (D6-A, naming R1); goes in R4.
@@ -97,16 +102,21 @@ GateSafetyPatch = GateSetPatch
 
 
 class TradePatch(PatchBody):
+    RETIRED_FIELDS: ClassVar[Dict[str, str]] = {"notes": journal_only("notes")}
+
     label: Optional[StrictStr] = None
-    notes: Optional[StrictStr] = Field(
-        default=None, description=_JOURNAL_ONLY, json_schema_extra={"deprecated": True}
-    )
     opened_at: Optional[Timestamp] = None
     created_at: Optional[Timestamp] = None
 
 
 # The trade's old class name (naming R1); goes in R4.
 InstancePatch = TradePatch
+
+
+class TradeCreate(StrategyInstanceCreateBody, RetiredFields):
+    """POST /trades (and /strategies/instances until R4): core's create body, refusing ``notes``."""
+
+    RETIRED_FIELDS: ClassVar[Dict[str, str]] = {"notes": journal_only("notes")}
 
 
 class PlanPatch(PatchBody):
@@ -150,9 +160,7 @@ class ReviewPatch(PatchBody):
     tags_dropped: Optional[List[StrictStr]] = None
     tags_added_json: Optional[List[StrictStr]] = None
     tags_dropped_json: Optional[List[StrictStr]] = None
-    note: Optional[StrictStr] = Field(
-        default=None, description=_JOURNAL_ONLY, json_schema_extra={"deprecated": True}
-    )
     reviewed: Optional[StrictBool] = None
 
     READ_NAMES: ClassVar[Dict[str, str]] = {"tags_added_json": "tags_added", "tags_dropped_json": "tags_dropped"}
+    RETIRED_FIELDS: ClassVar[Dict[str, str]] = {"note": journal_only("note")}
