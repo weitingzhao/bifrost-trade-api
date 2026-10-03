@@ -107,7 +107,7 @@ def create_app(
     # Browser fetch from Vite / another host to this API (e.g. Settings → API Health split probes).
     # Every write needs a role (debt TD-23). Added before CORS so CORS stays the
     # outer layer and a refusal still carries its headers.
-    install_write_guard(app, lambda: merged_config or reader._config)
+    install_write_guard(app, lambda: merged_config or reader.config)
     # Routes no repo calls carry Deprecation: true and log their callers (debt TD-40).
     install_deprecations(app)
     app.add_middleware(
@@ -146,7 +146,7 @@ def create_app(
     app.state.data_lag_threshold_ms = data_lag_threshold_ms
     app.state.status_cfg_for_read = status_cfg_for_read
     # One answer to "which env" for every app (debt TD-52): control_profile, then env, then file name.
-    app.state.bifrost_config_profile = deployment_profile(merged_config or reader._config, resolved_config_path)
+    app.state.bifrost_config_profile = deployment_profile(merged_config or reader.config, resolved_config_path)
     _fe = (merged_config or {}).get("frontend") or {}
 
     def _fe_str(key: str) -> Optional[str]:
@@ -188,7 +188,7 @@ def create_app(
     app.include_router(daemon_router)
     app.include_router(config_router)
     mount_auth_capabilities(
-        app, ["/api/server/auth/capabilities"], lambda: merged_config or reader._config
+        app, ["/api/server/auth/capabilities"], lambda: merged_config or reader.config
     )
     # Phase B: position-categories live on account-service (merged portfolio).
 
@@ -198,7 +198,7 @@ def create_app(
 
         attach_docs_routes(
             app,
-            config=merged_config or reader._config,
+            config=merged_config or reader.config,
             resolved_config_path=resolved_config_path,
         )
     except Exception as exc:
@@ -210,7 +210,7 @@ def create_app(
 
         wire_ops_control_plane(
             app,
-            merged_config or reader._config,
+            merged_config or reader.config,
             resolved_config_path=resolved_config_path,
             register_root_health=False,
         )
@@ -228,7 +228,7 @@ def create_app(
     @app.on_event("startup")
     async def startup_event() -> None:
         """IB 经 Redis Operator；本进程不连接 TWS。"""
-        cfg = merged_config or reader._config
+        cfg = merged_config or reader.config
         app.state.ib_operator_client = IbOperatorClient.from_merged_config(cfg)
         if app.state.ib_operator_client is not None:
             logger.info("Monitor IB Operator client enabled (Redis RPC)")

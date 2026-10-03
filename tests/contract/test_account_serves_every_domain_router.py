@@ -27,8 +27,8 @@ PACKAGES = ("bifrost_api.strategy.routers", "bifrost_api.trading.routers", "bifr
 
 def _served() -> set:
     reader = MagicMock()
-    reader._config = full_server_config()
-    app = create_account_app(reader=reader, control_via_db=None, merged_config=reader._config)
+    reader.config = full_server_config()
+    app = create_account_app(reader=reader, control_via_db=None, merged_config=reader.config)
     return served_routes(app)
 
 

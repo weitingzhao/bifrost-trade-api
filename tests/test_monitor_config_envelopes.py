@@ -19,9 +19,9 @@ PG = {"sink": "postgres"}
 
 def _client(control_via_db: Any = PG) -> TestClient:
     reader = MagicMock()
-    reader._config = operator_server_config()
+    reader.config = operator_server_config()
     reader.get_ib_config.return_value = {}
-    app = create_app(reader=reader, control_via_db=control_via_db, data_lag_threshold_ms=1000, merged_config=reader._config)
+    app = create_app(reader=reader, control_via_db=control_via_db, data_lag_threshold_ms=1000, merged_config=reader.config)
     return TestClient(app, raise_server_exceptions=False)
 
 

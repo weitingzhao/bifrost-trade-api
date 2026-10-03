@@ -20,12 +20,12 @@ from tests.route_listing import route_paths
 
 def _client(control_via_db: Any = None) -> TestClient:
     reader = MagicMock()
-    reader._config = operator_server_config()
+    reader.config = operator_server_config()
     app = create_account_app(
         reader=reader,
         control_via_db=control_via_db,
         status_cfg_for_read=control_via_db,
-        merged_config=reader._config,
+        merged_config=reader.config,
     )
     return TestClient(app, raise_server_exceptions=False)
 
@@ -53,8 +53,8 @@ def test_defaults_is_not_read_as_an_id() -> None:
 
 def test_a_viewer_reads_the_defaults() -> None:
     reader = MagicMock()
-    reader._config = {**operator_server_config(), "ops": {"auth": {"default_role": "viewer"}}}
-    app = create_account_app(reader=reader, control_via_db=None, merged_config=reader._config)
+    reader.config = {**operator_server_config(), "ops": {"auth": {"default_role": "viewer"}}}
+    app = create_account_app(reader=reader, control_via_db=None, merged_config=reader.config)
     assert TestClient(app).get("/strategies/gate-safety/defaults").status_code == 200
 
 

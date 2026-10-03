@@ -27,12 +27,12 @@ ACC = "U0000001"
 
 def _client(reader: Optional[MagicMock] = None, control_via_db: Any = PG, gateway: Any = None) -> TestClient:
     reader = reader or MagicMock()
-    reader._config = operator_server_config()
+    reader.config = operator_server_config()
     app = create_account_app(
         reader=reader,
         control_via_db=control_via_db,
         status_cfg_for_read=control_via_db,
-        merged_config=reader._config,
+        merged_config=reader.config,
     )
     app.state.ib_operator_client = gateway
     return TestClient(app, raise_server_exceptions=False)

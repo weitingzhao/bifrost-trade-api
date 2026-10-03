@@ -27,8 +27,8 @@ def _client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     monkeypatch.setattr(ws, "conn_from_config", no_db)
     reader = MagicMock()
-    reader._config = operator_server_config()
-    app = create_account_app(reader=reader, control_via_db=PG, status_cfg_for_read=PG, merged_config=reader._config)
+    reader.config = operator_server_config()
+    app = create_account_app(reader=reader, control_via_db=PG, status_cfg_for_read=PG, merged_config=reader.config)
     return TestClient(app, raise_server_exceptions=False)
 
 

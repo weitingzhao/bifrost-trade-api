@@ -357,7 +357,7 @@ def get_status(request: Request) -> Dict[str, Any]:
             from bifrost_core.ib_operator.client import build_monitor_ib_status
 
             gw_status = build_monitor_ib_status(
-                reader._config, ib_config if isinstance(ib_config, dict) else None
+                reader.config, ib_config if isinstance(ib_config, dict) else None
             )
             if gw_status is not None:
                 monitor_ib_status = gw_status
@@ -407,7 +407,7 @@ def get_status(request: Request) -> Dict[str, Any]:
                 from bifrost_core.monitor.redis_url import redis_url_from_config
                 import redis as redis_mod
 
-                _quotes_url = redis_url_from_config(reader._config)
+                _quotes_url = redis_url_from_config(reader.config)
                 if _quotes_url:
                     _qr = redis_mod.from_url(
                         _quotes_url,
@@ -439,12 +439,12 @@ def get_status(request: Request) -> Dict[str, Any]:
             from bifrost_core.monitor.redis_url import ib_redis_url_from_config, redis_url_from_config
             import redis as redis_mod
 
-            _ib_eff_status = get_effective_ib_config(reader._config)
+            _ib_eff_status = get_effective_ib_config(reader.config)
             _probe_stale_mult = float(_ib_eff_status.get("ib_probe_stale_multiplier") or 2.5)
             _status_now = time.time()
 
-            _rurl = redis_url_from_config(reader._config)
-            _ib_rurl = ib_redis_url_from_config(reader._config)
+            _rurl = redis_url_from_config(reader.config)
+            _ib_rurl = ib_redis_url_from_config(reader.config)
             if _rurl:
                 _r = redis_mod.from_url(
                     _rurl,
@@ -553,7 +553,7 @@ def get_status(request: Request) -> Dict[str, Any]:
 
                 _live = derive_daemon_ib_heartbeat_from_redis(
                     _ib_r,
-                    get_effective_ib_config(reader._config),
+                    get_effective_ib_config(reader.config),
                     now=time.time(),
                 )
                 if apply_platform_gateway_ib_heartbeat_overlay(daemon_heartbeat, _live):

@@ -500,7 +500,7 @@ async def post_executions_fetch(
     """
     app = request.app
     reader = app.state.reader
-    cfg = reader._config
+    cfg = reader.config
     control_via_db = app.state.control_via_db
     if not control_via_db:
         return error_response(503, PG_REQUIRED_FOR_EXECUTIONS)
@@ -538,7 +538,7 @@ async def post_executions_fetch(
     from bifrost_core.config.startup import get_effective_ib_config
 
     try:
-        ibc = get_effective_ib_config(reader._config)
+        ibc = get_effective_ib_config(reader.config)
         if (ibc.get("ib2_host") or "").strip():
             env2 = await gw.request_async(
                 "fetch_executions",

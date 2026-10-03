@@ -35,7 +35,7 @@ def create_research_app(
     )
     # Every write needs a role (debt TD-23). Added before CORS so CORS stays the
     # outer layer and a refusal still carries its headers.
-    install_write_guard(app, lambda: merged_config or reader._config)
+    install_write_guard(app, lambda: merged_config or reader.config)
     # Routes no repo calls carry Deprecation: true and log their callers (debt TD-40).
     install_deprecations(app)
     app.add_middleware(
@@ -52,14 +52,14 @@ def create_research_app(
     app.state.monitor_enabled = True
     app.state.ib_operator_client = None
     # One answer to "which env" for every app (debt TD-52): control_profile, then env, then file name.
-    app.state.bifrost_config_profile = deployment_profile(merged_config or reader._config, resolved_config_path)
+    app.state.bifrost_config_profile = deployment_profile(merged_config or reader.config, resolved_config_path)
 
-    _cfg_holder = merged_config or reader._config
+    _cfg_holder = merged_config or reader.config
     _raw_server = _cfg_holder.get("server")
     if not isinstance(_raw_server, dict):
         raise ValueError("create_research_app requires config['server'] from read_config() merged YAML.")
     _cfg_holder["server"] = normalize_server_config(dict(_raw_server))
-    reader._config["server"] = _cfg_holder["server"]
+    reader.config["server"] = _cfg_holder["server"]
     _scfg = _cfg_holder["server"]
     app.state.bifrost_research_port = int(_scfg["research_port"])
 
@@ -91,13 +91,13 @@ def create_research_app(
     def research_health() -> Dict[str, Any]:
         return _health_payload()
 
-    mount_auth_capabilities(app, ["/auth/capabilities"], lambda: merged_config or reader._config)
+    mount_auth_capabilities(app, ["/auth/capabilities"], lambda: merged_config or reader.config)
 
     @app.on_event("startup")
     async def startup_event() -> None:
         from bifrost_core.ib_operator.client import IbOperatorClient
 
-        cfg = merged_config or reader._config
+        cfg = merged_config or reader.config
         app.state.ib_operator_client = IbOperatorClient.from_merged_config(cfg)
 
     @app.on_event("shutdown")

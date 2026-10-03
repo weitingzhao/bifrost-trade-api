@@ -20,13 +20,13 @@ from tests.contract.helpers import full_server_config
 
 def _daemon_heartbeat(age_s: float, interval: Optional[float]) -> Dict[str, Any]:
     reader = MagicMock()
-    reader._config = full_server_config()
+    reader.config = full_server_config()
     reader.get_daemon_heartbeat.return_value = {
         "last_ts": time.time() - age_s,
         "heartbeat_interval_sec": interval,
         "ib_connected": True,
     }
-    app = create_app(reader=reader, control_via_db=None, data_lag_threshold_ms=5000, merged_config=reader._config)
+    app = create_app(reader=reader, control_via_db=None, data_lag_threshold_ms=5000, merged_config=reader.config)
     seen: Dict[str, Any] = {}
 
     def capture(**kw: Any) -> Dict[str, Any]:

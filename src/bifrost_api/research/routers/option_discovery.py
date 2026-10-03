@@ -142,7 +142,7 @@ def get_option_snapshots_pg(
     try:
         import redis
 
-        rurl = redis_url_from_config(reader._config if reader else {})
+        rurl = redis_url_from_config(reader.config if reader else {})
         if rurl:
             rc = redis.from_url(rurl, decode_responses=True)
             cached = rc.get(cache_key)
@@ -222,7 +222,7 @@ def get_option_snapshots_pg(
     try:
         import redis
 
-        rurl = redis_url_from_config(reader._config if reader else {})
+        rurl = redis_url_from_config(reader.config if reader else {})
         if rurl:
             rc = redis.from_url(rurl, decode_responses=True)
             rc.setex(cache_key, SNAPSHOT_CACHE_TTL_SEC, json.dumps(out, default=str))
