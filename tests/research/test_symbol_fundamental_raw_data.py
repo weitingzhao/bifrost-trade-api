@@ -15,6 +15,7 @@ from datetime import date
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
@@ -211,20 +212,20 @@ def test_metrics_failure_leaves_the_rows(monkeypatch: pytest.MonkeyPatch) -> Non
     assert out["metrics"] == {}
 
 
-def test_plugin_failure_keeps_the_shape(monkeypatch: pytest.MonkeyPatch, eval_row: None) -> None:
+def test_plugin_failure_is_503(monkeypatch: pytest.MonkeyPatch, eval_row: None) -> None:
     def boom(*_a: Any, **_kw: Any) -> None:
         raise OSError("plugin unreachable")
 
     monkeypatch.setattr(market_data_client, "fetch_sepa_financials", boom)
-    out = data_readiness.get_symbol_fundamental_raw_data(None, symbol=SYM)  # type: ignore[arg-type]
-    assert out["ok"] is False
-    assert "plugin unreachable" in out["error"]
-    assert out["quarterly"] == [] and out["annual"] == [] and out["metrics"] == {}
+    with pytest.raises(HTTPException) as failed:
+        data_readiness.get_symbol_fundamental_raw_data(None, symbol=SYM)  # type: ignore[arg-type]
+    assert failed.value.status_code == 503 and "plugin unreachable" in failed.value.detail
 
 
-def test_missing_symbol_keeps_the_shape() -> None:
-    out = data_readiness.get_symbol_fundamental_raw_data(None, symbol="  ")  # type: ignore[arg-type]
-    assert out == {"ok": False, "error": "symbol is required", "quarterly": [], "annual": [], "metrics": {}}
+def test_missing_symbol_is_400() -> None:
+    with pytest.raises(HTTPException) as refused:
+        data_readiness.get_symbol_fundamental_raw_data(None, symbol="  ")  # type: ignore[arg-type]
+    assert (refused.value.status_code, refused.value.detail) == (400, "symbol is required")
 
 
 def test_no_rows_is_empty_not_an_error(monkeypatch: pytest.MonkeyPatch, eval_row: None) -> None:

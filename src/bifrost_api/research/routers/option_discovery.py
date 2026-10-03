@@ -6,13 +6,11 @@ import math
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Body, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from bifrost_api.research.deps import db_config
 from bifrost_api.research.iv_atm import (
-    atm_iv_from_expiry_items,
-    build_exp_iv_map,
     parse_contract_key,
     strikes_around_spot,
 )
@@ -24,16 +22,6 @@ router = APIRouter(tags=["research"])
 SNAPSHOT_CACHE_TTL_SEC = 120
 
 
-def _option_expirations_cache_response(
-    body: Dict[str, Any], extra_headers: Optional[Dict[str, str]] = None
-) -> JSONResponse:
-    """Slow-changing expirations list: allow browser / SWR to cache 5 minutes."""
-    headers: Dict[str, str] = {"Cache-Control": "max-age=300"}
-    if extra_headers:
-        headers.update(extra_headers)
-    return JSONResponse(content=body, headers=headers)
-
-MAX_OPTION_SNAPSHOT_CONTRACTS = 20
 MAX_OPTION_SNAPSHOT_CONTRACTS_EXTENDED = 60  # when frontend sends many strikes (e.g. 30)
 
 
@@ -94,230 +82,6 @@ def _filter_option_strikes(strikes_raw: List[float], last_price: Optional[float]
     return sorted(set(strikes))
 
 
-def _expiration_cache_is_fresh(max_updated_at: Optional[Any], ttl_sec: int) -> bool:
-    if max_updated_at is None or ttl_sec <= 0:
-        return False
-    now = datetime.now(timezone.utc)
-    mu = max_updated_at
-    if hasattr(mu, "tzinfo") and getattr(mu, "tzinfo", None) is None:
-        mu = mu.replace(tzinfo=timezone.utc)
-    else:
-        mu = mu.astimezone(timezone.utc)
-    return (now - mu).total_seconds() <= float(ttl_sec)
-
-
-def _ttl_sec_expiration_cache(config: dict) -> int:
-    from bifrost_api.research.polygon_http import get_expiration_cache_settings
-    from bifrost_api.research.market_pg import is_us_equity_regular_session_et
-
-    s = get_expiration_cache_settings(config)
-    return s["ttl_trading_sec"] if is_us_equity_regular_session_et() else s["ttl_off_hours_sec"]
-
-
-async def _option_expirations_ib(request: Request, symbol: str) -> Dict[str, Any]:
-    """IB reqSecDefOptParams; same shape as legacy /research/option-expirations."""
-    gw = getattr(request.app.state, "ib_operator_client", None)
-    if gw is None:
-        return {
-            "symbol": symbol,
-            "expirations": [],
-            "strikes": [],
-            "error": "Market data client not available",
-        }
-    if not getattr(request.app.state, "monitor_enabled", True):
-        return {
-            "symbol": symbol,
-            "expirations": [],
-            "strikes": [],
-            "error": "Monitor IB client disabled",
-        }
-
-    env = await gw.request_async(
-        "fetch_option_expirations",
-        {"symbol": symbol},
-        caller="research_option_expirations",
-    )
-    if not env.get("ok"):
-        return {
-            "symbol": symbol,
-            "expirations": [],
-            "strikes": [],
-            "error": str(env.get("error") or "IB gateway error"),
-        }
-
-    last_price: Optional[float] = None
-    reader = getattr(request.app.state, "reader", None)
-    if reader and hasattr(reader, "get_stock_day_fallback_price"):
-        fallback = reader.get_stock_day_fallback_price(symbol)
-        if fallback and fallback[0] is not None and fallback[0] > 0:
-            last_price = float(fallback[0])
-
-    result = env.get("data") or {}
-    expirations: List[str] = result.get("expirations") or []
-    strikes_raw: List[float] = result.get("strikes") or []
-    strikes = _filter_option_strikes(strikes_raw, last_price)
-    error = result.get("error")
-    out: Dict[str, Any] = {"symbol": symbol, "expirations": expirations, "strikes": strikes}
-    if last_price is not None:
-        out["last_price"] = last_price
-    if error:
-        out["error"] = error
-    return out
-
-
-@router.get("/research/option-expirations")
-async def get_option_expirations(
-    request: Request,
-    symbol: str = Query(..., description="Underlying symbol (e.g. NVDA)"),
-    provider: str = Query(
-        "auto",
-        description="massive: Polygon/Plugin REST only (legacy provider id); ib: IB only; "
-        "auto: Polygon if key + data, else IB",
-    ),
-    debug: bool = Query(
-        False,
-        description="If true and provider uses Polygon REST, include redacted request URLs, "
-        "per-page JSON responses, and a sample of contract objects (no DB writes).",
-    ),
-    expiration: Optional[str] = Query(
-        None,
-        description="When set with provider=massive (Polygon), restrict contracts to this single "
-        "expiration (YYYY-MM-DD or YYYYMMDD). Reduces pagination and returns strikes for that "
-        "expiry only. Ignored when provider=ib.",
-    ),
-) -> Any:
-    """R-OD1: Expirations and strikes from IB and/or Polygon REST (PostgreSQL cache first)."""
-    from bifrost_api.research.polygon_http import get_expiration_cache_settings, get_polygon_settings
-    from bifrost_api.research.market_pg import (
-        get_option_expiration_cache_snapshot,
-        get_option_expirations_from_contracts_db,
-        get_strikes_for_expiry_from_contracts_db,
-    )
-
-    symbol = (symbol or "").strip()
-    if not symbol:
-        return {"symbol": "", "expirations": [], "strikes": [], "error": "symbol is required"}
-
-    prov = (provider or "auto").strip().lower()
-    if prov not in ("auto", "ib", "massive"):
-        prov = "auto"
-
-    reader = getattr(request.app.state, "reader", None)
-    config = reader._config if reader else {}
-    last_price: Optional[float] = None
-    if reader and hasattr(reader, "get_stock_day_fallback_price"):
-        fallback = reader.get_stock_day_fallback_price(symbol)
-        if fallback and fallback[0] is not None and fallback[0] > 0:
-            last_price = float(fallback[0])
-
-    if prov == "ib":
-        out = await _option_expirations_ib(request, symbol)
-        out["provider"] = "ib"
-        return _option_expirations_cache_response(out)
-
-    db = db_config(request)
-    ms = get_polygon_settings(config)
-    ecfg = get_expiration_cache_settings(config)
-    ttl_sec = _ttl_sec_expiration_cache(config)
-
-    async def _massive_db_first_flow() -> JSONResponse:
-        """PostgreSQL cache / contracts first; IB fallback when DB empty.
-
-        P8: market.option_contract (plugin) can satisfy Discovery without a Trade-side
-        Polygon API key. REST refresh retired — DB-only or IB.
-        """
-        exp_q = (expiration or "").strip()
-
-        if exp_q:
-            if db:
-                strikes_db = get_strikes_for_expiry_from_contracts_db(db, symbol, exp_q)
-                if strikes_db:
-                    strikes_f = _filter_option_strikes(strikes_db, last_price)
-                    exp_norm = _norm_expiry_key(exp_q)
-                    body: Dict[str, Any] = {
-                        "symbol": symbol,
-                        "expirations": [exp_norm] if exp_norm else [],
-                        "strikes": strikes_f,
-                        "provider": "massive",
-                        "expiration_backend": "contracts",
-                    }
-                    if last_price is not None:
-                        body["last_price"] = last_price
-                    return _option_expirations_cache_response(body, {"X-Expiration-Cache": "hit"})
-            return JSONResponse(
-                content={
-                    "symbol": symbol,
-                    "expirations": [],
-                    "strikes": [],
-                    "error": "plugin_ingest_pending",
-                    "provider": "massive",
-                }
-            )
-
-        # Full expiration list
-        if db and ecfg["enabled"]:
-            snap = get_option_expiration_cache_snapshot(db, symbol)
-            if snap:
-                exps, max_u = snap
-                if exps:
-                    fresh = _expiration_cache_is_fresh(max_u, ttl_sec)
-                    body_f = {
-                        "symbol": symbol,
-                        "expirations": exps,
-                        "strikes": [],
-                        "provider": "massive",
-                        "expiration_backend": "cache" if fresh else "cache_stale",
-                    }
-                    if last_price is not None:
-                        body_f["last_price"] = last_price
-                    header = "fresh" if fresh else "stale"
-                    return _option_expirations_cache_response(body_f, {"X-Expiration-Cache": header})
-
-        if db:
-            ex_contracts = get_option_expirations_from_contracts_db(db, symbol)
-            if ex_contracts:
-                body_c = {
-                    "symbol": symbol,
-                    "expirations": ex_contracts,
-                    "strikes": [],
-                    "provider": "massive",
-                    "expiration_backend": "contracts",
-                }
-                if last_price is not None:
-                    body_c["last_price"] = last_price
-                return _option_expirations_cache_response(body_c, {"X-Expiration-Cache": "hit"})
-
-        return JSONResponse(
-            content={
-                "symbol": symbol,
-                "expirations": [],
-                "strikes": [],
-                "error": "plugin_ingest_pending",
-                "provider": "massive",
-            }
-        )
-
-    if prov == "massive":
-        return await _massive_db_first_flow()
-
-    # auto: Polygon-first (DB + REST) when configured and data present, else IB
-    if ms["api_key"]:
-        resp = await _massive_db_first_flow()
-        try:
-            payload = json.loads(resp.body.decode("utf-8"))
-        except Exception:
-            payload = {}
-        err = payload.get("error") if isinstance(payload, dict) else None
-        exps = (payload.get("expirations") or []) if isinstance(payload, dict) else []
-        strikes_l = (payload.get("strikes") or []) if isinstance(payload, dict) else []
-        if not err and (exps or strikes_l):
-            return resp
-
-    ib_out = await _option_expirations_ib(request, symbol)
-    ib_out["provider"] = "ib"
-    return _option_expirations_cache_response(ib_out)
-
-
 @router.get("/research/option-snapshots", response_model=None)
 def get_option_snapshots_pg(
     request: Request,
@@ -335,12 +99,12 @@ def get_option_snapshots_pg(
 
     db = db_config(request)
     if not db:
-        return {"symbol": symbol, "expiration": expiration, "rows": [], "error": "PostgreSQL not configured"}
+        raise HTTPException(status_code=503, detail="PostgreSQL not configured")
 
     sym = (symbol or "").strip().upper()
     exp = (expiration or "").strip()
     if not sym or not exp:
-        return {"symbol": sym, "expiration": exp, "rows": [], "error": "symbol and expiration are required"}
+        raise HTTPException(status_code=400, detail="symbol and expiration are required")
 
     src = (source or "massive").strip().lower()
     if src not in ("massive", "ib"):
@@ -356,13 +120,10 @@ def get_option_snapshots_pg(
     if not strikes_list and last_price:
         strikes_list = strikes_around_spot(last_price)
     if not strikes_list:
-        return {
-            "symbol": sym,
-            "expiration": exp,
-            "rows": [],
-            "error": "No strikes to query; provide strikes= or ensure daily last price exists.",
-            "source": src,
-        }
+        raise HTTPException(
+            status_code=404,
+            detail="No strikes to query; provide strikes= or ensure daily last price exists.",
+        )
 
     max_half = max(1, MAX_OPTION_SNAPSHOT_CONTRACTS_EXTENDED // 2)
     if len(strikes_list) > max_half:
@@ -491,12 +252,12 @@ def get_option_contract_liquidity_summary(
 
     db = db_config(request)
     if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
+        raise HTTPException(status_code=503, detail="PostgreSQL not configured")
     sym = (symbol or "").strip().upper()
     exp_norm = _norm_expiry_key((expiration or "").strip())
     r = (right or "").strip().upper()
     if not sym or not exp_norm or r not in ("C", "P"):
-        return {"ok": False, "error": "symbol, expiration, strike, and right (C/P) are required"}
+        raise HTTPException(status_code=400, detail="symbol, expiration, strike, and right (C/P) are required")
     src = (source or "massive").strip().lower()
     if src not in ("massive", "ib"):
         src = "massive"
@@ -608,12 +369,12 @@ def get_option_contract_relative_value(
 
     db = db_config(request)
     if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
+        raise HTTPException(status_code=503, detail="PostgreSQL not configured")
     sym = (symbol or "").strip().upper()
     exp_norm = _norm_expiry_key((expiration or "").strip())
     r = (right or "").strip().upper()
     if not sym or not exp_norm or r not in ("C", "P"):
-        return {"ok": False, "error": "symbol, expiration, strike, and right (C/P) are required"}
+        raise HTTPException(status_code=400, detail="symbol, expiration, strike, and right (C/P) are required")
     src = (source or "massive").strip().lower()
     if src not in ("massive", "ib"):
         src = "massive"
@@ -686,232 +447,3 @@ def get_option_contract_relative_value(
     }
 
 
-@router.get("/research/option-oi")
-def get_research_option_oi(
-    request: Request,
-    symbol: str = Query(...),
-    expiry: Optional[str] = Query(None),
-    date_from: Optional[str] = Query(None, description="YYYY-MM-DD"),
-    date_to: Optional[str] = Query(None, description="YYYY-MM-DD"),
-    limit: int = Query(100, ge=1, le=500),
-) -> Dict[str, Any]:
-    from bifrost_api.research.market_pg import get_option_open_interest_daily
-
-    db = db_config(request)
-    if not db:
-        return {"rows": [], "error": "PostgreSQL not configured"}
-    rows = get_option_open_interest_daily(
-        db,
-        symbol,
-        expiry=expiry,
-        limit=limit,
-        date_from=date_from,
-        date_to=date_to,
-    )
-    return {"rows": rows}
-
-
-@router.get("/research/option-trades")
-def get_research_option_trades(
-    request: Request,
-    symbol: str = Query(...),
-    limit: int = Query(100, ge=1, le=500),
-) -> Any:
-    from bifrost_api.research.polygon_http import get_polygon_settings
-    from bifrost_api.research.market_pg import get_option_trades
-
-    reader = getattr(request.app.state, "reader", None)
-    cfg = reader._config if reader else {}
-    ms = get_polygon_settings(cfg)
-    if not ms["trades_enabled"]:
-        return JSONResponse(
-            status_code=403,
-            content={
-                "ok": False,
-                "message": "Option trades API is disabled for this configuration.",
-                "trades": [],
-            },
-        )
-
-    db = db_config(request)
-    if not db:
-        return {"trades": [], "error": "PostgreSQL not configured"}
-    rows = get_option_trades(db, symbol, limit=limit)
-    return {"ok": True, "trades": rows}
-
-
-@router.post("/research/option-snapshot")
-async def post_option_snapshot(
-    request: Request,
-    body: Dict[str, Any] = Body(..., description="symbol, expiration, optional strikes"),
-) -> Dict[str, Any]:
-    """OD.3: Fetch option quotes (bid/ask/last/mid) for symbol+expiration with pacing; returns rows + optional underlying_price."""
-    symbol = (body.get("symbol") or "").strip()
-    expiration = (body.get("expiration") or "").strip()
-    if not symbol or not expiration:
-        return {
-            "symbol": symbol,
-            "expiration": expiration,
-            "rows": [],
-            "error": "symbol and expiration are required",
-        }
-
-    gw = getattr(request.app.state, "ib_operator_client", None)
-    if gw is None:
-        return {
-            "symbol": symbol,
-            "expiration": expiration,
-            "rows": [],
-            "error": "Market data client not available",
-        }
-    if not getattr(request.app.state, "monitor_enabled", True):
-        return {
-            "symbol": symbol,
-            "expiration": expiration,
-            "rows": [],
-            "error": "Monitor IB client disabled",
-        }
-
-    strikes_raw = body.get("strikes")
-    if isinstance(strikes_raw, list):
-        strikes = [float(s) for s in strikes_raw if isinstance(s, (int, float)) and (isinstance(s, bool) is False)]
-    else:
-        strikes = []
-    spot_from_stock_day: Optional[float] = None  # used for strike list and response underlying_price when from stock_day
-    if not strikes:
-        reader = getattr(request.app.state, "reader", None)
-        if reader and hasattr(reader, "get_stock_day_fallback_price"):
-            fallback = reader.get_stock_day_fallback_price(symbol)
-            if fallback and fallback[0] is not None and fallback[0] > 0:
-                spot_from_stock_day = float(fallback[0])
-                strikes = strikes_around_spot(spot_from_stock_day)
-        if not strikes:
-            env_e = await gw.request_async(
-                "fetch_option_expirations",
-                {"symbol": symbol},
-                caller="research_option_snapshot",
-            )
-            if env_e.get("ok"):
-                result = env_e.get("data") or {}
-                strikes = result.get("strikes") or []
-    # When frontend sends strikes, allow up to 30 strikes (60 contracts); else cap at 10
-    if strikes:
-        max_contracts = min(MAX_OPTION_SNAPSHOT_CONTRACTS_EXTENDED, max(MAX_OPTION_SNAPSHOT_CONTRACTS, len(strikes) * 2))
-        strikes = strikes[: max_contracts // 2]
-    else:
-        max_contracts = MAX_OPTION_SNAPSHOT_CONTRACTS
-
-    out: Dict[str, Any] = {"symbol": symbol, "expiration": expiration, "rows": []}
-    if spot_from_stock_day is not None:
-        out["underlying_price"] = spot_from_stock_day
-    env_s = await gw.request_async(
-        "fetch_option_snapshot",
-        {
-            "symbol": symbol,
-            "expiration": expiration,
-            "strikes": strikes,
-            "max_contracts": max_contracts,
-            "pacing_sec": 0.35,
-        },
-        caller="research_option_snapshot",
-    )
-    if not env_s.get("ok"):
-        out["error"] = str(env_s.get("error") or "IB gateway error")
-        return out
-    snap = env_s.get("data") or {}
-    out["rows"] = list(snap.get("rows") or [])
-    up = snap.get("underlying_price")
-    if up is not None:
-        out["underlying_price"] = up
-    return out
-
-
-@router.get("/research/iv-term-structure", response_model=None)
-def get_iv_term_structure(
-    request: Request,
-    symbol: str = Query(..., description="Underlying symbol"),
-    expirations: str = Query(
-        ...,
-        description="Comma-separated expiration dates (YYYYMMDD or YYYY-MM-DD), max 12",
-    ),
-    source: str = Query("massive", description="Snapshot source: massive | ib"),
-) -> Dict[str, Any]:
-    """ATM IV for multiple expirations — powers the IV term structure chart."""
-    from datetime import date, datetime
-
-    from bifrost_api.research.polygon_http import contract_key_from_parts
-    from bifrost_api.research.market_pg import get_option_snapshots_latest
-
-    db = db_config(request)
-    if not db:
-        return {"ok": False, "symbol": symbol, "points": [], "error": "PostgreSQL not configured"}
-
-    sym = (symbol or "").strip().upper()
-    if not sym:
-        return {"ok": False, "symbol": sym, "points": [], "error": "symbol is required"}
-
-    src = (source or "massive").strip().lower()
-    if src not in ("massive", "ib"):
-        src = "massive"
-
-    exp_list: List[str] = []
-    for raw in (expirations or "").split(","):
-        e = _norm_expiry_key(raw)
-        if len(e) == 8 and e.isdigit():
-            exp_list.append(e)
-    exp_list = exp_list[:12]
-    if len(exp_list) < 2:
-        return {"ok": False, "symbol": sym, "points": [], "error": "Need at least 2 valid expirations"}
-
-    reader = getattr(request.app.state, "reader", None)
-    last_price: Optional[float] = None
-    if reader and hasattr(reader, "get_stock_day_fallback_price"):
-        fallback = reader.get_stock_day_fallback_price(sym)
-        if fallback and fallback[0] is not None and fallback[0] > 0:
-            last_price = float(fallback[0])
-    if not last_price:
-        return {"ok": False, "symbol": sym, "points": [], "error": "No underlying price available for ATM strike selection"}
-
-    atm_strikes = strikes_around_spot(last_price, count=2)
-    if not atm_strikes:
-        return {"ok": False, "symbol": sym, "points": [], "error": "Cannot compute ATM strikes"}
-
-    all_keys: List[str] = []
-    key_exp_map: Dict[str, str] = {}
-    for exp in exp_list:
-        for st in atm_strikes:
-            for r in ("C", "P"):
-                k = contract_key_from_parts(sym, exp, float(st), r)
-                all_keys.append(k)
-                key_exp_map[k] = exp
-
-    rows = get_option_snapshots_latest(db, all_keys, source=src)
-    exp_iv = build_exp_iv_map(rows, key_exp_map, last_price)
-
-    today = date.today()
-    points: List[Dict[str, Any]] = []
-    for exp in exp_list:
-        items = exp_iv.get(exp, [])
-        atm_iv, best_call, best_put, best_strike = atm_iv_from_expiry_items(items)
-        if atm_iv is None:
-            continue
-
-        try:
-            exp_date = datetime.strptime(exp, "%Y%m%d").date()
-        except ValueError:
-            continue
-        dte = (exp_date - today).days
-        if dte < 0:
-            continue
-
-        points.append({
-            "expiration": exp,
-            "dte_days": dte,
-            "strike": best_strike,
-            "iv_call": best_call,
-            "iv_put": best_put,
-            "atm_iv": atm_iv,
-        })
-
-    points.sort(key=lambda p: p["dte_days"])
-    return {"ok": True, "symbol": sym, "underlying_price": last_price, "points": points}

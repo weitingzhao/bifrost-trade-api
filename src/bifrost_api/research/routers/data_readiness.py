@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from bifrost_api.research.deps import db_config
 
@@ -26,10 +26,14 @@ def get_sepa_readiness_summary(request: Request) -> Dict[str, Any]:
     _ = request
     try:
         out = _plugin_get("/readiness/summary", timeout=90)
-        return out if isinstance(out, dict) else {"ok": False, "error": "invalid plugin response"}
     except Exception as e:
         logger.warning("plugin readiness summary failed: %s", e)
-        return {"ok": False, "error": f"Market Data Plugin summary unavailable: {e}"}
+        raise HTTPException(status_code=503, detail=f"Market Data Plugin summary unavailable: {e}")
+    if not isinstance(out, dict):
+        raise HTTPException(status_code=503, detail="Market Data Plugin summary: invalid response")
+    if out.get("ok") is False:
+        raise HTTPException(status_code=503, detail=f"Market Data Plugin summary: {out.get('error') or 'failed'}")
+    return out
 
 
 @router.get("/research/data/readiness/criteria-stats")
@@ -53,7 +57,7 @@ def _criteria_stats_analytics() -> Dict[str, Any]:
         raw = fetch_criteria_stats()
     except Exception as e:
         logger.warning("analytics criteria_stats failed, no legacy fallback: %s", e)
-        return {"ok": False, "error": f"Analytics DB error: {e}"}
+        raise HTTPException(status_code=503, detail=f"Analytics DB error: {e}")
 
     fund_raw = raw.get("fundamental") if isinstance(raw.get("fundamental"), dict) else {}
     tech_raw = raw.get("technical") if isinstance(raw.get("technical"), dict) else {}
@@ -214,7 +218,7 @@ def get_fundamental_distribution_symbols(
 ) -> Dict[str, Any]:
     """Return symbols that passed exactly N out of 8 SEPA fundamental conditions today."""
     if conditions_passed < 0 or conditions_passed > 8:
-        return {"ok": False, "error": "conditions_passed must be 0–8"}
+        raise HTTPException(status_code=400, detail="conditions_passed must be 0–8")
 
     return _fundamental_distribution_analytics(conditions_passed)
 
@@ -248,7 +252,7 @@ def _fundamental_distribution_analytics(conditions_passed: int) -> Dict[str, Any
         }
     except Exception as e:
         logger.warning("analytics fundamental_distribution failed: %s", e)
-        return {"ok": False, "error": str(e)}
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 def _technical_distribution_analytics(conditions_passed: int) -> Dict[str, Any]:
@@ -280,7 +284,7 @@ def _technical_distribution_analytics(conditions_passed: int) -> Dict[str, Any]:
         }
     except Exception as e:
         logger.warning("analytics technical_distribution failed: %s", e)
-        return {"ok": False, "error": str(e)}
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @router.get("/research/data/readiness/technical-distribution/symbols")
@@ -290,7 +294,7 @@ def get_technical_distribution_symbols(
 ) -> Dict[str, Any]:
     """Return symbols that passed exactly N out of 11 SEPA technical conditions today."""
     if conditions_passed < 0 or conditions_passed > 11:
-        return {"ok": False, "error": "conditions_passed must be 0–11"}
+        raise HTTPException(status_code=400, detail="conditions_passed must be 0–11")
 
     return _technical_distribution_analytics(conditions_passed)
 
@@ -307,7 +311,7 @@ def get_fundamental_conditions_by_symbol(
     """
     sym = (symbol or "").strip().upper()
     if not sym:
-        return {"ok": False, "error": "symbol is required"}
+        raise HTTPException(status_code=400, detail="symbol is required")
 
     return _fundamental_conditions_analytics(sym)
 
@@ -319,7 +323,7 @@ def _fundamental_conditions_analytics(sym: str) -> Dict[str, Any]:
         row = fetch_fundamental_eval_single(sym)
     except Exception as e:
         logger.warning("analytics fundamental_conditions failed for %s: %s", sym, e)
-        return {"ok": False, "error": str(e)}
+        raise HTTPException(status_code=503, detail=str(e))
 
     if not row:
         return {"ok": True, "symbol": sym, "found": False}
@@ -364,7 +368,7 @@ def get_symbol_technical_conditions(
     """
     sym = (symbol or "").strip().upper()
     if not sym:
-        return {"ok": False, "error": "symbol is required"}
+        raise HTTPException(status_code=400, detail="symbol is required")
 
     return _technical_conditions_analytics(sym)
 
@@ -376,7 +380,7 @@ def _technical_conditions_analytics(sym: str) -> Dict[str, Any]:
         row = fetch_technical_eval_single(sym)
     except Exception as e:
         logger.warning("analytics technical_conditions failed for %s: %s", sym, e)
-        return {"ok": False, "error": str(e)}
+        raise HTTPException(status_code=503, detail=str(e))
 
     if not row:
         return {"ok": True, "symbol": sym, "found": False}
@@ -480,7 +484,7 @@ def get_fundamental_filter(
     if not raw_ids:
         return {"ok": True, "include": [], "count": 0, "symbols": [], "limit": limit}
     if not cond_ids:
-        return {"ok": False, "error": "no valid condition IDs"}
+        raise HTTPException(status_code=400, detail="no valid condition IDs")
 
     try:
         eff_limit = max(1, min(int(limit), 5000))
@@ -502,7 +506,7 @@ def _fundamental_filter_analytics(cond_ids: list, limit: int) -> Dict[str, Any]:
         return {"ok": True, "include": cond_ids, "count": len(symbols), "symbols": symbols, "limit": limit}
     except Exception as e:
         logger.warning("analytics fundamental_filter failed: %s", e)
-        return {"ok": False, "error": str(e)}
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @router.get("/research/data/readiness/technical-filter")
@@ -523,7 +527,7 @@ def get_technical_filter(
     if not raw_ids:
         return {"ok": True, "include": [], "count": 0, "symbols": [], "limit": limit}
     if not cond_ids:
-        return {"ok": False, "error": "no valid technical condition IDs"}
+        raise HTTPException(status_code=400, detail="no valid technical condition IDs")
 
     try:
         eff_limit = max(1, min(int(limit), 5000))
@@ -545,7 +549,7 @@ def _technical_filter_analytics(cond_ids: list, limit: int) -> Dict[str, Any]:
         return {"ok": True, "include": cond_ids, "count": len(symbols), "symbols": symbols, "limit": limit}
     except Exception as e:
         logger.warning("analytics technical_filter failed: %s", e)
-        return {"ok": False, "error": str(e)}
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @router.get("/research/data/readiness/symbols-snapshot")
@@ -576,7 +580,7 @@ def _symbols_snapshot_analytics(syms: list) -> Dict[str, Any]:
         rows = fetch_screener_wide(symbols=syms)
     except Exception as e:
         logger.warning("analytics symbols_snapshot failed: %s", e)
-        return {"ok": False, "error": str(e)}
+        raise HTTPException(status_code=503, detail=str(e))
 
     rows_by_symbol = {}
     latest_as_of: Optional[str] = None
@@ -644,13 +648,12 @@ def get_symbol_fundamental_raw_data(
     ``quarterly`` (last 10) and ``annual`` (last 5) are newest first, read from the
     plugin's income statements in either vendor format; ``metrics`` are the inspector
     columns of ``dw_stock.mart_sepa_fundamental_eval``, empty when that read fails.
-    Every answer carries the three keys, since the inspector reads them unguarded.
+    A missing symbol is 400 and a plugin failure 503, each ``{"detail"}`` (TD-16).
     """
     _ = request
     sym = (symbol or "").strip().upper()
-    empty: Dict[str, Any] = {"quarterly": [], "annual": [], "metrics": {}}
     if not sym:
-        return {"ok": False, "error": "symbol is required", **empty}
+        raise HTTPException(status_code=400, detail="symbol is required")
     try:
         from bifrost_api.research.market_data_client import fetch_sepa_financials
         from bifrost_api.research.sepa.financials_data import REPORT_INCOME, income_rows_for_inspector
@@ -662,7 +665,7 @@ def get_symbol_fundamental_raw_data(
         quarterly, annual = income_rows_for_inspector(q_raw, a_raw, quarters=10, years=5)
     except Exception as e:
         logger.warning("symbol fundamental raw data failed for %s: %s", sym, e)
-        return {"ok": False, "error": str(e), "symbol": sym, **empty}
+        raise HTTPException(status_code=503, detail=str(e))
 
     return {
         "ok": True,
@@ -699,10 +702,10 @@ def get_symbol_option_pcr(
 
     sym = (symbol or "").strip().upper()
     if not sym:
-        return {"ok": False, "error": "symbol is required"}
+        raise HTTPException(status_code=400, detail="symbol is required")
     db = db_config(request)
     if not db:
-        return {"ok": False, "error": "PostgreSQL not configured"}
+        raise HTTPException(status_code=503, detail="PostgreSQL not configured")
     return fetch_symbol_option_pcr(db, sym, lookback_days=lookback_days)
 
 
@@ -714,7 +717,7 @@ def get_symbol_statements(
     """Return latest balance sheet, cash flow, ratios, short interest, and short volume rows for a symbol."""
     sym = (symbol or "").strip().upper()
     if not sym:
-        return {"ok": False, "error": "symbol is required"}
+        raise HTTPException(status_code=400, detail="symbol is required")
     try:
         from bifrost_api.research.sepa.financials_data import (
             REPORT_BALANCE,
@@ -810,7 +813,7 @@ def get_symbol_statements(
             })
 
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        raise HTTPException(status_code=503, detail=str(e))
 
     def _serialize(rows: list) -> list:
         import datetime
@@ -1030,24 +1033,14 @@ def _tier_args(tier: str, include: str, min_score: int, match: str, limit: int):
 def _tier_filter_response(tier: str, include: str, min_score: int, match: str, limit: int) -> Dict[str, Any]:
     cond_ids, unknown, eff_min, eff_match, eff_limit = _tier_args(tier, include, min_score, match, limit)
     if unknown:
-        return {"ok": False, "error": f"unknown {tier} signal ids: {', '.join(unknown)}", "valid": list(_TIER_COLUMNS[tier])}
+        raise HTTPException(status_code=400, detail=f"unknown {tier} signal ids: {', '.join(unknown)}")
     if not cond_ids and eff_min == 0:
         return {"ok": True, "tier": tier, "include": [], "count": 0, "symbols": [], "limit": eff_limit}
     try:
         return _tier_filter(tier, cond_ids, eff_min, eff_match, eff_limit)
     except Exception as e:
         logger.warning("tier filter %s failed: %s", tier, e)
-        return {"ok": False, "error": str(e)}
-
-
-@router.get("/research/data/readiness/momentum-distribution")
-def get_momentum_distribution(request: Request) -> Dict[str, Any]:
-    """Universe-wide histogram of momentum signals passed (0..10) on the latest eval_date."""
-    _ = request
-    stats = _tier_stats("momentum")
-    if not stats.get("ok"):
-        return stats
-    return {"ok": True, "distribution": stats["pass_count_distribution"], "total": stats["universe_count"]}
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 def _tier_stats(tier: str) -> Dict[str, Any]:
@@ -1070,7 +1063,7 @@ def _tier_stats(tier: str) -> Dict[str, Any]:
                 hist_rows = cur.fetchall() or []
     except Exception as e:
         logger.warning("tier stats %s failed: %s", tier, e)
-        return {"ok": False, "error": str(e)}
+        raise HTTPException(status_code=503, detail=str(e))
     hist = {i: 0 for i in range(_TIER_MAX_SCORE[tier] + 1)}
     for r in hist_rows:
         hist[int(r["s"] or 0)] = int(r["c"] or 0)
@@ -1090,7 +1083,7 @@ def get_tier_stats(request: Request, tier: str = "momentum") -> Dict[str, Any]:
     """Per-signal pass counts and the signals-passed histogram for momentum, structure or sentiment."""
     _ = request
     if tier not in _TIER_COLUMNS:
-        return {"ok": False, "error": f"tier must be one of: {list(_TIER_COLUMNS.keys())}"}
+        raise HTTPException(status_code=400, detail=f"tier must be one of: {list(_TIER_COLUMNS.keys())}")
     return _tier_stats(tier)
 
 
@@ -1136,7 +1129,7 @@ def get_momentum_grades(request: Request, grades: str = "", limit: int = 2000) -
                     names = [r["symbol"] for r in (cur.fetchall() or [])]
     except Exception as e:
         logger.warning("momentum grades failed: %s", e)
-        return {"ok": False, "error": str(e)}
+        raise HTTPException(status_code=503, detail=str(e))
     counts = {g: 0 for g in _MOMENTUM_GRADES}
     trade_date = None
     for r in count_rows:
@@ -1181,7 +1174,7 @@ def get_tier_filter(
     """Names passing the picked structure / sentiment / momentum signals and at least ``min_score`` of them."""
     _ = request
     if tier not in _TIER_COLUMNS:
-        return {"ok": False, "error": f"tier must be one of: {list(_TIER_COLUMNS.keys())}"}
+        raise HTTPException(status_code=400, detail=f"tier must be one of: {list(_TIER_COLUMNS.keys())}")
     return _tier_filter_response(tier, include, min_score, match, limit)
 
 

@@ -15,7 +15,7 @@ import math
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from bifrost_api.research.deps import db_config
 
@@ -282,11 +282,11 @@ def get_greeks_available_dates(
     sym = symbol.strip().upper()
     try:
         resp = fetch_option_daily_available_dates(sym, limit=limit)
-        if not resp.get("ok"):
-            return {"ok": False, "symbol": sym, "dates": [], "error": resp.get("error", "plugin error")}
-        return {"ok": True, "symbol": sym, "dates": resp.get("dates", [])}
     except Exception as exc:
-        return {"ok": False, "symbol": sym, "dates": [], "error": str(exc)}
+        raise HTTPException(status_code=503, detail=str(exc))
+    if not resp.get("ok"):
+        raise HTTPException(status_code=503, detail=str(resp.get("error") or "plugin error"))
+    return {"ok": True, "symbol": sym, "dates": resp.get("dates", [])}
 
 
 @router.get("/research/greeks")
@@ -306,11 +306,7 @@ def get_greeks(
     """
     db = db_config(request)
     if db is None:
-        return {
-            "ok": False, "symbol": symbol, "trade_date": trade_date,
-            "stock_price": None, "risk_free_rate": risk_free_rate,
-            "count": 0, "rows": [], "error": "no db config",
-        }
+        raise HTTPException(status_code=503, detail="no db config")
 
     sym = symbol.strip().upper()
     try:
@@ -326,8 +322,4 @@ def get_greeks(
             "rows": rows,
         }
     except Exception as exc:
-        return {
-            "ok": False, "symbol": sym, "trade_date": trade_date,
-            "stock_price": None, "risk_free_rate": risk_free_rate,
-            "count": 0, "rows": [], "error": str(exc),
-        }
+        raise HTTPException(status_code=503, detail=str(exc))

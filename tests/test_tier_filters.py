@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from typing import Any, List
 
 import pytest
+from fastapi import HTTPException
 
 from bifrost_api.research.routers import data_readiness as dr
 
@@ -51,8 +52,9 @@ def test_the_vocabulary_is_the_marts_columns() -> None:
     assert dr._TIER_MAX_SCORE == {"momentum": 10, "structure": 8, "sentiment": 6}
     assert "bb_squeeze" in dr._TIER_INDICATOR_IDS["structure"]
     # The old ids no mart carries are refused, not silently dropped.
-    body = dr.get_tier_filter(None, tier="structure", include="vcp_contraction_3m")  # type: ignore[arg-type]
-    assert body["ok"] is False and "vcp_contraction_3m" in body["error"]
+    with pytest.raises(HTTPException) as refused:
+        dr.get_tier_filter(None, tier="structure", include="vcp_contraction_3m")  # type: ignore[arg-type]
+    assert refused.value.status_code == 400 and "vcp_contraction_3m" in refused.value.detail
 
 
 def test_any_of_two_signals_counts_the_whole_match(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -77,9 +79,10 @@ def test_min_score_is_signals_passed(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_distribution_buckets_every_signal_count(monkeypatch: pytest.MonkeyPatch) -> None:
     head = {"d": "2031-01-02", "n": 5, **{c: 1 for c in dr._TIER_COLUMNS["momentum"]}}
     _fake(monkeypatch, [head, [{"s": 0, "c": 2}, {"s": 7, "c": 3}]])
-    body = dr.get_momentum_distribution(None)  # type: ignore[arg-type]
-    assert body["total"] == 5
-    assert body["distribution"][0] == 2 and body["distribution"][7] == 3 and len(body["distribution"]) == 11
+    body = dr.get_tier_stats(None, tier="momentum")  # type: ignore[arg-type]
+    assert body["universe_count"] == 5
+    hist = body["pass_count_distribution"]
+    assert hist[0] == 2 and hist[7] == 3 and len(hist) == 11
 
 
 def test_momentum_grades_read_the_latest_session(monkeypatch: pytest.MonkeyPatch) -> None:

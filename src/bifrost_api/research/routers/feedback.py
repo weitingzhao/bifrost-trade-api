@@ -13,6 +13,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Body, Response
 
+from bifrost_api.common.envelopes import error_response
 from bifrost_api.research import feedback_store as store
 from bifrost_api.research.analytics_reader import get_conn
 
@@ -21,12 +22,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["research-feedback"])
 
 
-def _err(msg: str) -> Dict[str, Any]:
-    return {"ok": False, "error": msg}
+def _err(status: int, msg: str) -> Any:
+    """A refusal with its status and ``{"detail"}`` (TD-16; was HTTP 200 ``{ok: false, error}``)."""
+    return error_response(status, msg)
 
 
 @router.post("/research/feedback/reports")
-def post_report(body: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+def post_report(body: Dict[str, Any] = Body(default={})) -> Any:
     try:
         images = store.decode_images(body.get("images"))
         with get_conn() as conn:
@@ -43,33 +45,33 @@ def post_report(body: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
             )
         return {"ok": True, "report": report}
     except store.FeedbackValidationError as exc:
-        return _err(str(exc))
+        return _err(400, str(exc))
     except Exception as exc:  # noqa: BLE001 — the store may be unreachable
         logger.warning("feedback insert failed: %s", exc)
-        return _err(f"feedback store error: {exc}")
+        return _err(503, f"feedback store error: {exc}")
 
 
 @router.get("/research/feedback/reports")
-def get_reports(scope: str = "all", limit: int = 200) -> Dict[str, Any]:
+def get_reports(scope: str = "all", limit: int = 200) -> Any:
     if scope not in ("all", "open", "closed"):
-        return _err("scope must be all|open|closed")
+        return _err(400, "scope must be all|open|closed")
     try:
         with get_conn() as conn:
             rows = store.list_reports(conn, scope=scope, limit=limit)
         return {"ok": True, "reports": rows, "count": len(rows)}
     except Exception as exc:  # noqa: BLE001
         logger.warning("feedback list failed: %s", exc)
-        return _err(f"feedback store error: {exc}")
+        return _err(503, f"feedback store error: {exc}")
 
 
 @router.get("/research/feedback/summary")
-def get_summary() -> Dict[str, Any]:
+def get_summary() -> Any:
     try:
         with get_conn() as conn:
             return {"ok": True, **store.summary(conn)}
     except Exception as exc:  # noqa: BLE001
         logger.warning("feedback summary failed: %s", exc)
-        return _err(f"feedback store error: {exc}")
+        return _err(503, f"feedback store error: {exc}")
 
 
 def _by_public(raw_id: str) -> int | None:
@@ -77,46 +79,46 @@ def _by_public(raw_id: str) -> int | None:
 
 
 @router.post("/research/feedback/reports/{report_id}/read")
-def post_read(report_id: str) -> Dict[str, Any]:
+def post_read(report_id: str) -> Any:
     rid = _by_public(report_id)
     if rid is None:
-        return _err("bad report id")
+        return _err(400, "bad report id")
     try:
         with get_conn() as conn:
             row = store.mark_read(conn, rid)
-        return {"ok": True, "report": row} if row else _err("report not found")
+        return {"ok": True, "report": row} if row else _err(404, "report not found")
     except Exception as exc:  # noqa: BLE001
-        return _err(f"feedback store error: {exc}")
+        return _err(503, f"feedback store error: {exc}")
 
 
 @router.post("/research/feedback/reports/{report_id}/status")
-def post_status(report_id: str, body: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+def post_status(report_id: str, body: Dict[str, Any] = Body(default={})) -> Any:
     rid = _by_public(report_id)
     if rid is None:
-        return _err("bad report id")
+        return _err(400, "bad report id")
     try:
         with get_conn() as conn:
             row = store.set_status(conn, rid, str(body.get("status") or ""))
-        return {"ok": True, "report": row} if row else _err("report not found")
+        return {"ok": True, "report": row} if row else _err(404, "report not found")
     except store.FeedbackValidationError as exc:
-        return _err(str(exc))
+        return _err(400, str(exc))
     except Exception as exc:  # noqa: BLE001
-        return _err(f"feedback store error: {exc}")
+        return _err(503, f"feedback store error: {exc}")
 
 
 @router.post("/research/feedback/reports/{report_id}/reply")
-def post_reply(report_id: str, body: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+def post_reply(report_id: str, body: Dict[str, Any] = Body(default={})) -> Any:
     rid = _by_public(report_id)
     if rid is None:
-        return _err("bad report id")
+        return _err(400, "bad report id")
     try:
         with get_conn() as conn:
             row = store.set_reply(conn, rid, str(body.get("reply_md") or ""))
-        return {"ok": True, "report": row} if row else _err("report not found")
+        return {"ok": True, "report": row} if row else _err(404, "report not found")
     except store.FeedbackValidationError as exc:
-        return _err(str(exc))
+        return _err(400, str(exc))
     except Exception as exc:  # noqa: BLE001
-        return _err(f"feedback store error: {exc}")
+        return _err(503, f"feedback store error: {exc}")
 
 
 @router.get("/research/feedback/reports/{report_id}/images/{seq}")

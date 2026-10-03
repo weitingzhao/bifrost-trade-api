@@ -111,6 +111,8 @@ def test_anonymous_viewer_cannot_write_but_can_read() -> None:
     assert r.status_code == 403
     body = r.json()
     assert body["required_role"] == "operator" and body["current_role"] == "viewer"
+    # TD-16 (api 0.5.0): the reason is ``detail`` like every other failure.
+    assert "operator role required" in body["detail"] and not {"ok", "error"} & set(body)
     assert c.get("/strategies/saved-searches").status_code != 403
 
 

@@ -134,9 +134,11 @@ class OpsAuth:
         if ident.role_level < min_level:
             return ident, JSONResponse(
                 status_code=403,
+                # ``detail`` like every other failure (TD-16, api 0.5.0; was ``ok`` /
+                # ``error``). The frontend opens the operator sign-in from
+                # ``required_role`` / ``current_role``.
                 content={
-                    "ok": False,
-                    "error": (
+                    "detail": (
                         f"Insufficient permissions; {minimum} role required "
                         f"(current: {ident.role})."
                     ),

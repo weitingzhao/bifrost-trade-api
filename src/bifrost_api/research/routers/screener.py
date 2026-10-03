@@ -9,7 +9,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from bifrost_api.research.deps import db_config
@@ -455,7 +455,7 @@ def post_screener(request: Request, body: ScreenerRequest) -> Dict[str, Any]:
     """
     db = db_config(request)
     if not db:
-        return {"ok": False, "error": "PostgreSQL not configured", "groups": []}
+        raise HTTPException(status_code=503, detail="PostgreSQL not configured")
 
     structure_type = (body.structure_type or "cash_secured_put").strip().lower()
     src = (body.source or "massive").strip().lower()
@@ -463,18 +463,12 @@ def post_screener(request: Request, body: ScreenerRequest) -> Dict[str, Any]:
         src = "massive"
 
     if structure_type != "cash_secured_put":
-        return {
-            "ok": False,
-            "error": (
-                f"structure_type '{structure_type}' not yet implemented "
-                "(V1 supports cash_secured_put only)."
-            ),
-            "groups": [],
-        }
+        raise HTTPException(status_code=400, detail=f"structure_type '{structure_type}' not yet implemented "
+                "(V1 supports cash_secured_put only).")
 
     symbols_clean = [s.strip().upper() for s in (body.symbols or []) if s.strip()]
     if not symbols_clean:
-        return {"ok": False, "error": "symbols list is empty", "groups": []}
+        raise HTTPException(status_code=400, detail="symbols list is empty")
 
     today = _market_today()
     groups: List[Dict[str, Any]] = []

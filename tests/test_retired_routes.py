@@ -35,7 +35,14 @@ RETIRED: Dict[str, Set[Tuple[str, str]]] = {
             "balance-sheets-gaps", "cash-flows-gaps", "income-statements-gaps", "price-gaps", "ratios-gaps",
             "short-interest-gaps", "short-volume-gaps", "data-inventory", "fundamental-condition-catalog",
             "gap-ack", "symbol-technical-tiers",
+            # deleted in api 0.5.0 after one release marked deprecated (TD-40/TD-16)
+            "momentum-distribution",
         )),
+        ("GET", "/research/option-expirations"),
+        ("GET", "/research/option-oi"),
+        ("GET", "/research/option-trades"),
+        ("POST", "/research/option-snapshot"),
+        ("GET", "/research/iv-term-structure"),
     },
     "market": {
         ("DELETE", "/bars/symbol"),
@@ -65,7 +72,7 @@ RETIRED: Dict[str, Set[Tuple[str, str]]] = {
 KEPT: Dict[str, Set[Tuple[str, str]]] = {
     "research": {
         ("GET", f"{R}/{k}") for k in (
-            "summary", "momentum-distribution", "criteria-stats", "tier-stats", "momentum-grades",
+            "summary", "criteria-stats", "tier-stats", "momentum-grades",
             "momentum-filter", "technical-distribution/symbols", "fundamental-distribution/symbols",
             "symbols-snapshot", "symbol-statements", "symbol-fundamental-raw-data", "technical-filter",
             "tier-filter", "fundamental-conditions", "symbol-technical-conditions", "fundamental-filter",
