@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from bifrost_api.common.envelopes import list_body
+from bifrost_api.common.query_vocab import from_ts_query, to_ts_query
 from bifrost_api.common.write_errors import deleted_body, write_target
 from bifrost_api.strategy.deps import write_config
 from bifrost_api.strategy.patch_bodies import (
@@ -316,8 +317,8 @@ def patch_opportunity_endpoint(request: Request, opportunity_id: int, body: Oppo
 @router.get("/win-rate")
 def get_strategy_win_rate(
     request: Request,
-    since_ts: Optional[float] = Query(None, description="Filter: since Unix timestamp"),
-    until_ts: Optional[float] = Query(None, description="Filter: until Unix timestamp"),
+    from_ts: Optional[float] = from_ts_query("the time of the fills counted toward each instance"),
+    to_ts: Optional[float] = to_ts_query("the time of the fills counted toward each instance"),
 ) -> Dict[str, Any]:
     """Return per-structure win-rate rows and ``totals_all`` (all instances combined).
 
@@ -326,7 +327,7 @@ def get_strategy_win_rate(
     omitted when no such instance).
     """
     reader = request.app.state.reader
-    return reader.get_strategy_win_rate(since_ts=since_ts, until_ts=until_ts)
+    return reader.get_strategy_win_rate(since_ts=from_ts, until_ts=to_ts)
 
 
 @router.get("/instances", response_model=InstanceList, response_model_exclude_unset=True)
@@ -338,8 +339,8 @@ def list_strategy_instances(
         None,
         description="Comma-separated strategy instance IDs (e.g. 1,2,3)",
     ),
-    opened_at_from: Optional[float] = Query(None, description="Filter: opened_at >= (Unix seconds)"),
-    opened_at_until: Optional[float] = Query(None, description="Filter: opened_at <= (Unix seconds)"),
+    from_ts: Optional[float] = from_ts_query("the instance's opened_at"),
+    to_ts: Optional[float] = to_ts_query("the instance's opened_at"),
 ) -> Dict[str, Any]:
     """Return list of strategy_instance rows (SI.2). Optional filters: account_id, strategy_opportunity_id, strategy_instance_ids, opened_at range."""
     reader = request.app.state.reader
@@ -351,8 +352,8 @@ def list_strategy_instances(
         account_id=account_id,
         strategy_opportunity_id=strategy_opportunity_id,
         strategy_instance_ids=ids,
-        opened_at_from=opened_at_from,
-        opened_at_until=opened_at_until,
+        opened_at_from=from_ts,
+        opened_at_until=to_ts,
     )
     return list_body(items)
 

@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
+from bifrost_api.common.query_vocab import expiry_query, option_right_query
 from bifrost_api.research.deps import db_config
 from bifrost_api.research.iv_atm import (
     parse_contract_key,
@@ -86,7 +87,7 @@ def _filter_option_strikes(strikes_raw: List[float], last_price: Optional[float]
 def get_option_snapshots_pg(
     request: Request,
     symbol: str = Query(..., description="Underlying symbol"),
-    expiration: str = Query(..., description="Expiration YYYYMMDD or YYYY-MM-DD"),
+    expiration: str = expiry_query(...),
     strikes: Optional[str] = Query(
         None,
         description="Comma-separated strikes; if omitted, uses ATM ladder from daily last when available",
@@ -104,7 +105,7 @@ def get_option_snapshots_pg(
     sym = (symbol or "").strip().upper()
     exp = (expiration or "").strip()
     if not sym or not exp:
-        raise HTTPException(status_code=400, detail="symbol and expiration are required")
+        raise HTTPException(status_code=400, detail="symbol and expiry are required")
 
     src = (source or "massive").strip().lower()
     if src not in ("massive", "ib"):
@@ -241,9 +242,9 @@ def get_option_snapshots_pg(
 def get_option_contract_liquidity_summary(
     request: Request,
     symbol: str = Query(..., description="Underlying symbol"),
-    expiration: str = Query(..., description="Expiration YYYYMMDD or YYYY-MM-DD"),
+    expiration: str = expiry_query(...),
     strike: float = Query(..., description="Strike price"),
-    right: str = Query(..., description="C or P"),
+    right: str = option_right_query(...),
     source: str = Query("massive", description="massive | ib"),
 ) -> Dict[str, Any]:
     """P1: Aggregate liquidity stats for a single contract — spread percentile, OI rank, snapshot freshness."""
@@ -257,7 +258,7 @@ def get_option_contract_liquidity_summary(
     exp_norm = _norm_expiry_key((expiration or "").strip())
     r = (right or "").strip().upper()
     if not sym or not exp_norm or r not in ("C", "P"):
-        raise HTTPException(status_code=400, detail="symbol, expiration, strike, and right (C/P) are required")
+        raise HTTPException(status_code=400, detail="symbol, expiry, strike, and option_right (C/P) are required")
     src = (source or "massive").strip().lower()
     if src not in ("massive", "ib"):
         src = "massive"
@@ -357,9 +358,9 @@ def get_option_contract_liquidity_summary(
 def get_option_contract_relative_value(
     request: Request,
     symbol: str = Query(..., description="Underlying symbol"),
-    expiration: str = Query(..., description="Expiration YYYYMMDD or YYYY-MM-DD"),
+    expiration: str = expiry_query(...),
     strike: float = Query(..., description="Strike price"),
-    right: str = Query(..., description="C or P"),
+    right: str = option_right_query(...),
     source: str = Query("massive", description="massive | ib"),
 ) -> Dict[str, Any]:
     """P2: IV relative value — z-score vs same-right contracts in same expiry."""
@@ -374,7 +375,7 @@ def get_option_contract_relative_value(
     exp_norm = _norm_expiry_key((expiration or "").strip())
     r = (right or "").strip().upper()
     if not sym or not exp_norm or r not in ("C", "P"):
-        raise HTTPException(status_code=400, detail="symbol, expiration, strike, and right (C/P) are required")
+        raise HTTPException(status_code=400, detail="symbol, expiry, strike, and option_right (C/P) are required")
     src = (source or "massive").strip().lower()
     if src not in ("massive", "ib"):
         src = "massive"
