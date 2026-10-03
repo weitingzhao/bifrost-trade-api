@@ -64,7 +64,11 @@ DEPRECATED_ROUTES: FrozenSet[Tuple[str, str]] = frozenset(
         ("GET", "/bars/latest"),
         ("GET", "/market/trading-day"),
         ("GET", "/bars/coverage"),
-        # research: the six marked here in 3a (10-02) were deleted in api 0.5.0.
+        # research: the six marked here in 3a (10-02) were deleted in api 0.5.0. These three
+        # lost their last caller in fe 066bb81e (handed over 2026-10-03; Loki 6 days: none).
+        ("GET", "/research/data/readiness/fundamental-filter"),
+        ("GET", "/research/data/readiness/technical-filter"),
+        ("GET", "/research/data/readiness/symbols-snapshot"),
     }
 )
 
