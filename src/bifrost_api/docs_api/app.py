@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from bifrost_api.common.build_info import core_build_info
 from bifrost_api.common.service_endpoints import mount_auth_capabilities
 from bifrost_api.docs_api.merge_openapi import fetch_openapi, merge_openapi_specs
 from bifrost_core.config.profile import deployment_profile
@@ -88,6 +89,7 @@ def create_docs_app(
             out["config_profile"] = _profile
         if resolved_config_path:
             out["config_path"] = str(Path(resolved_config_path).resolve())
+        out.update(core_build_info())
         return out
 
     @app.get("/health")

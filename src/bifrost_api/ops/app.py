@@ -130,6 +130,7 @@ def wire_ops_control_plane(
 
     app.include_router(market_ingest_router)
 
+    from bifrost_api.common.build_info import core_build_info
     from bifrost_api.common.service_endpoints import mount_auth_capabilities
 
     mount_auth_capabilities(app, ["/ops/auth/capabilities"], lambda: config)
@@ -156,6 +157,7 @@ def wire_ops_control_plane(
             out["daemon_scale_guard"] = ex.daemon_scale_guard
         out["auth_required"] = app.state.ops_auth.has_tokens
         out["audit_mode"] = audit_store.stats().get("mode", "memory")
+        out.update(core_build_info())
         return out
 
     async def _health_payload_async() -> Dict[str, Any]:
