@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from bifrost_api.common.query_vocab import expiry_query, normalize_expiry, option_right_query
 from bifrost_api.research.deps import db_config
 from bifrost_core.pricing import black_scholes as bs
 
@@ -204,8 +205,8 @@ def get_greeks(
     symbol: str = Query(..., description="Ticker symbol (e.g. NVDA)"),
     trade_date: str = Query(..., description="Trade date YYYY-MM-DD"),
     risk_free_rate: float = Query(DEFAULT_RISK_FREE_RATE, ge=0.0, le=0.5),
-    expiry: Optional[str] = Query(None, description="Filter to one expiry YYYY-MM-DD"),
-    right: Optional[str] = Query(None, description="Filter: C or P"),
+    expiry: Optional[str] = expiry_query(None, note="Filter to one expiry."),
+    right: Optional[str] = option_right_query(None, note="Filter to one right."),
     limit: int = Query(300, ge=1, le=2000),
 ) -> Dict[str, Any]:
     """Compute Black-Scholes IV and Greeks for option_day rows on a given trade date.
@@ -219,7 +220,7 @@ def get_greeks(
 
     sym = symbol.strip().upper()
     try:
-        rows = _fetch_greeks_rows(db, sym, trade_date, risk_free_rate, expiry, right, limit)
+        rows = _fetch_greeks_rows(db, sym, trade_date, risk_free_rate, normalize_expiry(expiry), right, limit)
         stock_price = rows[0]["stock_price"] if rows else None
         return {
             "ok": True,

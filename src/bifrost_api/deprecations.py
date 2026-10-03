@@ -33,6 +33,8 @@ from urllib.parse import quote
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from bifrost_api.common.query_vocab import install_query_aliases
+
 logger = logging.getLogger(__name__)
 
 DEPRECATED_ROUTES: FrozenSet[Tuple[str, str]] = frozenset(
@@ -206,5 +208,7 @@ class DeprecationMarker:
 
 
 def install_deprecations(app: Any) -> None:
-    """Mark the deprecated and the replaced routes on ``app``."""
+    """Mark the deprecated and the replaced routes on ``app``, and accept the old query
+    names (``common.query_vocab``, TD-51) for one more release."""
     app.add_middleware(DeprecationMarker)
+    install_query_aliases(app)

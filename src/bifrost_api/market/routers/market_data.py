@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Query, Request
 
+from bifrost_api.common.query_vocab import expiry_query, option_right_query
 from bifrost_core.monitor.reader.reference_indices_merge import merge_reference_indices
 from bifrost_core.monitor.reader.symbol_normalize import norm_bars_symbol
 from bifrost_core.monitor.services.market_jobs import (
@@ -63,9 +64,9 @@ def get_bars(
     limit: int = Query(100, ge=1, le=500),
     asset: str = Query("stock", description="stock | option"),
     source: Optional[str] = Query(None, description="For option bars: ib | massive (default ib)"),
-    expiry: Optional[str] = Query(None, description="Option expiry YYYYMMDD (with asset=option)"),
+    expiry: Optional[str] = expiry_query(None, note="With asset=option."),
     strike: Optional[float] = Query(None, description="Option strike (with asset=option)"),
-    option_right: Optional[str] = Query(None, description="C or P (with asset=option)"),
+    option_right: Optional[str] = option_right_query(None, note="With asset=option."),
 ) -> Dict[str, Any]:
     """K-line/OHLC bars for replay (R-A3). Stock: stock_day / stock_min. Option: option_day / option_min with source."""
     reader = request.app.state.reader

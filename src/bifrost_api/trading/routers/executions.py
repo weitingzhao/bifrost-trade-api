@@ -21,12 +21,18 @@ attribution); unknown fields are ignored and logged this release.
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import StrictInt
 
 from bifrost_api.common.envelopes import error_response, list_body
+from bifrost_api.common.query_vocab import (
+    from_date_query,
+    from_ts_query,
+    to_date_query,
+    to_ts_query,
+)
 from bifrost_api.common.write_errors import PatchBody, deleted_body, write_target
 from bifrost_api.trading.schemas.requests import (
     ExecutionCreateBody,
@@ -144,11 +150,24 @@ def _publish_tws_fetch_system_message(
         logger.debug("tws fetch message center publish failed: %s", e)
 
 
+_TRADE_DATE_NOTE = "Compared as a date: the timestamp's calendar day in America/Chicago."
+
+
+def _probe_total(rows: List[Any], limit: Optional[int]) -> Tuple[List[Any], Optional[int]]:
+    """``rows`` read with ``limit + 1`` (or no limit): the page, and its exact total when the
+    limit did not cut it. A cut list has no ``total`` -- its length is a floor, not a count."""
+    if limit is None:
+        return rows, len(rows)
+    if len(rows) > limit:
+        return rows[:limit], None
+    return rows, len(rows)
+
+
 @router.get("/executions")
 def get_executions(
     request: Request,
-    since_ts: Optional[float] = Query(None, description="Filter executions with time >= this (Unix s)"),
-    until_ts: Optional[float] = Query(None, description="Filter executions with time <= this"),
+    from_ts: Optional[float] = from_ts_query("the fill's trade_date", note=_TRADE_DATE_NOTE),
+    to_ts: Optional[float] = to_ts_query("the fill's trade_date", note=_TRADE_DATE_NOTE),
     account_id: Optional[str] = Query(None, description="Filter by account ID"),
     limit: int = Query(200, ge=0, le=10000, description="Max rows to return; 0 = no limit"),
     include_opt_pairs: bool = Query(False, description="Include C<>P pairing"),
@@ -167,16 +186,28 @@ def get_executions(
         ),
     ),
 ) -> Dict[str, Any]:
-    """Account-level executions/trades (R-A2). If include_opt_pairs=true: returns paired_execution_ids and opt_pairs."""
+    """Account-level executions/trades (R-A2). If include_opt_pairs=true: returns paired_execution_ids and opt_pairs.
+
+    ``total`` (api 0.6.6, TD-51) is the exact number of executions the filters match. It is
+    sent only when the list holds all of them; when ``limit`` cut the list there is no
+    ``total`` and ``count`` is a floor. With include_opt_pairs the reader caps the list at
+    5000 even for limit=0, so a list of exactly that many has no ``total`` either.
+
+    ``account_executions_id`` is one id space over three sources, told apart by sign
+    (core ``brokerage.executions``): a positive id is the Flex row
+    (``executions_raw_flex``), ``-id`` is a TWS row (``executions_raw_tws``) and
+    ``-(1_000_000_000 + id)`` a journal row. ``/executions/{account_executions_id}``
+    takes the same signed id."""
     reader = request.app.state.reader
     effective_limit: Optional[int] = limit if limit > 0 else None
     if include_opt_pairs:
+        cap = effective_limit or 5000
         paired = dict(
             reader.get_executions_with_opt_pairs(
-                since_ts=since_ts,
-                until_ts=until_ts,
+                since_ts=from_ts,
+                until_ts=to_ts,
                 account_id=account_id,
-                limit=effective_limit or 5000,
+                limit=cap,
                 strategy_opportunity_id=strategy_opportunity_id,
                 strategy_instance_id=strategy_instance_id,
                 source_scope=source_scope,
@@ -184,17 +215,18 @@ def get_executions(
             or {}
         )
         rows = paired.pop("executions", None) or []
-        return list_body(rows, **paired)
-    items = reader.get_executions(
-        since_ts=since_ts,
-        until_ts=until_ts,
+        return list_body(rows, total=len(rows) if len(rows) < cap else None, **paired)
+    rows = reader.get_executions(
+        since_ts=from_ts,
+        until_ts=to_ts,
         account_id=account_id,
-        limit=effective_limit,
+        limit=None if effective_limit is None else effective_limit + 1,
         strategy_opportunity_id=strategy_opportunity_id,
         strategy_instance_id=strategy_instance_id,
         source_scope=source_scope,
     )
-    return list_body(items)
+    items, total = _probe_total(list(rows or []), effective_limit)
+    return list_body(items, total=total)
 
 
 @router.get("/executions/position-attribution")
@@ -292,8 +324,8 @@ def get_stock_link_candidates_route(
         ...,
         description="OPT row id (performance book); underlying symbol and date window derived from this row",
     ),
-    trade_date_from: Optional[str] = Query(None, description="YYYY-MM-DD override (default: option trade_date − 7d)"),
-    trade_date_to: Optional[str] = Query(None, description="YYYY-MM-DD override (default: option trade_date + 7d)"),
+    from_date: Optional[str] = from_date_query("the stock fill's trade_date", note="Default: the option's trade_date - 7d."),
+    to_date: Optional[str] = to_date_query("the stock fill's trade_date", note="Default: the option's trade_date + 7d."),
     limit: int = Query(200, ge=1, le=500),
 ) -> Any:
     """STK executions in performance book matching option underlying; excludes already-linked rows for this option."""
@@ -302,8 +334,8 @@ def get_stock_link_candidates_route(
         reader.get_stock_link_candidates(
             account_id.strip(),
             option_account_executions_id,
-            trade_date_from=trade_date_from,
-            trade_date_to=trade_date_to,
+            trade_date_from=from_date,
+            trade_date_to=to_date,
             limit=limit,
         )
         or {}
@@ -354,8 +386,8 @@ def get_executions_freshness(request: Request) -> Dict[str, Any]:
 @router.get("/performance")
 def get_performance(
     request: Request,
-    since_ts: Optional[float] = Query(None),
-    until_ts: Optional[float] = Query(None),
+    from_ts: Optional[float] = from_ts_query("the fill's trade_date", note=_TRADE_DATE_NOTE),
+    to_ts: Optional[float] = to_ts_query("the fill's trade_date", note=_TRADE_DATE_NOTE),
     account_id: Optional[str] = Query(None),
     granularity: str = Query("day", description="day | week | month"),
     strategy_opportunity_id: Optional[int] = Query(None, description="Filter by strategy opportunity ID"),
@@ -381,13 +413,13 @@ def get_performance(
             )
         out = reader.get_performance_instance_summary(
             strategy_instance_id=strategy_instance_id,
-            since_ts=since_ts,
-            until_ts=until_ts,
+            since_ts=from_ts,
+            until_ts=to_ts,
         )
         return out
     out = reader.get_performance_stats(
-        since_ts=since_ts,
-        until_ts=until_ts,
+        since_ts=from_ts,
+        until_ts=to_ts,
         account_id=account_id,
         granularity=granularity,
         strategy_opportunity_id=strategy_opportunity_id,
@@ -400,15 +432,23 @@ def get_performance(
 @router.get("/transactions")
 def get_transactions(
     request: Request,
-    since_ts: Optional[float] = Query(None),
-    until_ts: Optional[float] = Query(None),
+    from_ts: Optional[float] = from_ts_query("the cash transaction's ts"),
+    to_ts: Optional[float] = to_ts_query("the cash transaction's ts"),
     account_id: Optional[str] = Query(None),
     limit: int = Query(500),
 ) -> Dict[str, Any]:
-    """List account_transactions (Flex cash transactions) for Transfer & Pay page."""
+    """List account_transactions (Flex cash transactions) for Transfer & Pay page.
+
+    ``total`` (api 0.6.6, TD-51): the exact number of rows the filters match, sent only
+    when ``limit`` did not cut the list (then ``count`` is a floor and ``total`` is absent)."""
     reader = request.app.state.reader
-    items = reader.get_transactions(since_ts=since_ts, until_ts=until_ts, account_id=account_id, limit=limit)
-    return list_body(items)
+    if limit <= 0:
+        # The reader sends LIMIT as given: 0 reads nothing, a negative one fails to [].
+        items = reader.get_transactions(since_ts=from_ts, until_ts=to_ts, account_id=account_id, limit=limit)
+        return list_body(items)
+    rows = reader.get_transactions(since_ts=from_ts, until_ts=to_ts, account_id=account_id, limit=limit + 1)
+    items, total = _probe_total(list(rows or []), limit)
+    return list_body(items, total=total)
 
 
 @router.post("/executions")
