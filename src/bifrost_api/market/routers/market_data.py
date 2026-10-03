@@ -262,7 +262,7 @@ def get_bars_coverage(
         seen_norms = {norm_bars_symbol(x) for x in sym_list}
         refs = merge_reference_indices(
             (control_via_db or {}).get("reference_indices"),
-            (reader._config or {}).get("reference_indices"),
+            (reader.config or {}).get("reference_indices"),
         )
         for ref in refs:
             s = (ref.get("symbol") or "").strip()

@@ -13,12 +13,12 @@ from tests.contract.helpers import full_server_config
 
 def _client() -> TestClient:
     reader = MagicMock()
-    reader._config = full_server_config()
+    reader.config = full_server_config()
     app = create_app(
         reader=reader,
         control_via_db=None,
         data_lag_threshold_ms=5000,
-        merged_config=reader._config,
+        merged_config=reader.config,
     )
     return TestClient(app, raise_server_exceptions=False)
 

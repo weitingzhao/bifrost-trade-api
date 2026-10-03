@@ -29,11 +29,11 @@ _RETIRED_PATH_PREFIXES = (
 
 def _client() -> TestClient:
     reader = MagicMock()
-    reader._config = {"server": dict(_SERVER)}
+    reader.config = {"server": dict(_SERVER)}
     app = create_research_app(
         reader=reader,
         control_via_db=None,
-        merged_config=reader._config,
+        merged_config=reader.config,
     )
     return TestClient(app, raise_server_exceptions=False)
 

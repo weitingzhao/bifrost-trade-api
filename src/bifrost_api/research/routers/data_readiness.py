@@ -850,7 +850,7 @@ def get_ticker_overview(symbol: str, request: Request) -> Dict[str, Any]:
     from psycopg2.extras import RealDictCursor
 
     from bifrost_api.research.market_data_client import fetch_ticker_detail
-    from bifrost_core.persistence.postgres.connection import _get_conn_params
+    from bifrost_core.persistence.postgres.connection import get_conn_params
     from bifrost_core.persistence.postgres.market_tables import SCHEMA as MARKET_SCHEMA
 
     sym = symbol.strip().upper()
@@ -862,7 +862,7 @@ def get_ticker_overview(symbol: str, request: Request) -> Dict[str, Any]:
     db = db_config(request)
     related: list = []
     if db:
-        params = _get_conn_params(db)
+        params = get_conn_params(db)
         params["connect_timeout"] = 10
         conn = None
         try:

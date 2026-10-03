@@ -28,8 +28,8 @@ LISTS = [
 
 
 def _client(reader: MagicMock) -> TestClient:
-    reader._config = full_server_config()
-    app = create_account_app(reader=reader, control_via_db=None, merged_config=reader._config)
+    reader.config = full_server_config()
+    app = create_account_app(reader=reader, control_via_db=None, merged_config=reader.config)
     return TestClient(app, raise_server_exceptions=False)
 
 

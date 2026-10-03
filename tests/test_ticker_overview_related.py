@@ -55,7 +55,7 @@ def wired(monkeypatch: pytest.MonkeyPatch) -> Dict[str, Any]:
     # Invented symbol (fixtures are never copied from DEV).
     monkeypatch.setattr(market_data_client, "fetch_ticker_detail", lambda s: {"symbol": s, "name": "Zz Corp"})
     monkeypatch.setattr(
-        "bifrost_core.persistence.postgres.connection._get_conn_params", lambda db: {"host": "x"}
+        "bifrost_core.persistence.postgres.connection.get_conn_params", lambda db: {"host": "x"}
     )
 
     def connect(**_: Any) -> _Conn:

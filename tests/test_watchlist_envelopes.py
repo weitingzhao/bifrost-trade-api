@@ -18,8 +18,8 @@ PG = {"sink": "postgres"}
 
 
 def _client(reader: MagicMock, control_via_db: Any = PG) -> TestClient:
-    reader._config = {**operator_server_config(), "redis": {"enabled": False}}
-    app = create_market_app(reader=reader, control_via_db=control_via_db, merged_config=reader._config)
+    reader.config = {**operator_server_config(), "redis": {"enabled": False}}
+    app = create_market_app(reader=reader, control_via_db=control_via_db, merged_config=reader.config)
     return TestClient(app, raise_server_exceptions=False)
 
 

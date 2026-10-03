@@ -33,15 +33,15 @@ ACC = "U0000001"
 
 def _account(reader: Optional[MagicMock] = None) -> Tuple[TestClient, MagicMock]:
     reader = reader or MagicMock()
-    reader._config = operator_server_config()
-    app = create_account_app(reader=reader, control_via_db=PG, status_cfg_for_read=PG, merged_config=reader._config)
+    reader.config = operator_server_config()
+    app = create_account_app(reader=reader, control_via_db=PG, status_cfg_for_read=PG, merged_config=reader.config)
     return TestClient(app, raise_server_exceptions=False), reader
 
 
 def _market() -> TestClient:
     reader = MagicMock()
-    reader._config = {**operator_server_config(), "redis": {"enabled": False}}
-    app = create_market_app(reader=reader, control_via_db=PG, merged_config=reader._config)
+    reader.config = {**operator_server_config(), "redis": {"enabled": False}}
+    app = create_market_app(reader=reader, control_via_db=PG, merged_config=reader.config)
     return TestClient(app, raise_server_exceptions=False)
 
 

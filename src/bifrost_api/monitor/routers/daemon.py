@@ -239,7 +239,7 @@ async def post_control_refresh_accounts(request: Request) -> JSONResponse:
         from bifrost_core.config.startup import get_effective_ib_config
 
         try:
-            ibc = get_effective_ib_config(request.app.state.reader._config)
+            ibc = get_effective_ib_config(request.app.state.reader.config)
             if (ibc.get("ib2_host") or "").strip():
                 env2 = await op_client.request_async(
                     "fetch_accounts_snapshot",

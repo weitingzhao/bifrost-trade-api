@@ -143,8 +143,8 @@ def test_the_marker_still_names_a_successor_and_logs_its_caller(
 def test_the_puts_left_carry_no_marker() -> None:
     """PUT /instrument-classes is a create-or-replace now and PUT /executions/{id} has no PATCH yet."""
     reader = MagicMock()
-    reader._config = operator_server_config()
-    app = create_account_app(reader=reader, control_via_db=None, merged_config=reader._config)
+    reader.config = operator_server_config()
+    app = create_account_app(reader=reader, control_via_db=None, merged_config=reader.config)
     client = TestClient(app, raise_server_exceptions=False)
     for path, body in (("/instrument-classes/ZZFI", {"instrument_class": "etf"}), ("/executions/-7", {"strategy_instance_id": 3})):
         r = client.put(path, json=body)

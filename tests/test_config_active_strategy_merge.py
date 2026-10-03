@@ -27,9 +27,9 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> List[Dict[str, Any]]:
 
 def _client() -> TestClient:
     reader = MagicMock()
-    reader._config = operator_server_config()
+    reader.config = operator_server_config()
     app = create_app(
-        reader=reader, control_via_db={"sink": "postgres"}, data_lag_threshold_ms=1000, merged_config=reader._config
+        reader=reader, control_via_db={"sink": "postgres"}, data_lag_threshold_ms=1000, merged_config=reader.config
     )
     return TestClient(app, raise_server_exceptions=False)
 

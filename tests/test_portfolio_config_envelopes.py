@@ -22,12 +22,12 @@ PG = {"sink": "postgres"}
 
 
 def _client(reader: MagicMock, control_via_db: Any = PG) -> TestClient:
-    reader._config = operator_server_config()
+    reader.config = operator_server_config()
     app = create_account_app(
         reader=reader,
         control_via_db=control_via_db,
         status_cfg_for_read=control_via_db,
-        merged_config=reader._config,
+        merged_config=reader.config,
     )
     return TestClient(app, raise_server_exceptions=False)
 

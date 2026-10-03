@@ -115,8 +115,8 @@ KEPT: Dict[str, Set[Tuple[str, str]]] = {
 
 def _app(app_name: str) -> Any:
     reader = MagicMock()
-    reader._config = full_server_config()
-    cfg = reader._config
+    reader.config = full_server_config()
+    cfg = reader.config
     return {
         "research": lambda: create_research_app(reader=reader, control_via_db=None, merged_config=cfg),
         "market": lambda: create_market_app(reader=reader, control_via_db=None, merged_config=cfg),

@@ -22,10 +22,10 @@ def main() -> int:
             setup_fdw_market_tables,
         )
         from bifrost_core.persistence.postgres.connection import (
-            _get_conn_params,
-            _get_golden_source_conn_params,
+            get_conn_params,
+            get_golden_source_conn_params,
         )
-        from bifrost_core.persistence.postgres.ddl import _ensure_tables
+        from bifrost_core.persistence.postgres.ddl import ensure_tables
     except ImportError as exc:
         print(f"Missing dependency: {exc}", file=sys.stderr)
         return 1
@@ -33,7 +33,7 @@ def main() -> int:
     with open(config_path, encoding="utf-8") as handle:
         config = yaml.safe_load(handle) or {}
 
-    params = _get_conn_params(config)
+    params = get_conn_params(config)
     params["connect_timeout"] = 10
     print(f"Trade DB: {params['user']}@{params['host']}:{params['port']}/{params['dbname']}")
 
@@ -43,7 +43,7 @@ def main() -> int:
             cur.execute("SET lock_timeout = '20s'")
             cur.execute("SET statement_timeout = '120s'")
         conn.commit()
-        _ensure_tables(conn)
+        ensure_tables(conn)
         conn.commit()
         print("public schema refresh complete.")
     except Exception as exc:
@@ -55,7 +55,7 @@ def main() -> int:
         conn.close()
         return 0
 
-    gs_params = _get_golden_source_conn_params(config)
+    gs_params = get_golden_source_conn_params(config)
     gs_params["connect_timeout"] = 15
     print(
         f"Golden Source: {gs_params['user']}@{gs_params['host']}:"

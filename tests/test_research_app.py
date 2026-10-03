@@ -33,12 +33,12 @@ def _make_client(
         rc = {**base, **reader_config}
         if "server" in reader_config:
             rc["server"] = {**_FULL_SERVER, **reader_config["server"]}
-        reader._config = rc
+        reader.config = rc
     else:
-        reader._config = base
+        reader.config = base
 
     if merged_config is None:
-        mc: dict = reader._config
+        mc: dict = reader.config
     else:
         mc = {**merged_config}
         if "server" in merged_config:

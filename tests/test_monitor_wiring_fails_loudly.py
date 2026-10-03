@@ -14,12 +14,12 @@ from tests.contract.helpers import full_server_config
 
 def _build() -> None:
     reader = MagicMock()
-    reader._config = full_server_config()
+    reader.config = full_server_config()
     create_app(
         reader=reader,
         control_via_db={"sink": "postgres"},
         data_lag_threshold_ms=1000,
-        merged_config=reader._config,
+        merged_config=reader.config,
     )
 
 

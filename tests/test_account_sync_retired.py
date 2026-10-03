@@ -17,8 +17,8 @@ from tests.route_listing import served_routes
 
 def _monitor() -> TestClient:
     reader = MagicMock()
-    reader._config = full_server_config()
-    app = create_app(reader=reader, control_via_db={"sink": "postgres"}, data_lag_threshold_ms=1000, merged_config=reader._config)
+    reader.config = full_server_config()
+    app = create_app(reader=reader, control_via_db={"sink": "postgres"}, data_lag_threshold_ms=1000, merged_config=reader.config)
     return TestClient(app, raise_server_exceptions=False)
 
 

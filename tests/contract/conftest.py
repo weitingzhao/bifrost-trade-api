@@ -12,7 +12,7 @@ from tests.contract.helpers import _FULL_SERVER
 @pytest.fixture
 def mock_reader():
     reader = MagicMock()
-    reader._config = {"server": dict(_FULL_SERVER)}
+    reader.config = {"server": dict(_FULL_SERVER)}
     return reader
 
 
