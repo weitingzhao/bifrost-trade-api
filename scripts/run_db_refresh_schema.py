@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Run bifrost_core DDL from api-monitor image (core is pip-installed, not copied at /build/)."""
+"""Run schema DDL from the api-monitor image (the db-init Job, every STG/PROD release).
+
+Trade DB: core ``ensure_tables``. Golden Source: core ``ensure_brokerage_schema``
+(``raw_broker``), then trade-api's own ``ensure_feedback_schema`` (``ops_feedback``,
+TD-77) on a separate connection, then the FDW tables on the Trade DB.
+
+A feedback DDL failure does not stop the steps after it, but the script exits
+non-zero so the Job shows Failed.
+"""
 
 from __future__ import annotations
 
@@ -67,6 +75,20 @@ def main() -> int:
     finally:
         gs_conn.close()
 
+    rc = 0
+    try:
+        from bifrost_api.research.feedback_schema import ensure_feedback_schema
+
+        fb_conn = psycopg2.connect(**gs_params)
+        try:
+            ensure_feedback_schema(fb_conn, log=lambda m: print(f"feedback {m}"))
+        finally:
+            fb_conn.close()
+        print("ops_feedback schema ready.")
+    except Exception as exc:
+        print(f"ops_feedback schema failed: {exc}", file=sys.stderr)
+        rc = 1
+
     fdw_params = dict(gs_params)
     fdw_params["user"] = gs_cfg.get("fdw_user") or "brokerage_reader"
     fdw_params["password"] = (
@@ -90,7 +112,7 @@ def main() -> int:
     finally:
         conn.close()
 
-    return 0
+    return rc
 
 
 if __name__ == "__main__":

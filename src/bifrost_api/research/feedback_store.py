@@ -2,15 +2,16 @@
 
 Installation-keyed (Spec §20.5: reports are the system's — one stream across
 dev/stg/prod), living in Golden Source beside ops_jobs.* and owned by this
-side over the analytics_reader connection. Research never writes here.
+side. The runtime connection is ``analytics_reader.get_conn`` (role
+``analytics_writer``). Research never writes here.
 
 The design's contract (Rev .96/.97): four kinds, `blocks trading` chosen by
 the reporter at submit, six statuses, replies land on the row and reading the
 row clears the dot — in-system only, nothing leaves.
 
-DDL is idempotent and ensured lazily on first use: this service has no
-migration job against Golden Source, and two CREATE IF NOT EXISTS on a warm
-path cost one round-trip once per process.
+The DDL lives in ``feedback_schema`` and runs in the db-init Job
+(``scripts/run_db_refresh_schema.py``) on every STG/PROD release, never on a
+request (TD-77). A store that was never migrated answers 503 (``not_migrated``).
 """
 
 from __future__ import annotations
@@ -19,7 +20,6 @@ import base64
 import binascii
 import json
 import logging
-import threading
 from typing import Any, Dict, List, Optional
 
 from psycopg2.extras import RealDictCursor
@@ -34,51 +34,13 @@ MAX_IMAGE_BYTES = 2_000_000
 MAX_TITLE = 200
 MAX_BODY = 20_000
 
-_DDL = """
-CREATE SCHEMA IF NOT EXISTS ops_feedback;
-CREATE TABLE IF NOT EXISTS ops_feedback.report (
-    report_id      bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    kind           text NOT NULL,
-    title          text NOT NULL,
-    body_md        text NOT NULL DEFAULT '',
-    page_route     text NOT NULL DEFAULT '',
-    page_label     text NOT NULL DEFAULT '',
-    blocks_trading boolean NOT NULL DEFAULT false,
-    context        jsonb NOT NULL DEFAULT '{}'::jsonb,
-    status         text NOT NULL DEFAULT 'new',
-    reply_md       text,
-    replied_at     timestamptz,
-    unread_reply   boolean NOT NULL DEFAULT false,
-    created_at     timestamptz NOT NULL DEFAULT now(),
-    updated_at     timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS ops_feedback.report_image (
-    report_image_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    report_id       bigint NOT NULL REFERENCES ops_feedback.report(report_id) ON DELETE CASCADE,
-    seq             smallint NOT NULL,
-    mime            text NOT NULL,
-    bytes           bytea NOT NULL,
-    UNIQUE (report_id, seq)
-);
-CREATE INDEX IF NOT EXISTS idx_feedback_report_status
-    ON ops_feedback.report (status, created_at DESC);
-"""
-
-_ddl_done = False
-_ddl_lock = threading.Lock()
+# SQLSTATEs for "the store's objects are not there": undefined_table, invalid_schema_name.
+_NOT_MIGRATED_SQLSTATES = frozenset({"42P01", "3F000"})
 
 
-def ensure_schema(conn: Any) -> None:
-    global _ddl_done
-    if _ddl_done:
-        return
-    with _ddl_lock:
-        if _ddl_done:
-            return
-        with conn.cursor() as cur:
-            cur.execute(_DDL)
-        conn.commit()
-        _ddl_done = True
+def not_migrated(exc: BaseException) -> bool:
+    """True when ``exc`` says ops_feedback was never created (db-init has not run)."""
+    return getattr(exc, "pgcode", None) in _NOT_MIGRATED_SQLSTATES
 
 
 def public_id(report_id: int) -> str:
@@ -177,7 +139,6 @@ def insert_report(
         raise FeedbackValidationError(f"title over {MAX_TITLE} chars")
     if len(body_md or "") > MAX_BODY:
         raise FeedbackValidationError(f"body over {MAX_BODY} chars")
-    ensure_schema(conn)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """
@@ -212,7 +173,6 @@ def insert_report(
 
 def list_reports(conn: Any, *, scope: str = "all", limit: int = 200) -> List[Dict[str, Any]]:
     """Triage order — blocking first, then newest (the design's sort)."""
-    ensure_schema(conn)
     where = ""
     if scope == "open":
         where = "WHERE r.status IN ('new','triaged','progress')"
@@ -234,7 +194,6 @@ def list_reports(conn: Any, *, scope: str = "all", limit: int = 200) -> List[Dic
 
 
 def get_image(conn: Any, report_id: int, seq: int) -> Optional[Dict[str, Any]]:
-    ensure_schema(conn)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             "SELECT mime, bytes FROM ops_feedback.report_image WHERE report_id = %s AND seq = %s",
@@ -261,7 +220,6 @@ def _touch(cur: Any, report_id: int, sets: str, params: List[Any]) -> Optional[D
 def set_status(conn: Any, report_id: int, status: str) -> Optional[Dict[str, Any]]:
     if status not in STATUSES:
         raise FeedbackValidationError(f"status must be one of {STATUSES}")
-    ensure_schema(conn)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         # A status move is news to the reporter the same way a reply is.
         row = _touch(cur, report_id, "status = %s, unread_reply = true", [status])
@@ -273,7 +231,6 @@ def set_reply(conn: Any, report_id: int, reply_md: str) -> Optional[Dict[str, An
     text = (reply_md or "").strip()
     if not text:
         raise FeedbackValidationError("reply is empty")
-    ensure_schema(conn)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         row = _touch(
             cur,
@@ -287,7 +244,6 @@ def set_reply(conn: Any, report_id: int, reply_md: str) -> Optional[Dict[str, An
 
 def mark_read(conn: Any, report_id: int) -> Optional[Dict[str, Any]]:
     """Seen is read — the My reports pane on screen clears the dot."""
-    ensure_schema(conn)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         row = _touch(cur, report_id, "unread_reply = false", [])
     conn.commit()
@@ -296,7 +252,6 @@ def mark_read(conn: Any, report_id: int) -> Optional[Dict[str, Any]]:
 
 def summary(conn: Any) -> Dict[str, int]:
     """The top-bar button's numbers: open · unread replies · waiting · blocking."""
-    ensure_schema(conn)
     with conn.cursor() as cur:
         cur.execute(
             """
