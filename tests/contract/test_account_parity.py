@@ -46,7 +46,6 @@ def test_account_openapi_carries_every_plan_route() -> None:
         ("/strategies/plans", "get"),
         ("/strategies/plans", "post"),
         ("/strategies/plans/{strategy_plan_id}", "get"),
-        ("/strategies/plans/{strategy_plan_id}", "put"),
         ("/strategies/plans/{strategy_plan_id}/intend", "post"),
         ("/strategies/plans/{strategy_plan_id}/link-fill", "post"),
         ("/strategies/plans/{strategy_plan_id}/cancel", "post"),

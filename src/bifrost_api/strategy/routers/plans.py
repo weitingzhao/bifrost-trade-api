@@ -12,9 +12,8 @@ it does in a script:
     503  Postgres is not configured for writes
 
 PATCH and DELETE (TD-15, batch 3b-2) raise core's Write* outcomes, mapped in
-``bifrost_api.common.write_errors``: input errors are 400 there (PUT still
-answers 409 for them), the body is ``{detail}``. PUT keeps its
-old behaviour for one release and is marked replaced by PATCH.
+``bifrost_api.common.write_errors``: input errors are 400 there, the body is
+``{detail}``. The merge-style PUT went in api 0.6.0 (TD-15).
 """
 
 from __future__ import annotations
@@ -33,7 +32,6 @@ from bifrost_core.monitor.reader.strategy_plan import PlanRuleError
 from bifrost_core.monitor.schemas.strategy_plans import (
     PlanCreateBody,
     PlanLinkFillBody,
-    PlanUpdateBody,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,25 +97,6 @@ def create_plan_endpoint(request: Request, body: PlanCreateBody) -> Dict[str, An
     if plan_id is None:
         raise db_not_configured()
     return {"strategy_plan_id": plan_id}
-
-
-@router.put("/plans/{strategy_plan_id}")
-def update_plan_endpoint(
-    request: Request, strategy_plan_id: int, body: PlanUpdateBody
-) -> Dict[str, Any]:
-    """Edit a draft. 409 once the plan has been marked intended."""
-    config = write_config(request)
-    payload = body.model_dump(exclude_unset=True)
-    try:
-        updated = strategy_plan_module.update_plan(config, strategy_plan_id, payload)
-    except PlanRuleError as e:
-        raise HTTPException(status_code=409, detail=e.reason) from e
-    except Exception as e:
-        logger.warning("update_plan failed: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to update strategy plan") from e
-    if not updated:
-        raise HTTPException(status_code=404, detail="Strategy plan not found")
-    return {"ok": True, "strategy_plan_id": strategy_plan_id}
 
 
 @router.patch("/plans/{strategy_plan_id}", response_model=PlanRow, response_model_exclude_unset=True)

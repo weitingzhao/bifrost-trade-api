@@ -94,8 +94,6 @@ EXECUTION_UPDATE = {  # ExecutionFormModal (edit)
 ACCOUNT_CASES: List[Tuple[str, str, Dict[str, Any], Tuple[Any, str], Any]] = [
     ("POST", "/strategies/templates", {"template_code": "zz_put", "display_name": "ZZ put", "sort_order": 100},
      (template_config_write, "create_template"), 9),  # TemplateCatalogControls
-    ("PUT", "/strategies/templates/9", {"display_name": "ZZ put", "explanation": None, "is_active": True},
-     (template_config_write, "update_template"), True),  # replaced by PATCH; no FE caller
     ("PUT", "/strategies/templates/9/legs",
      {"legs": [{"role": "put", "direction": "sell", "option_right": "P", "quantity_default": 1, "sort_order": 0},
                {"role": "underlying", "direction": "buy", "option_right": "", "quantity_default": 100,

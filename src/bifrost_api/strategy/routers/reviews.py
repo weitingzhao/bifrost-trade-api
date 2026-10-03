@@ -7,8 +7,7 @@ A review is a record, never an instruction: nothing downstream reads it to act
     GET    /strategies/reviews                 every review
     PATCH  /strategies/reviews/{instance_id}   upsert one; fields left out are kept,
                                                `note: null` clears the note (TD-15)
-    PUT    /strategies/reviews/{instance_id}   the same without clearing; replaced by
-                                               PATCH, kept one release (decision B)
+    (PUT went in api 0.6.0 after a release marked replaced by PATCH; TD-15.)
 
     404  no such instance
     400  a bad tag, note or flag (PATCH; core's reason)
@@ -20,14 +19,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-import psycopg2
 from fastapi import APIRouter, HTTPException, Request
 
 from bifrost_api.common.write_errors import write_target
-from bifrost_api.strategy.deps import db_not_configured, read_config, write_config
+from bifrost_api.strategy.deps import read_config
 from bifrost_api.strategy.patch_bodies import ReviewPatch
 from bifrost_core.monitor.reader import trade_review as trade_review_module
-from bifrost_core.monitor.schemas.trade_reviews import TradeReviewBody
 
 logger = logging.getLogger(__name__)
 
@@ -46,29 +43,9 @@ def list_reviews_endpoint(request: Request) -> Dict[str, Any]:
     return {"items": items, "count": len(items)}
 
 
-@router.put("/reviews/{strategy_instance_id}")
-def save_review_endpoint(
-    request: Request, strategy_instance_id: int, body: TradeReviewBody
-) -> Dict[str, Any]:
-    """Write one instance's review. `reviewed: true` confirms it, `false` reopens it."""
-    config = write_config(request)
-    try:
-        row = trade_review_module.save_review(
-            config, strategy_instance_id, body.model_dump(exclude_unset=True)
-        )
-    except psycopg2.errors.ForeignKeyViolation as e:
-        raise HTTPException(status_code=404, detail="Strategy instance not found") from e
-    except Exception as e:
-        logger.warning("save_review failed: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to save trade review") from e
-    if row is None:
-        raise db_not_configured()
-    return row
-
-
 @router.patch("/reviews/{strategy_instance_id}")
 def patch_review_endpoint(request: Request, strategy_instance_id: int, body: ReviewPatch) -> Dict[str, Any]:
     """Write the fields sent; creates the review when the instance has none. Answers the
-    review row, as PUT does. `reviewed: true` stamps it (the first stamp stays), `false` reopens it."""
+    review row. `reviewed: true` stamps it (the first stamp stays), `false` reopens it."""
     config = write_target(request, f"the review of strategy instance {strategy_instance_id}")
     return trade_review_module.patch_review(config, strategy_instance_id, body.patch_fields())

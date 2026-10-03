@@ -45,9 +45,7 @@ from bifrost_core.monitor.reader import template_config_write as template_config
 from bifrost_core.monitor.schemas.gate_params import default_gates
 from bifrost_core.monitor.schemas.strategies import (
     AllocationBody,
-    AllocationUpdateBody,
     OpportunityBody,
-    OpportunityUpdateBody,
     StrategyInstanceCreateBody,
 )
 from bifrost_core.monitor.services import option_strategy_templates
@@ -68,9 +66,10 @@ router = APIRouter(prefix="/strategies", tags=["strategies"])
 # Writes (TD-15, batch 3b-2): PATCH changes only the fields sent and answers the
 # row as GET-by-id does; DELETE is strict and answers {"deleted": "hard"|"soft",
 # <id>, ..., "ok": true}. Their failures are core's Write* outcomes, mapped once
-# in bifrost_api.common.write_errors (404 / 409 / 400 / 503 / 500). The PUTs keep
-# their old behaviour for one release; the merge ones are marked replaced in
-# bifrost_api.deprecations.
+# in bifrost_api.common.write_errors (404 / 409 / 400 / 503 / 500). The merge-style
+# PUTs on templates, opportunities and allocations went in api 0.6.0 (TD-15); the
+# PUTs left (structures, gate-safety, template legs / params / characteristics)
+# replace on purpose.
 
 
 @router.get("/dims")
@@ -139,20 +138,6 @@ def create_template_endpoint(request: Request, body: TemplateBody) -> Dict[str, 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"strategy_template_id": tid}
-
-
-@router.put("/templates/{template_id}")
-def update_template_endpoint(
-    request: Request, template_id: int, body: TemplateBody
-) -> Dict[str, Any]:
-    config = write_config(request)
-    try:
-        ok = template_config_write_module.update_template(config, template_id, body.declared(exclude_unset=True))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    if not ok:
-        raise HTTPException(status_code=404, detail="Template not found")
-    return {"ok": True}
 
 
 @router.patch("/templates/{template_id}")
@@ -320,27 +305,9 @@ def create_opportunity_endpoint(request: Request, body: OpportunityBody) -> Dict
     return {"strategy_opportunity_id": oid}
 
 
-@router.put("/opportunities/{opportunity_id}")
-def update_opportunity_endpoint(request: Request, opportunity_id: int, body: OpportunityUpdateBody) -> Dict[str, Any]:
-    """Update an existing strategy opportunity. Body same as POST: name, strategy_structure_id, optional default_gate_safety_strategy_id, scope_type, symbols, entry_conditions, is_active (partial update supported)."""
-    control_via_db = write_config(request)
-    payload = body.model_dump(exclude_unset=True)
-    if "entry_conditions" in payload:
-        payload["entry_conditions"] = [c.model_dump() for c in (body.entry_conditions or [])]
-    try:
-        ok = strategy_opportunity_write_module.update_opportunity(control_via_db, opportunity_id, payload)
-    except WriteError:
-        raise  # WriteInvalid (a bad limit / gate id, TD-48) -> 400 via common.write_errors
-    except (ValueError, TypeError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    if not ok:
-        raise HTTPException(status_code=404, detail="Opportunity not found or update failed")
-    return {"ok": True}
-
-
 @router.patch("/opportunities/{opportunity_id}", response_model=OpportunityDetail, response_model_exclude_unset=True)
 def patch_opportunity_endpoint(request: Request, opportunity_id: int, body: OpportunityPatch) -> Dict[str, Any]:
-    """Change the fields sent (a field left out keeps its value, unlike PUT); answer the
+    """Change the fields sent (a field left out keeps its value); answer the
     opportunity as GET does. `symbols` / `entry_conditions` replace the list whole."""
     config = write_target(request, f"opportunity {opportunity_id}")
     return strategy_opportunity_write_module.patch_opportunity(config, opportunity_id, body.patch_fields())
@@ -484,22 +451,6 @@ def create_allocation_endpoint(request: Request, body: AllocationBody) -> Dict[s
     if aid is None:
         raise HTTPException(status_code=500, detail="Failed to create allocation")
     return {"strategy_allocation_id": aid}
-
-
-@router.put("/allocations/{allocation_id}")
-def update_allocation_endpoint(request: Request, allocation_id: int, body: AllocationUpdateBody) -> Dict[str, Any]:
-    """Update an existing strategy allocation. Partial update supported."""
-    control_via_db = write_config(request)
-    payload = body.model_dump(exclude_unset=True)
-    try:
-        ok = strategy_allocation_write_module.update_allocation(control_via_db, allocation_id, payload)
-    except WriteError:
-        raise  # WriteInvalid (a bad limit / gate id, TD-48) -> 400 via common.write_errors
-    except (ValueError, TypeError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    if not ok:
-        raise HTTPException(status_code=404, detail="Allocation not found or update failed")
-    return {"ok": True}
 
 
 @router.patch("/allocations/{allocation_id}", response_model=AllocationRow, response_model_exclude_unset=True)

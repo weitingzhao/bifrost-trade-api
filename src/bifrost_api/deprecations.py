@@ -20,8 +20,8 @@ work but have a successor -- the merge-style PUTs, replaced by PATCH. Their
 response carries ``Deprecation: true`` and ``Link: <successor>; rel="successor-version"``
 (the successor's path with this request's ids, behind the prefix the gateway
 stripped when it says so in ``X-Forwarded-Prefix``), and each hit is logged as
-"replaced route hit ... use <successor>". Next release the PUT becomes a true
-replace. A route is on one list or the other, never both.
+"replaced route hit ... use <successor>". A route is on one list or the other,
+never both.
 """
 
 from __future__ import annotations
@@ -72,19 +72,11 @@ DEPRECATED_ROUTES: FrozenSet[Tuple[str, str]] = frozenset(
 # (method, path template) -> "METHOD successor template". The successor's path
 # parameters are named as in the replaced route's template, so a hit's ids carry over.
 REPLACED_ROUTES: Dict[Tuple[str, str], str] = {
-    # account: merge PUTs (TD-15 inventory: merge or hybrid), PATCH since 0.3.0
-    ("PUT", "/strategies/templates/{template_id}"): "PATCH /strategies/templates/{template_id}",
-    ("PUT", "/strategies/opportunities/{opportunity_id}"): "PATCH /strategies/opportunities/{opportunity_id}",
-    ("PUT", "/strategies/allocations/{allocation_id}"): "PATCH /strategies/allocations/{allocation_id}",
-    ("PUT", "/strategies/plans/{strategy_plan_id}"): "PATCH /strategies/plans/{strategy_plan_id}",
-    ("PUT", "/strategies/reviews/{strategy_instance_id}"): "PATCH /strategies/reviews/{strategy_instance_id}",
-    ("PUT", "/instrument-classes/{contract_key}"): "PATCH /instrument-classes/{contract_key}",
-    # Not here: PUT gate-safety / structures (already a full replace), the template
-    # legs / params / characteristics, tag and symbol-order PUTs (replace a collection
-    # on purpose), and GET /instrument-classes (in use). Nor PUT /executions/{execution_id}:
-    # ExecutionFormModal edits the fill columns through it and those have no PATCH yet, so
-    # it stays a merge (attribution callers move to PATCH /executions/{id}/attribution) and
-    # does not become a replace with the others.
+    # Empty since api 0.6.0 (TD-15): the merge PUTs on templates, opportunities,
+    # allocations, plans and reviews were deleted after a release with no caller, and
+    # PUT /instrument-classes became a true create-or-replace. PUT /executions/{execution_id}
+    # is not here: ExecutionFormModal edits the fill columns through it and those have no
+    # PATCH yet (attribution callers use PATCH /executions/{id}/attribution).
 }
 
 

@@ -9,7 +9,6 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
-import psycopg2
 import pytest
 from starlette.testclient import TestClient
 
@@ -53,26 +52,8 @@ def test_a_failed_read_is_a_500_not_an_empty_book(monkeypatch: pytest.MonkeyPatc
     assert _client({"sink": "postgres"}).get("/strategies/reviews").status_code == 500
 
 
-def test_save_passes_only_the_fields_sent(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: dict = {}
-
-    def save(_cfg: Any, instance_id: int, payload: dict) -> dict:
-        seen.update(instance_id=instance_id, payload=payload)
-        return {"strategy_instance_id": instance_id, "reviewed": True}
-
-    monkeypatch.setattr(trade_review_module, "save_review", save)
-    res = _client({"sink": "postgres"}).put("/strategies/reviews/7", json={"reviewed": True})
-    assert res.status_code == 200
-    assert seen == {"instance_id": 7, "payload": {"reviewed": True}}
+def test_the_merge_put_is_gone() -> None:
+    """TD-15 (api 0.6.0): PATCH /strategies/reviews/{id} is the upsert; PUT went after a release with no caller."""
+    assert _client({"sink": "postgres"}).put("/strategies/reviews/7", json={"reviewed": True}).status_code == 405
 
 
-def test_a_missing_instance_is_a_404(monkeypatch: pytest.MonkeyPatch) -> None:
-    def save(*_a: Any) -> Any:
-        raise psycopg2.errors.ForeignKeyViolation("violates foreign key constraint")
-
-    monkeypatch.setattr(trade_review_module, "save_review", save)
-    assert _client({"sink": "postgres"}).put("/strategies/reviews/999", json={"reviewed": True}).status_code == 404
-
-
-def test_writing_without_postgres_is_a_503() -> None:
-    assert _client(None).put("/strategies/reviews/7", json={"reviewed": True}).status_code == 503

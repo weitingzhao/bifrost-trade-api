@@ -61,6 +61,12 @@ RETIRED: Dict[str, Set[Tuple[str, str]]] = {
         ("DELETE", "/strategies/dims/by-id/{strategy_dim_id}"),
         ("GET", "/strategies/dims/{dim_type}/items"),
         *(("POST", f"/{d}/shutdown") for d in ("account", "trading", "portfolio", "strategy")),
+        # merge PUTs replaced by PATCH, deleted in api 0.6.0 (TD-15)
+        ("PUT", "/strategies/templates/{template_id}"),
+        ("PUT", "/strategies/opportunities/{opportunity_id}"),
+        ("PUT", "/strategies/allocations/{allocation_id}"),
+        ("PUT", "/strategies/plans/{strategy_plan_id}"),
+        ("PUT", "/strategies/reviews/{strategy_instance_id}"),
     },
     "monitor": {
         ("POST", "/api/server/shutdown"),

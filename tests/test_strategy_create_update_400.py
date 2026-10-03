@@ -1,4 +1,4 @@
-"""POST / PUT allocations and opportunities refuse what core cannot store (TD-48, core 0.35.0).
+"""POST allocations and opportunities refuse what core cannot store (TD-48, core 0.35.0).
 
 An unparseable allocation limit or gate id used to be stored as NULL with a 200. Core now
 raises WriteInvalid and the shared write_errors handler answers 400 with its reason. The
@@ -45,7 +45,6 @@ def test_bad_allocation_limits_are_400(monkeypatch: pytest.MonkeyPatch, limits: 
     client = _client(monkeypatch)
     body = {"name": "Sleeve", "strategy_opportunity_ids": [1], "allocation_limits": limits}
     assert_error(client.post("/strategies/allocations", json=body), 400, reason)
-    assert_error(client.put("/strategies/allocations/7", json={"allocation_limits": limits}), 400, reason)
 
 
 def test_a_bad_gate_id_is_400(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -55,4 +54,9 @@ def test_a_bad_gate_id_is_400(monkeypatch: pytest.MonkeyPatch) -> None:
     assert_error(client.post("/strategies/allocations", json=body), 400, "gate_safety_strategy_id must be 1 or more")
     opp = {"name": "Opp", "strategy_structure_id": 5, "default_gate_safety_strategy_id": -1}
     assert_error(client.post("/strategies/opportunities", json=opp), 400, "default_gate_safety_strategy_id")
-    assert_error(client.put("/strategies/opportunities/9", json=opp), 400, "default_gate_safety_strategy_id")
+
+
+@pytest.mark.parametrize("path", ["/strategies/allocations/7", "/strategies/opportunities/9", "/strategies/templates/9"])
+def test_the_merge_puts_are_gone(monkeypatch: pytest.MonkeyPatch, path: str) -> None:
+    """TD-15 (api 0.6.0): PATCH is the update; the merge-style PUT went after a release with no caller."""
+    assert _client(monkeypatch).put(path, json={"name": "x"}).status_code == 405

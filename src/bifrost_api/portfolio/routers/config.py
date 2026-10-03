@@ -200,7 +200,9 @@ def get_instrument_classes(request: Request) -> Dict[str, Any]:
 
 @router.put("/instrument-classes/{contract_key}")
 def put_instrument_class(request: Request, contract_key: str, body: InstrumentClassBody) -> Any:
-    """Register or change one instrument's class. body: instrument_class, note (optional)."""
+    """Register or replace one instrument's class: a full replace since api 0.6.0 (TD-15),
+    so the row becomes exactly what is sent and no ``note`` clears a stored one.
+    PATCH changes the fields sent and keeps the rest. body: instrument_class, note (optional)."""
     if not request.app.state.control_via_db:
         return error_response(503, POSTGRES_REQUIRED)
     instrument_class = body.instrument_class or ""
@@ -208,7 +210,9 @@ def put_instrument_class(request: Request, contract_key: str, body: InstrumentCl
     # and anything the writer still refuses is a write failure.
     if normalize_instrument_class(instrument_class) is None:
         return error_response(400, f"instrument_class must be one of {', '.join(INSTRUMENT_CLASSES)}.")
-    ok, err = request.app.state.reader.set_instrument_class(contract_key, instrument_class, note=body.note)
+    ok, err = request.app.state.reader.set_instrument_class(
+        contract_key, instrument_class, note=body.note, keep_note=False
+    )
     if ok:
         return {"ok": True}
     return _write_failed(err, "Failed to save the instrument class.")

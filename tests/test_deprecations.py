@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 from starlette.testclient import TestClient
 
+from bifrost_api import deprecations as dep
 from bifrost_api.account.app import create_account_app
 from bifrost_api.deprecations import (
     DEPRECATED_ROUTES,
@@ -101,23 +102,31 @@ def test_a_marked_route_says_so_and_logs_its_caller(caplog: pytest.LogCaptureFix
 
 
 @pytest.mark.parametrize(
-    "method, path, hit",
+    "method, path",
     [
-        ("PUT", "/strategies/plans/42", ("/strategies/plans/{strategy_plan_id}", "/strategies/plans/42")),
-        ("PUT", "/executions/-7", None),
-        ("PUT", "/instrument-classes/ZZFI", ("/instrument-classes/{contract_key}", "/instrument-classes/ZZFI")),
-        ("PATCH", "/strategies/plans/42", None),
-        ("PUT", "/strategies/templates/3/legs", None),
-        ("PUT", "/strategies/gate-safety/3", None),
-        ("PUT", "/position-categories/tag", None),
+        ("PUT", "/strategies/plans/42"),
+        ("PUT", "/executions/-7"),
+        ("PUT", "/instrument-classes/ZZFI"),
+        ("PATCH", "/strategies/plans/42"),
+        ("PUT", "/strategies/templates/3/legs"),
+        ("PUT", "/strategies/gate-safety/3"),
+        ("PUT", "/position-categories/tag"),
     ],
 )
-def test_replaced_route(method: str, path: str, hit: Any) -> None:
-    got = replaced_route(method, path)
-    assert (got[0], got[2]) == hit if hit else got is None
+def test_nothing_is_marked_replaced_since_0_6_0(method: str, path: str) -> None:
+    """TD-15: the merge PUTs went in api 0.6.0, so the list is empty until the next successor."""
+    assert REPLACED_ROUTES == {}
+    assert replaced_route(method, path) is None
 
 
-def test_a_replaced_route_names_its_successor_and_logs_its_caller(caplog: pytest.LogCaptureFixture) -> None:
+def test_the_marker_still_names_a_successor_and_logs_its_caller(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The mechanism stays for the next PUT that gets a PATCH (PUT /executions/{id} has none yet)."""
+    template = "/strategies/plans/{strategy_plan_id}"
+    successor = "PATCH /strategies/plans/{strategy_plan_id}"
+    monkeypatch.setattr(dep, "_REPLACED_MATCHERS", [("PUT", template, successor, dep._compile_named(template))])
+    assert replaced_route("PUT", "/strategies/plans/42") == (template, successor, "/strategies/plans/42")
     client = TestClient(_apps()["account"], raise_server_exceptions=False)
     with caplog.at_level(logging.WARNING, logger="bifrost_api.deprecations"):
         r = client.put(
@@ -125,28 +134,22 @@ def test_a_replaced_route_names_its_successor_and_logs_its_caller(caplog: pytest
             json={"expires_at": None},
             headers={"User-Agent": "td15-test", "X-Forwarded-Prefix": "/api/strategy"},
         )
-    # A viewer is refused by the write guard first; the PUT is still marked.
-    assert r.status_code == 403
     assert r.headers.get("deprecation") == "true"
     assert r.headers.get("link") == '</api/strategy/strategies/plans/42>; rel="successor-version"'
     line = next(rec.getMessage() for rec in caplog.records if "replaced route hit" in rec.getMessage())
     assert "use PATCH /strategies/plans/{strategy_plan_id}" in line and "td15-test" in line
-    assert not any("deprecated route hit" in rec.getMessage() for rec in caplog.records)
 
 
-def test_a_replaced_route_answers_as_before() -> None:
-    """Marked, not changed: the PUT still runs (here: 503, no Postgres in the test app)."""
+def test_the_puts_left_carry_no_marker() -> None:
+    """PUT /instrument-classes is a create-or-replace now and PUT /executions/{id} has no PATCH yet."""
     reader = MagicMock()
     reader._config = operator_server_config()
     app = create_account_app(reader=reader, control_via_db=None, merged_config=reader._config)
     client = TestClient(app, raise_server_exceptions=False)
-    r = client.put("/instrument-classes/ZZFI", json={"instrument_class": "etf"})
-    assert r.status_code == 503
-    assert r.headers.get("link") == '</instrument-classes/ZZFI>; rel="successor-version"'
-    # PUT /executions/{id} is not marked: the fill edit has no PATCH successor yet.
-    r = client.put("/executions/-7", json={"strategy_instance_id": 3})
-    assert r.status_code == 503 and r.json()["detail"] == "PostgreSQL is required to write account_executions."
-    assert "deprecation" not in r.headers and "link" not in r.headers
+    for path, body in (("/instrument-classes/ZZFI", {"instrument_class": "etf"}), ("/executions/-7", {"strategy_instance_id": 3})):
+        r = client.put(path, json=body)
+        assert r.status_code == 503
+        assert "deprecation" not in r.headers and "link" not in r.headers
 
 
 def test_an_unmarked_route_is_left_alone() -> None:

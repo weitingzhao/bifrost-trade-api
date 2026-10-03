@@ -1,0 +1,186 @@
+{
+  "ExecutionCreateBody": [
+    "account_id",
+    "commission",
+    "contract_key",
+    "cum_qty",
+    "currency",
+    "exchange",
+    "exec_id",
+    "expiry",
+    "instance_allocations",
+    "option_right",
+    "order_id",
+    "price",
+    "quantity",
+    "raw_extra",
+    "realized_pnl",
+    "sec_type",
+    "side",
+    "source",
+    "strategy_instance_id",
+    "strategy_opportunity_id",
+    "strike",
+    "symbol",
+    "time"
+  ],
+  "ExecutionUpdateBody": [
+    "account_id",
+    "commission",
+    "contract_key",
+    "cum_qty",
+    "currency",
+    "exchange",
+    "exec_time",
+    "expiry",
+    "instance_allocations",
+    "option_right",
+    "order_id",
+    "price",
+    "quantity",
+    "realized_pnl",
+    "sec_type",
+    "side",
+    "source",
+    "strategy_instance_id",
+    "strategy_opportunity_id",
+    "strike",
+    "symbol",
+    "time"
+  ],
+  "GateSafetyBody": [
+    "dim_coverage",
+    "dim_direction",
+    "dim_risk",
+    "dim_structure",
+    "dim_time",
+    "dim_volatility",
+    "earnings_dates",
+    "gates",
+    "is_active",
+    "name",
+    "version"
+  ],
+  "InstanceAllocationItem": [
+    "allocated_quantity",
+    "strategy_instance_id"
+  ],
+  "InstrumentClassBody": [
+    "instrument_class",
+    "note"
+  ],
+  "OptionStockLinkBatch": [
+    "account_id",
+    "option_account_executions_ids"
+  ],
+  "OptionStockLinkBody": [
+    "account_id",
+    "note",
+    "option_account_executions_id",
+    "role",
+    "stock_account_executions_id"
+  ],
+  "OptionStockLinksQueryBody": [
+    "batches"
+  ],
+  "PositionCategoryBody": [
+    "description",
+    "name",
+    "sort_order"
+  ],
+  "PositionTagBody": [
+    "account_id",
+    "category_id",
+    "contract_key"
+  ],
+  "SavedSearchBody": [
+    "label",
+    "route",
+    "state"
+  ],
+  "StrategyAttributionBatchBody": [
+    "account_id",
+    "contract_key",
+    "execution_ids",
+    "strategy_instance_id",
+    "strategy_opportunity_id"
+  ],
+  "StructureBody": [
+    "is_active",
+    "legs",
+    "meta",
+    "name",
+    "notes",
+    "strategy_template_id",
+    "structure_type",
+    "version"
+  ],
+  "StructureLegItem": [
+    "direction",
+    "expiration",
+    "option_right",
+    "quantity",
+    "role",
+    "strike"
+  ],
+  "StructureMetaItem": [
+    "meta_key",
+    "meta_value_text"
+  ],
+  "SymbolOrderBody": [
+    "category_name",
+    "symbols"
+  ],
+  "TemplateBody": [
+    "dim_coverage",
+    "dim_direction",
+    "dim_risk",
+    "dim_structure",
+    "dim_time",
+    "dim_volatility",
+    "display_name",
+    "example",
+    "explanation",
+    "is_active",
+    "nature",
+    "sort_order",
+    "template_code",
+    "typical_use"
+  ],
+  "TemplateCharacteristicsBody": [
+    "items"
+  ],
+  "TemplateLegItem": [
+    "direction",
+    "option_right",
+    "quantity",
+    "quantity_default",
+    "role",
+    "sort_order"
+  ],
+  "TemplateLegsBody": [
+    "legs"
+  ],
+  "TemplateParamItem": [
+    "default_value_text",
+    "display_label",
+    "meta_key",
+    "param_kind",
+    "sort_order"
+  ],
+  "TemplateParamsBody": [
+    "items"
+  ],
+  "WatchlistBody": [
+    "category_id",
+    "contract_key",
+    "display_label",
+    "expiry",
+    "option_right",
+    "optionable",
+    "sec_type",
+    "source",
+    "strike",
+    "symbol"
+  ]
+}

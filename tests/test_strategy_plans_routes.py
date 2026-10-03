@@ -110,7 +110,6 @@ def test_a_rule_refusal_becomes_409_with_the_reason(monkeypatch: pytest.MonkeyPa
 
     for response in (
         client.post("/strategies/plans/1/intend"),
-        client.put("/strategies/plans/1", json={"qty": 2}),
         client.post("/strategies/plans/1/cancel"),
         client.post("/strategies/plans/1/link-fill", json={"strategy_instance_id": 7}),
     ):

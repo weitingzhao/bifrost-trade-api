@@ -36,7 +36,8 @@ def test_list_and_set_pass_through() -> None:
     listed = c.get("/instrument-classes").json()
     assert listed["count"] == 1 and listed["items"] == reader.list_instrument_classes.return_value
     assert c.put("/instrument-classes/ZZFI", json={"instrument_class": "cash_like", "note": "T-bill fund"}).json() == {"ok": True}
-    reader.set_instrument_class.assert_called_once_with("ZZFI", "cash_like", note="T-bill fund")
+    # A full replace since api 0.6.0 (TD-15): the stored note is not kept.
+    reader.set_instrument_class.assert_called_once_with("ZZFI", "cash_like", note="T-bill fund", keep_note=False)
 
 
 def test_a_refusal_says_why() -> None:
