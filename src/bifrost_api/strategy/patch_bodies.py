@@ -10,7 +10,7 @@ with core's reason. The patchable sets mirror core's ``*_PATCHABLE`` tuples.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, ClassVar, Dict, List, Optional, Union
 
 from pydantic import StrictBool, StrictFloat, StrictInt, StrictStr
 
@@ -91,7 +91,10 @@ class InstancePatch(PatchBody):
 
 
 class PlanPatch(PatchBody):
-    """A draft takes any field; an intended plan only ``expires_at`` (409 otherwise)."""
+    """A draft takes any field; an intended plan only ``expires_at`` (409 otherwise).
+
+    ``legs_json`` / ``source_json`` are the names a plan is read with (TD-57, api 0.6.7);
+    ``legs`` / ``source`` still work for one release and lose when both are sent."""
 
     account_id: Optional[StrictStr] = None
     symbol: Optional[StrictStr] = None
@@ -112,6 +115,19 @@ class PlanPatch(PatchBody):
     expires_at: Optional[Timestamp] = None
     legs: Optional[List[Dict[str, Any]]] = None
     source: Optional[List[Dict[str, Any]]] = None
+    legs_json: Optional[List[Dict[str, Any]]] = None
+    source_json: Optional[List[Dict[str, Any]]] = None
+
+    # read name -> the name core's patch_plan takes
+    READ_NAMES: ClassVar[Dict[str, str]] = {"legs_json": "legs", "source_json": "source"}
+
+    def patch_fields(self) -> Dict[str, Any]:
+        """The fields sent, under the names core's patch_plan takes (``legs`` / ``source``)."""
+        out = super().patch_fields()
+        for read_name, write_name in self.READ_NAMES.items():
+            if read_name in out:
+                out[write_name] = out.pop(read_name)
+        return out
 
 
 class ReviewPatch(PatchBody):

@@ -324,7 +324,13 @@ def test_link_success_keeps_its_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ex, "insert_option_stock_link", lambda _cfg, _body: (True, 12, None, "differs"))
     r = _client().post("/executions/option-stock-links", json={"account_id": ACC})
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "link_id": 12, "error": None, "warning": "differs"}
+    assert r.json() == {
+        "ok": True,
+        "link_id": 12,
+        "account_execution_option_stock_link_id": 12,
+        "error": None,
+        "warning": "differs",
+    }
 
 
 def test_post_execution_success_keeps_its_shape(monkeypatch: pytest.MonkeyPatch) -> None:

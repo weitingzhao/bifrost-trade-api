@@ -41,10 +41,11 @@ def list_saved_searches_endpoint(request: Request) -> Dict[str, Any]:
 
 @router.post("/saved-searches")
 def create_saved_search_endpoint(request: Request, body: SavedSearchBody) -> Dict[str, Any]:
-    """Keep a scope: body {route, label, state}. Saving a label again on a page replaces it."""
+    """Keep a scope: body {route, label, state_json} (`state` still read for one release).
+    Saving a label again on a page replaces it."""
     config = write_config(request)
     try:
-        new_id = saved_search_module.create_saved_search(config, body.route or "", body.label or "", body.state or {})
+        new_id = saved_search_module.create_saved_search(config, body.route or "", body.label or "", body.state_sent())
     except SavedSearchError as e:
         raise HTTPException(status_code=400, detail=e.reason) from e
     except Exception as e:
@@ -55,9 +56,9 @@ def create_saved_search_endpoint(request: Request, body: SavedSearchBody) -> Dic
     return {"preference_saved_search_id": new_id}
 
 
-@router.delete("/saved-searches/{saved_search_id}")
-def delete_saved_search_endpoint(request: Request, saved_search_id: int) -> Dict[str, Any]:
+@router.delete("/saved-searches/{preference_saved_search_id}")
+def delete_saved_search_endpoint(request: Request, preference_saved_search_id: int) -> Dict[str, Any]:
     """Forget one saved search (hard delete). Failures are core's Write* outcomes
     (``bifrost_api.common.write_errors``): 404 missing, 503 Postgres unavailable."""
-    config = write_target(request, f"saved search {saved_search_id}")
-    return deleted_body(saved_search_module.delete_saved_search_strict(config, saved_search_id))
+    config = write_target(request, f"saved search {preference_saved_search_id}")
+    return deleted_body(saved_search_module.delete_saved_search_strict(config, preference_saved_search_id))

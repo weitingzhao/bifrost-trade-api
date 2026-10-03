@@ -55,6 +55,17 @@ _NO_CONNECTION = frozenset(
 )
 
 
+def _with_category_id(row: Any) -> Any:
+    """A category row with ``category_id`` beside ``id`` (TD-57, api 0.6.7).
+
+    The table's key is ``id``, but the path (``/position-categories/{category_id}``), the
+    tag body and every referencing column call it ``category_id``; a reader can now use
+    that one name everywhere. ``id`` stays for one release."""
+    if isinstance(row, dict) and "id" in row and "category_id" not in row:
+        return {**row, "category_id": row["id"]}
+    return row
+
+
 def _write_failed(err: Optional[str], fallback: str) -> Any:
     """A writer's refusal after input was checked: 503 when it had no connection, else 500."""
     if err in _NO_CONNECTION:
@@ -64,10 +75,11 @@ def _write_failed(err: Optional[str], fallback: str) -> Any:
 
 @router.get("/position-categories")
 def get_position_categories(request: Request) -> Dict[str, Any]:
-    """Return all position_categories rows (for dropdown and manage UI)."""
+    """Return all position_categories rows (for dropdown and manage UI), each with
+    ``category_id`` (= ``id``, which goes next release)."""
     reader = request.app.state.reader
     items = reader.get_position_categories()
-    return list_body(items)
+    return list_body([_with_category_id(r) for r in items or []])
 
 
 @router.post("/position-categories")
@@ -86,7 +98,7 @@ def post_position_category(request: Request, body: PositionCategoryBody) -> Any:
         sort_order=body.sort_order,
     )
     if gid is not None:
-        return {"ok": True, "id": gid, "name": name}
+        return {"ok": True, "id": gid, "category_id": gid, "name": name}
     return _write_failed(err, "Failed to create category.")
 
 
@@ -96,7 +108,7 @@ def patch_position_category(request: Request, category_id: int, body: PositionCa
     Answers the category row plus `ok: true` (SharesBand reads `ok`; it goes next release)."""
     config = write_target(request, f"position category {category_id}")
     row = position_categories_module.patch_position_category(config, category_id, body.patch_fields())
-    return {**row, "ok": True}
+    return {**_with_category_id(row), "ok": True}
 
 
 @router.delete("/position-categories/{category_id:int}")

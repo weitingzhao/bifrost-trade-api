@@ -139,8 +139,18 @@ class GateSafetyBody(LenientBody):
 
 class SavedSearchBody(LenientBody):
     """POST /strategies/saved-searches. Core's rules: ``route`` an app path, ``label``
-    non-blank, ``state`` an object (400 with the reason)."""
+    non-blank, ``state`` an object (400 with the reason).
+
+    ``state_json`` is the name a saved search is read with (TD-57, api 0.6.7); ``state``
+    still works for one release and loses when both are sent."""
 
     route: Optional[StrictStr] = None
     label: Optional[StrictStr] = None
     state: Optional[Dict[str, Any]] = None
+    state_json: Optional[Dict[str, Any]] = None
+
+    def state_sent(self) -> Dict[str, Any]:
+        """The page state, under whichever name it came."""
+        if self.state_json is not None:
+            return self.state_json
+        return self.state or {}

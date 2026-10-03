@@ -14,6 +14,18 @@ are strict; both raise core's Write* outcomes, mapped in
 ``bifrost_api.common.write_errors``. PUT keeps its old behaviour for one release
 and is marked replaced by the PATCH.
 
+**Execution ids.** ``account_executions_id`` -- in every row, in the answer of POST
+/executions and in ``/executions/{account_executions_id}`` -- is one id space over the three
+raw tables of ``brokerage.executions``, told apart by sign (core ``brokerage_ddl``):
+
+- ``id > 0``: a Flex row, ``executions_raw_flex_id = id``
+- ``-1_000_000_000 < id < 0``: a TWS row Flex has not confirmed, ``executions_raw_tws_id = -id``
+- ``id < -1_000_000_000``: a journal row, ``executions_raw_journal_id = -id - 1_000_000_000``
+
+A TWS fill that Flex later confirms is read under its Flex id from then on. Path
+parameters are named for the table id they take (TD-57, api 0.6.7; the URLs did not
+change): ``{account_executions_id}``, ``{account_execution_option_stock_link_id}``.
+
 TD-24 (batch 3c-1): the POST / PUT bodies are ``trading.schemas.requests`` models --
 a wrong type is 422 and writes nothing (a malformed strategy id no longer clears the
 attribution); unknown fields are ignored and logged this release.
@@ -87,6 +99,14 @@ _LINK_BAD_INPUT = (
     "Invalid link id.",
     "invalid option_account_executions_id",
 )
+
+
+def _with_link_table_id(row: Any) -> Any:
+    """A link row with ``account_execution_option_stock_link_id`` beside ``link_id`` (TD-57,
+    api 0.6.7): the table's own name, the one the DELETE path and answer use."""
+    if isinstance(row, dict) and "link_id" in row:
+        return {**row, "account_execution_option_stock_link_id": row["link_id"]}
+    return row
 
 
 def _link_error_status(err: str) -> int:
@@ -296,6 +316,15 @@ def post_option_stock_links_query(request: Request, body: OptionStockLinksQueryB
     err = out.get("error")
     if err:
         return error_response(_link_error_status(str(err)), str(err))
+    by_option = out.get("by_option_id")
+    if isinstance(by_option, dict):
+        out = {
+            **out,
+            "by_option_id": {
+                k: ({**v, "links": [_with_link_table_id(r) for r in v.get("links") or []]} if isinstance(v, dict) else v)
+                for k, v in by_option.items()
+            },
+        }
     return out
 
 
@@ -313,7 +342,8 @@ def get_option_stock_links_route(
         return error_response(
             _link_error_status(str(err)), str(err)
         )
-    return list_body(out.get("links"), slippage_total=out.get("slippage_total"))
+    links = [_with_link_table_id(r) for r in out.get("links") or []]
+    return list_body(links, slippage_total=out.get("slippage_total"))
 
 
 @router.get("/executions/stock-link-candidates")
@@ -344,6 +374,12 @@ def get_stock_link_candidates_route(
     if err:
         return error_response(_link_error_status(str(err)), str(err))
     rows = out.pop("executions", None) or []
+    # The window read, under the query's names too (TD-51/57, api 0.6.7); trade_date_from /
+    # trade_date_to go next release.
+    if "trade_date_from" in out:
+        out["from_date"] = out["trade_date_from"]
+    if "trade_date_to" in out:
+        out["to_date"] = out["trade_date_to"]
     return list_body(rows, **out)
 
 
@@ -357,18 +393,26 @@ def post_option_stock_links(request: Request, body: OptionStockLinkBody) -> Any:
     if not ok:
         msg = str(err or "Failed to link the stock execution.")
         return error_response(_link_error_status(msg), msg)
-    return {"ok": True, "link_id": link_id, "error": None, "warning": warning}
+    # account_execution_option_stock_link_id is the table's own name for link_id (TD-57, api 0.6.7).
+    return {
+        "ok": True,
+        "link_id": link_id,
+        "account_execution_option_stock_link_id": link_id,
+        "error": None,
+        "warning": warning,
+    }
 
 
-@router.delete("/executions/option-stock-links/{link_id}")
+@router.delete("/executions/option-stock-links/{account_execution_option_stock_link_id}")
 def delete_option_stock_links_route(
     request: Request,
-    link_id: str,
+    account_execution_option_stock_link_id: str,
     account_id: str = Query(..., description="Must match link row account_id"),
 ) -> Any:
-    """Hard delete. 404 when there is no such link on that account."""
+    """Hard delete. 404 when there is no such link on that account. The id is the link
+    rows' ``link_id`` (also sent as ``account_execution_option_stock_link_id``)."""
     try:
-        lid = int(str(link_id).strip())
+        lid = int(str(account_execution_option_stock_link_id).strip())
     except (TypeError, ValueError):
         raise HTTPException(status_code=422, detail="Invalid link id") from None
     config = write_target(request, f"option/stock link {lid}")
@@ -474,18 +518,18 @@ def post_execution(request: Request, body: ExecutionCreateBody) -> Any:
     return {"ok": True, "account_executions_id": new_account_executions_id, "message": "Execution record added."}
 
 
-def _parse_account_executions_path_id(execution_id: str) -> int:
+def _parse_account_executions_path_id(account_executions_id: str) -> int:
     try:
-        return int(str(execution_id).strip())
+        return int(str(account_executions_id).strip())
     except (TypeError, ValueError) as e:
         raise HTTPException(status_code=422, detail="Invalid execution id") from e
 
 
-@router.put("/executions/{execution_id}")
-def put_execution(request: Request, execution_id: str, body: ExecutionUpdateBody) -> Any:
+@router.put("/executions/{account_executions_id}")
+def put_execution(request: Request, account_executions_id: str, body: ExecutionUpdateBody) -> Any:
     """Update one execution by account_executions_id (manual correction): the fields sent
-    change. Negative ids = TWS raw rows."""
-    eid = _parse_account_executions_path_id(execution_id)
+    change. The id is signed by source (see the module docstring)."""
+    eid = _parse_account_executions_path_id(account_executions_id)
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return error_response(503, PG_REQUIRED_FOR_EXECUTIONS)
@@ -500,8 +544,8 @@ def put_execution(request: Request, execution_id: str, body: ExecutionUpdateBody
     return error_response(404, "Update failed (account_executions_id missing or database error).")
 
 
-@router.patch("/executions/{execution_id}/attribution")
-def patch_execution_attribution(request: Request, execution_id: str, body: ExecutionAttributionPatch) -> Any:
+@router.patch("/executions/{account_executions_id}/attribution")
+def patch_execution_attribution(request: Request, account_executions_id: str, body: ExecutionAttributionPatch) -> Any:
     """Change one execution's strategy attribution; answer its attribution fields
     (account_executions_id, account_id, the two ids, instance_allocations).
 
@@ -510,18 +554,19 @@ def patch_execution_attribution(request: Request, execution_id: str, body: Execu
     instance must be on the execution's account (400). An opportunity without a trade is
     400; with one it must be the trade's (400). Written to this environment's
     strategy_instance_execution by the fill (account_id, exec_id), so a TWS row and its
-    Flex twin change together (core 0.37.0, TD-09). Negative ids are TWS raw rows."""
-    eid = _parse_account_executions_path_id(execution_id)
+    Flex twin change together (core 0.37.0, TD-09). The id is signed by source (see the
+    module docstring)."""
+    eid = _parse_account_executions_path_id(account_executions_id)
     config = write_target(request, f"execution {eid}")
     return accounts_module.patch_execution(config, eid, body.patch_fields())
 
 
-@router.delete("/executions/{execution_id}")
-def delete_execution(request: Request, execution_id: str) -> Any:
+@router.delete("/executions/{account_executions_id}")
+def delete_execution(request: Request, account_executions_id: str) -> Any:
     """Hard-delete one execution: its Golden Source raw row, its splits, and its commission
     when no other raw row carries the exec_id. 409 while an option/stock link names it.
-    Negative ids are TWS raw rows."""
-    eid = _parse_account_executions_path_id(execution_id)
+    The id is signed by source (see the module docstring)."""
+    eid = _parse_account_executions_path_id(account_executions_id)
     config = write_target(request, f"execution {eid}")
     return deleted_body(accounts_module.delete_execution_strict(config, eid))
 

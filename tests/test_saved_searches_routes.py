@@ -30,7 +30,7 @@ def _client(control_via_db: Any = None) -> TestClient:
 
 def test_mounted_on_the_account_app() -> None:
     paths = set(_client().app.openapi()["paths"])
-    assert {"/strategies/saved-searches", "/strategies/saved-searches/{saved_search_id}"} <= paths
+    assert {"/strategies/saved-searches", "/strategies/saved-searches/{preference_saved_search_id}"} <= paths
 
 
 def test_writes_without_postgres_are_503() -> None:

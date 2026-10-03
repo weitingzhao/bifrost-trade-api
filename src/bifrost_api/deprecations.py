@@ -60,7 +60,7 @@ DEPRECATED_ROUTES: FrozenSet[Tuple[str, str]] = frozenset(
         ("PATCH", "/executions/strategy-attribution"),
         # GET /instrument-classes is not here: the audit listed it, but it serves
         # the instrument-class (Shares registration) feature and Loki shows it in use.
-        ("DELETE", "/strategies/structures/{structure_id}"),
+        ("DELETE", "/strategies/structures/{strategy_structure_id}"),
         ("GET", "/strategies/instances/{strategy_instance_id}/open-option-legs"),
         # market
         ("GET", "/bars/latest"),
@@ -80,7 +80,7 @@ DEPRECATED_ROUTES: FrozenSet[Tuple[str, str]] = frozenset(
 REPLACED_ROUTES: Dict[Tuple[str, str], str] = {
     # Empty since api 0.6.0 (TD-15): the merge PUTs on templates, opportunities,
     # allocations, plans and reviews were deleted after a release with no caller, and
-    # PUT /instrument-classes became a true create-or-replace. PUT /executions/{execution_id}
+    # PUT /instrument-classes became a true create-or-replace. PUT /executions/{account_executions_id}
     # is not here: ExecutionFormModal edits the fill columns through it and those have no
     # PATCH yet (attribution callers use PATCH /executions/{id}/attribution).
 }
