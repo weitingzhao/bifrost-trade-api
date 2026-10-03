@@ -117,16 +117,16 @@ def _account(reader: MagicMock) -> TestClient:
 
 def test_old_and_new_time_names_reach_the_reader_the_same(caplog: pytest.LogCaptureFixture) -> None:
     reader = MagicMock()
-    reader.get_transactions.return_value = []
+    reader.get_transactions_page.return_value = {"items": [], "next_cursor": None}
     client = _account(reader)
     with caplog.at_level(logging.WARNING, logger="bifrost_api.common.query_vocab"):
         assert client.get("/transactions?since_ts=100&until_ts=200").status_code == 200
-    old = reader.get_transactions.call_args.kwargs
+    old = reader.get_transactions_page.call_args.kwargs
     assert "deprecated query params: GET /transactions since_ts->from_ts until_ts->to_ts" in caplog.text
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="bifrost_api.common.query_vocab"):
         assert client.get("/transactions?from_ts=100&to_ts=200").status_code == 200
-    assert reader.get_transactions.call_args.kwargs == old
+    assert reader.get_transactions_page.call_args.kwargs == old
     assert old["since_ts"] == 100.0 and old["until_ts"] == 200.0
     assert "deprecated query params" not in caplog.text
 
@@ -134,7 +134,7 @@ def test_old_and_new_time_names_reach_the_reader_the_same(caplog: pytest.LogCapt
 @pytest.mark.parametrize(
     "path, reader_method, old, new, kwarg",
     [
-        ("/executions", "get_executions", "since_ts=7", "from_ts=7", ("since_ts", 7.0)),
+        ("/executions", "get_executions_page", "since_ts=7", "from_ts=7", ("since_ts", 7.0)),
         ("/performance", "get_performance_stats", "until_ts=7", "to_ts=7", ("until_ts", 7.0)),
         ("/strategies/win-rate", "get_strategy_win_rate", "since_ts=7", "from_ts=7", ("since_ts", 7.0)),
         ("/strategies/instances", "list_strategy_instances", "opened_at_from=7", "from_ts=7", ("opened_at_from", 7.0)),
@@ -238,30 +238,41 @@ def _rows(n: int) -> list:
     return [{"account_executions_id": i, "symbol": "ZZQ"} for i in range(1, n + 1)]
 
 
-@pytest.mark.parametrize("returned, total", [(3, 3), (5, 5), (6, None)])
-def test_executions_total_is_sent_only_when_the_limit_did_not_cut(returned: int, total: Optional[int]) -> None:
+def _page(rows: list, next_cursor: Optional[str] = None) -> dict:
+    return {"items": rows, "next_cursor": next_cursor}
+
+
+# Since api 0.6.9 (core 0.40.0) the reader's page method reads limit + 1 itself and says
+# whether a page follows (next_cursor); the route sends total only for a first page with none.
+
+
+@pytest.mark.parametrize("returned, more, total", [(3, False, 3), (5, False, 5), (5, True, None)])
+def test_executions_total_is_sent_only_when_the_limit_did_not_cut(returned: int, more: bool, total: Optional[int]) -> None:
     reader = MagicMock()
-    reader.get_executions.return_value = _rows(returned)
+    reader.get_executions_page.return_value = _page(_rows(returned), "c1" if more else None)
     body = _account(reader).get("/executions?limit=5").json()
-    assert reader.get_executions.call_args.kwargs["limit"] == 6
-    assert body["count"] == min(returned, 5)
+    kwargs = reader.get_executions_page.call_args.kwargs
+    assert kwargs["limit"] == 5 and kwargs["cursor"] is None
+    assert body["count"] == returned
     assert body.get("total") == total
     assert ("total" in body) is (total is not None)
+    assert body["next_cursor"] == ("c1" if more else None)
 
 
 def test_executions_limit_zero_reads_everything_and_counts_it() -> None:
     reader = MagicMock()
-    reader.get_executions.return_value = _rows(4)
+    reader.get_executions_page.return_value = _page(_rows(4))
     body = _account(reader).get("/executions?limit=0").json()
-    assert reader.get_executions.call_args.kwargs["limit"] is None
+    assert reader.get_executions_page.call_args.kwargs["limit"] is None
     assert body["count"] == body["total"] == 4
+    assert body["next_cursor"] is None
 
 
 def test_executions_default_limit_is_still_200() -> None:
     reader = MagicMock()
-    reader.get_executions.return_value = _rows(2)
+    reader.get_executions_page.return_value = _page(_rows(2))
     _account(reader).get("/executions")
-    assert reader.get_executions.call_args.kwargs["limit"] == 201
+    assert reader.get_executions_page.call_args.kwargs["limit"] == 200
 
 
 def test_executions_with_pairs_total_under_the_cap_only() -> None:
@@ -275,19 +286,21 @@ def test_executions_with_pairs_total_under_the_cap_only() -> None:
     assert client.get("/executions?include_opt_pairs=true&limit=2").json()["total"] == 1
 
 
-@pytest.mark.parametrize("returned, total", [(0, 0), (500, 500), (501, None)])
-def test_transactions_total(returned: int, total: Optional[int]) -> None:
+@pytest.mark.parametrize("returned, more, total", [(0, False, 0), (500, False, 500), (500, True, None)])
+def test_transactions_total(returned: int, more: bool, total: Optional[int]) -> None:
     reader = MagicMock()
-    reader.get_transactions.return_value = [{"account_transactions_id": i} for i in range(returned)]
+    rows = [{"account_transactions_id": i} for i in range(returned)]
+    reader.get_transactions_page.return_value = _page(rows, "c1" if more else None)
     body = _account(reader).get("/transactions").json()
-    assert reader.get_transactions.call_args.kwargs["limit"] == 501
-    assert body["count"] == min(returned, 500)
+    kwargs = reader.get_transactions_page.call_args.kwargs
+    assert kwargs["limit"] == 500 and kwargs["cursor"] is None
+    assert body["count"] == returned
     assert body.get("total") == total
 
 
 def test_transactions_limit_zero_is_passed_as_before() -> None:
     reader = MagicMock()
-    reader.get_transactions.return_value = []
+    reader.get_transactions_page.return_value = _page([])
     body = _account(reader).get("/transactions?limit=0").json()
-    assert reader.get_transactions.call_args.kwargs["limit"] == 0
-    assert body == {"items": [], "count": 0}
+    assert reader.get_transactions_page.call_args.kwargs["limit"] == 0
+    assert body == {"items": [], "count": 0, "next_cursor": None}
