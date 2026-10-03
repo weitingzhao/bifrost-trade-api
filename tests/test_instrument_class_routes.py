@@ -45,7 +45,7 @@ def test_a_refusal_says_why() -> None:
     r = _client(reader, {"sink": "postgres"}).put("/instrument-classes/ZZFI", json={"instrument_class": "bond"})
     assert r.status_code == 400
     body = r.json()
-    assert "must be one of" in body["detail"] and body["ok"] is False and body["error"] == body["detail"]
+    assert "must be one of" in body["detail"] and set(body) == {"detail"}
     reader.set_instrument_class.assert_not_called()
 
 
@@ -53,5 +53,5 @@ def test_without_postgres_nothing_is_written() -> None:
     # One app per test: a second app in the same test registers the metrics twice.
     reader = MagicMock()
     r = _client(reader).delete("/instrument-classes/ZZFI")
-    assert r.status_code == 503 and r.json()["ok"] is False
+    assert r.status_code == 503 and set(r.json()) == {"detail"}
     reader.delete_instrument_class.assert_not_called()

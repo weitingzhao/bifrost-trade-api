@@ -1,6 +1,6 @@
 """Watchlist: CRUD for watchlist items.
 
-Failures answer a real status with ``{"detail", "ok": false, "error"}``; the list
+Failures answer a real status with ``{"detail"}``; the list
 answers ``{"items", "count"}`` (``bifrost_api.common.envelopes``, TD-16/17).
 
 Writes (TD-15, batch 3b-2) call core's TD-15 writers; their Write* outcomes are

@@ -110,7 +110,6 @@ class StructureBody(LenientBody):
     name: Optional[StrictStr] = None
     strategy_template_id: Optional[StrictInt] = None
     structure_type: Optional[StrictStr] = None
-    structure_subtype: Optional[StrictStr] = None
     legs: Optional[List[StructureLegItem]] = None
     version: Optional[StrictInt] = None
     is_active: Optional[StrictBool] = None

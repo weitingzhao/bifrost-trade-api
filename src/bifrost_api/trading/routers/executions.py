@@ -4,9 +4,9 @@ Flex ingest (trades / cash / XML / config write) is served by Flex Query Plugin
 (``POST /flex/ingest/trigger``, ``POST /flex/ingest/upload-xml``, ``POST /flex/config/write``).
 ``GET /transactions`` remains here to read already-ingested cash rows.
 
-Failures answer a real status with ``{"detail", "ok": false, "error", ...}`` and
-lists answer ``{"items", "count", ...}`` with the old list key beside them for one
-release (``bifrost_api.common.envelopes``, TD-16/17).
+Failures answer a real status with ``{"detail"}`` and lists answer
+``{"items", "count", ...}`` (``bifrost_api.common.envelopes``, TD-16/17; the old
+list keys went in 0.4.0).
 
 TD-15 (batch 3b-2): ``PATCH /executions/{id}/attribution`` changes only the
 strategy attribution (the fill's own columns stay with PUT), and the two DELETEs
@@ -183,7 +183,7 @@ def get_executions(
             or {}
         )
         rows = paired.pop("executions", None) or []
-        return list_body(rows, "executions", **paired)
+        return list_body(rows, **paired)
     items = reader.get_executions(
         since_ts=since_ts,
         until_ts=until_ts,
@@ -193,7 +193,7 @@ def get_executions(
         strategy_instance_id=strategy_instance_id,
         source_scope=source_scope,
     )
-    return list_body(items, "executions")
+    return list_body(items)
 
 
 @router.get("/executions/position-attribution")
@@ -208,7 +208,7 @@ def get_position_attribution(
         account_id=account_id,
         sec_type_filter=sec_type,
     )
-    return list_body(items, "attributions")
+    return list_body(items)
 
 
 @router.get("/executions/link-candidates")
@@ -230,7 +230,6 @@ def get_executions_link_candidates(
         return error_response(
             400,
             "Provide contract_key, or symbol+expiry+strike for fallback matching.",
-            {"executions": []},
         )
     items = reader.get_executions_for_strategy_link(
         account_id=account_id.strip(),
@@ -241,7 +240,7 @@ def get_executions_link_candidates(
         option_right=(option_right or "").strip() or None,
         limit=limit,
     )
-    return list_body(items, "executions")
+    return list_body(items)
 
 
 @router.post("/executions/option-stock-links/query")
@@ -253,7 +252,7 @@ def post_option_stock_links_query(request: Request, body: OptionStockLinksQueryB
     """
     reader = request.app.state.reader
     if body.batches is None:
-        return error_response(400, "batches must be a list", {"by_option_id": {}})
+        return error_response(400, "batches must be a list")
     batches: List[Any] = []
     for item in body.batches:
         acc = (item.account_id or "").strip()
@@ -263,7 +262,7 @@ def post_option_stock_links_query(request: Request, body: OptionStockLinksQueryB
     out = reader.get_option_stock_links_bulk(batches)
     err = out.get("error")
     if err:
-        return error_response(_link_error_status(str(err)), str(err), {"by_option_id": out.get("by_option_id") or {}})
+        return error_response(_link_error_status(str(err)), str(err))
     return out
 
 
@@ -279,9 +278,9 @@ def get_option_stock_links_route(
     err = out.get("error")
     if err:
         return error_response(
-            _link_error_status(str(err)), str(err), {"links": out.get("links") or [], "slippage_total": None}
+            _link_error_status(str(err)), str(err)
         )
-    return list_body(out.get("links"), "links", slippage_total=out.get("slippage_total"))
+    return list_body(out.get("links"), slippage_total=out.get("slippage_total"))
 
 
 @router.get("/executions/stock-link-candidates")
@@ -310,9 +309,9 @@ def get_stock_link_candidates_route(
     )
     err = out.get("error")
     if err:
-        return error_response(_link_error_status(str(err)), str(err), {"executions": []})
+        return error_response(_link_error_status(str(err)), str(err))
     rows = out.pop("executions", None) or []
-    return list_body(rows, "executions", **out)
+    return list_body(rows, **out)
 
 
 @router.post("/executions/option-stock-links")
@@ -320,11 +319,11 @@ def post_option_stock_links(request: Request, body: OptionStockLinkBody) -> Any:
     """Link one OPT execution to one STK execution (both must exist on account_executions_final)."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
-        return error_response(503, "PostgreSQL is required.", {"link_id": None, "warning": None})
+        return error_response(503, "PostgreSQL is required.")
     ok, link_id, err, warning = insert_option_stock_link(control_via_db, body.declared(exclude_unset=True))
     if not ok:
         msg = str(err or "Failed to link the stock execution.")
-        return error_response(_link_error_status(msg), msg, {"link_id": None, "warning": warning})
+        return error_response(_link_error_status(msg), msg)
     return {"ok": True, "link_id": link_id, "error": None, "warning": warning}
 
 
@@ -408,7 +407,7 @@ def get_transactions(
     """List account_transactions (Flex cash transactions) for Transfer & Pay page."""
     reader = request.app.state.reader
     items = reader.get_transactions(since_ts=since_ts, until_ts=until_ts, account_id=account_id, limit=limit)
-    return list_body(items, "transactions")
+    return list_body(items)
 
 
 @router.post("/executions")
@@ -416,21 +415,21 @@ def post_execution(request: Request, body: ExecutionCreateBody) -> Any:
     """Add one execution record manually (history). body: account_id, time, symbol, sec_type, side, quantity, price; optional fields."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
-        return error_response(503, PG_REQUIRED_FOR_EXECUTIONS, {"account_executions_id": None})
+        return error_response(503, PG_REQUIRED_FOR_EXECUTIONS)
     # The inputs core's writer refuses before it writes (portfolio/reader/accounts.py
     # insert_one_execution) answer 400; so does a refusal when splits were sent, which
     # core also rejects with one None (wrong account, duplicate instance, sum != quantity).
     if body.quantity is None or body.price is None:
         return error_response(
-            400, "Failed to add execution (required fields: symbol, quantity, price).", {"account_executions_id": None}
+            400, "Failed to add execution (required fields: symbol, quantity, price)."
         )
     new_account_executions_id = insert_one_execution(control_via_db, body.declared(exclude_unset=True))
     if new_account_executions_id is None:
         if body.instance_allocations:
             return error_response(
-                400, "Failed to add execution (instance_allocations rejected or database error).", {"account_executions_id": None}
+                400, "Failed to add execution (instance_allocations rejected or database error)."
             )
-        return error_response(500, "Failed to add execution (database error).", {"account_executions_id": None})
+        return error_response(500, "Failed to add execution (database error).")
     return {"ok": True, "account_executions_id": new_account_executions_id, "message": "Execution record added."}
 
 
@@ -504,12 +503,12 @@ async def post_executions_fetch(
     cfg = reader._config
     control_via_db = app.state.control_via_db
     if not control_via_db:
-        return error_response(503, PG_REQUIRED_FOR_EXECUTIONS, {"count": 0})
+        return error_response(503, PG_REQUIRED_FOR_EXECUTIONS)
     if not getattr(app.state, "monitor_enabled", True):
-        return error_response(503, "Monitor stopped; cannot fetch executions.", {"count": 0})
+        return error_response(503, "Monitor stopped; cannot fetch executions.")
     gw = getattr(app.state, "ib_operator_client", None)
     if gw is None:
-        return error_response(503, "IB Gateway client is not configured.", {"count": 0})
+        return error_response(503, "IB Gateway client is not configured.")
     env = await gw.request_async(
         "fetch_executions",
         {"days": days, "account_slot": "primary"},
@@ -529,7 +528,6 @@ async def post_executions_fetch(
         return error_response(
             503,
             err,
-            {"count": 0, "days": days, "fetched_primary": 0, "fetched_secondary": 0, "fetched_total": 0},
         )
     data = env.get("data") or {}
     primary_execs = list(data.get("executions") or [])
@@ -651,13 +649,6 @@ async def post_executions_fetch(
         return error_response(
             500,
             "Failed to write account_executions.",
-            {
-                "count": 0,
-                "days": days,
-                "fetched_primary": fetched_primary,
-                "fetched_secondary": fetched_secondary,
-                "fetched_total": fetched_total,
-            },
         )
 
     ins = int(stats_out.get("tws_raw_inserted") or 0)

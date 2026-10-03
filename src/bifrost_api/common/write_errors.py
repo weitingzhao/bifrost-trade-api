@@ -15,7 +15,7 @@ calls the writer and the outcome becomes:
                    500   a statement or read-back failed
 
 The body is :func:`bifrost_api.common.envelopes.error_response`'s:
-``{"detail": reason, "ok": false, "error": reason}``. A request body that does
+``{"detail": reason}``. A request body that does
 not parse (wrong type, unknown key, empty PATCH) is still FastAPI's 422.
 """
 

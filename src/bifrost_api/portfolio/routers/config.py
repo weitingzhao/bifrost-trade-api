@@ -1,6 +1,6 @@
 """Portfolio config: position categories, tags, symbol order, instrument classes.
 
-Failures answer a real status with ``{"detail", "ok": false, "error", ...}`` and
+Failures answer a real status with ``{"detail"}`` and
 lists answer ``{"items", "count", ...}`` (``bifrost_api.common.envelopes``, TD-16/17).
 
 PATCH and DELETE (TD-15, batch 3b-2) call core's TD-15 writers, whose Write*
@@ -55,11 +55,11 @@ _NO_CONNECTION = frozenset(
 )
 
 
-def _write_failed(err: Optional[str], fallback: str, legacy: Optional[Dict[str, Any]] = None) -> Any:
+def _write_failed(err: Optional[str], fallback: str) -> Any:
     """A writer's refusal after input was checked: 503 when it had no connection, else 500."""
     if err in _NO_CONNECTION:
-        return error_response(503, err, legacy)
-    return error_response(500, err or fallback, legacy)
+        return error_response(503, err)
+    return error_response(500, err or fallback)
 
 
 @router.get("/position-categories")
@@ -67,7 +67,7 @@ def get_position_categories(request: Request) -> Dict[str, Any]:
     """Return all position_categories rows (for dropdown and manage UI)."""
     reader = request.app.state.reader
     items = reader.get_position_categories()
-    return list_body(items, ok=True)
+    return list_body(items)
 
 
 @router.post("/position-categories")
@@ -75,11 +75,11 @@ def post_position_category(request: Request, body: PositionCategoryBody) -> Any:
     """Create one position category. body: name (required), description, sort_order (an integer)."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
-        return error_response(503, POSTGRES_REQUIRED, {"id": None})
+        return error_response(503, POSTGRES_REQUIRED)
     reader = request.app.state.reader
     name = (body.name or "").strip()
     if not name:
-        return error_response(400, "name is required.", {"id": None})
+        return error_response(400, "name is required.")
     gid, err = reader.create_position_category(
         name=name,
         description=body.description,
@@ -87,7 +87,7 @@ def post_position_category(request: Request, body: PositionCategoryBody) -> Any:
     )
     if gid is not None:
         return {"ok": True, "id": gid, "name": name}
-    return _write_failed(err, "Failed to create category.", {"id": None})
+    return _write_failed(err, "Failed to create category.")
 
 
 @router.patch("/position-categories/{category_id:int}")
@@ -129,13 +129,12 @@ def patch_execution_strategy_attribution(request: Request, body: StrategyAttribu
         return error_response(
             409,
             "One or more executions have instance_allocations; clear or edit splits before batch attribution.",
-            {"updated": 0},
         )
     if count > 0:
         return {"ok": True, "updated": count}
     # Core answers 0 both when nothing matched and when the UPDATE raised (it logs the
     # latter); nothing matching is the case a caller can reach, so 404.
-    return error_response(404, "No matching executions found or update failed.", {"updated": 0})
+    return error_response(404, "No matching executions found or update failed.")
 
 
 @router.put("/position-categories/tag")
@@ -196,7 +195,7 @@ def get_instrument_classes(request: Request) -> Dict[str, Any]:
     """Every registered instrument and its class."""
     reader = request.app.state.reader
     items = reader.list_instrument_classes()
-    return list_body(items, ok=True)
+    return list_body(items)
 
 
 @router.put("/instrument-classes/{contract_key}")

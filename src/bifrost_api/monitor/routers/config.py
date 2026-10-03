@@ -1,7 +1,7 @@
 """Config: IB, active-strategy (Flex config write lives in Flex Query Plugin).
 
-Failures answer ``{"detail", "ok": false, "error"}`` with their status
-(``bifrost_api.common.envelopes``, TD-16/17); ``error`` goes in the next release.
+Failures answer ``{"detail"}`` with their status (``bifrost_api.common.envelopes``,
+TD-16/17).
 """
 
 import logging

@@ -51,7 +51,6 @@ STRUCTURE = {  # structureEditPayload (StructureInspector / useDeskEditing)
     "name": "Short put 30d",
     "strategy_template_id": 4,
     "structure_type": "short_put",
-    "structure_subtype": None,
     "legs": [{"role": "put", "direction": "sell", "option_right": "P", "quantity": 1, "strike": None,
               "expiration": ""}],
     "version": 1,

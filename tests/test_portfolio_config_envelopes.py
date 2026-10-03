@@ -174,12 +174,12 @@ def test_attribution_success_keeps_its_shape() -> None:
 # --- lists ------------------------------------------------------------------------------
 
 
-def test_position_categories_list_has_items_count_and_ok() -> None:
+def test_position_categories_list_has_items_and_count_and_no_ok() -> None:
     reader = MagicMock()
     rows = [{"id": 1, "name": "Core"}, {"id": 2, "name": "Hedge"}]
     reader.get_position_categories.return_value = rows
     body = assert_list(_client(reader).get("/position-categories"), expected=rows)
-    assert body["ok"] is True and body["count"] == 2
+    assert body == {"items": rows, "count": 2}
 
 
 def test_create_category_success_keeps_its_shape() -> None:

@@ -13,7 +13,7 @@ it does in a script:
 
 PATCH and DELETE (TD-15, batch 3b-2) raise core's Write* outcomes, mapped in
 ``bifrost_api.common.write_errors``: input errors are 400 there (PUT still
-answers 409 for them), the body is ``{detail, ok: false, error}``. PUT keeps its
+answers 409 for them), the body is ``{detail}``. PUT keeps its
 old behaviour for one release and is marked replaced by PATCH.
 """
 

@@ -71,10 +71,10 @@ Research **不写** `strategy_opportunity`。表结构与列见 `bifrost-trade-c
 
 `bifrost_api/common/envelopes.py`，新路由和改动到的路由都用它：
 
-- **失败**：`error_response(status, message, legacy=None)` → 真实状态码 + `{"detail": message, "ok": false, "error": message, ...legacy}`。
+- **失败**：`error_response(status, message)` → 真实状态码 + `{"detail": message}`（0.4.0 起不再带 `ok` / `error` / 旧键）。
   客户端只读 `detail`。状态码：400 输入不对 · 404 不存在 / 没匹配到 · 409 冲突 / 被占用 · 503 依赖没配或连不上
   （PostgreSQL、IB Gateway）· 500 意外失败（helper 会记日志）。不再用 200 `{"ok": false}` 报失败。
-- **列表**：`list_body(items, legacy_keys=None, total=None, **extra)` → `{"items": [...], "count": len(items), "total"?, ...}`。
+- **列表**：`list_body(items, total=None, **extra)` → `{"items": [...], "count": len(items), "total"?, ...}`（0.4.0 起不再带旧列表键）。
   成功的单个对象保持原形状，不包一层。
 - **过渡一个版本**：`ok` / `error` 和路由原来的列表键（`executions`、`attributions`、`transactions` …，与 `items` 同一个列表）
   这一版照发，让发布前打开的标签页还能用；**下一个版本删掉**。已转换：portfolio config、trading executions、
