@@ -4,7 +4,6 @@ V1 implements Cash Secured Put (CSP) only.  The structure_type dispatch point is
 present so that CC / Spread / Iron Condor can be added as additional branches.
 """
 
-import math
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -13,10 +12,11 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from bifrost_api.research.deps import db_config
+from bifrost_core.pricing import black_scholes as bs
 
 router = APIRouter(tags=["research"])
 
-RISK_FREE_RATE = 0.045
+RISK_FREE_RATE = bs.RATE_RESEARCH  # 0.045
 MARKET_TZ = ZoneInfo("America/New_York")
 
 
@@ -49,28 +49,13 @@ class ScreenerRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Black-Scholes helpers (self-contained; mirrors src/portfolio/model/core.py)
+# Probability ITM: bifrost_core.pricing (TD-42, api 0.6.1; was a local copy)
 # ---------------------------------------------------------------------------
 
 
-def _bs_d1(S: float, K: float, T: float, r: float, sigma: float) -> float:
-    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
-        return 0.0
-    return (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * math.sqrt(T))
-
-
-def _norm_cdf(x: float) -> float:
-    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
-
-
 def _prob_itm_put(spot: float, strike: float, dte: int, iv: float) -> float:
-    """Probability of a put finishing in-the-money (BS N(-d2))."""
-    T = dte / 365.0
-    if T <= 0 or iv <= 0:
-        return 1.0 if strike > spot else 0.0
-    d1 = _bs_d1(spot, strike, T, RISK_FREE_RATE, iv)
-    d2 = d1 - iv * math.sqrt(T)
-    return _norm_cdf(-d2)
+    """Probability of a put finishing in-the-money (BS N(-d2)); 1.0 / 0.0 by moneyness at expiry or zero vol."""
+    return bs.prob_itm(spot, strike, dte / 365.0, RISK_FREE_RATE, iv, "P")
 
 
 def _composite_score(
