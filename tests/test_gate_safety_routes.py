@@ -44,10 +44,10 @@ def test_defaults_carry_no_earnings_dates() -> None:
 
 
 def test_defaults_is_not_read_as_an_id() -> None:
-    """Declared before /gate-safety/{gate_safety_id}; else "defaults" would be a 422."""
+    """Declared before /gate-safety/{gate_safety_strategy_id}; else "defaults" would be a 422."""
     paths = route_paths(_client().app)
     assert paths.index("/strategies/gate-safety/defaults") < paths.index(
-        "/strategies/gate-safety/{gate_safety_id}"
+        "/strategies/gate-safety/{gate_safety_strategy_id}"
     )
 
 

@@ -178,12 +178,14 @@ def test_position_categories_list_has_items_and_count_and_no_ok() -> None:
     reader = MagicMock()
     rows = [{"id": 1, "name": "Core"}, {"id": 2, "name": "Hedge"}]
     reader.get_position_categories.return_value = rows
-    body = assert_list(_client(reader).get("/position-categories"), expected=rows)
-    assert body == {"items": rows, "count": 2}
+    # category_id beside id (TD-57, api 0.6.7)
+    expected = [{**r, "category_id": r["id"]} for r in rows]
+    body = assert_list(_client(reader).get("/position-categories"), expected=expected)
+    assert body == {"items": expected, "count": 2}
 
 
 def test_create_category_success_keeps_its_shape() -> None:
     reader = MagicMock()
     reader.create_position_category.return_value = (7, None)
     r = _client(reader).post("/position-categories", json={"name": "Core"})
-    assert r.status_code == 200 and r.json() == {"ok": True, "id": 7, "name": "Core"}
+    assert r.status_code == 200 and r.json() == {"ok": True, "id": 7, "category_id": 7, "name": "Core"}

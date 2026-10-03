@@ -96,7 +96,8 @@
   "SavedSearchBody": [
     "label",
     "route",
-    "state"
+    "state",
+    "state_json"
   ],
   "StrategyAttributionBatchBody": [
     "account_id",

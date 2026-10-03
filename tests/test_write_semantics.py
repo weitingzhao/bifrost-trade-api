@@ -255,7 +255,10 @@ def test_patch_is_a_write_the_guard_refuses_a_viewer() -> None:
     ],
 )
 def test_each_patch_body_offers_exactly_what_core_patches(model: Any, patchable: Tuple[str, ...]) -> None:
-    assert set(model.model_fields) == set(patchable)
+    """A body may also take a field's read name (PlanPatch's legs_json, TD-57), mapped onto a patchable one."""
+    read_names: Dict[str, str] = getattr(model, "READ_NAMES", {})
+    assert set(model.model_fields) - set(read_names) == set(patchable)
+    assert set(read_names.values()) <= set(patchable)
 
 
 # --- DELETE ------------------------------------------------------------------------------

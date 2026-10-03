@@ -308,7 +308,7 @@ def test_nested_unknown_fields_are_named_with_their_path(
     with caplog.at_level(logging.WARNING, logger="bifrost_api.common.request_bodies"):
         assert c.put("/strategies/templates/9/legs", json={"legs": legs}).status_code == 200
     assert replace.call_args.args[2] == [{k: v for k, v in leg.items() if k != "leg_uid"} for leg in legs]
-    assert "PUT /strategies/templates/{template_id}/legs ignored ['legs[].leg_uid']" in caplog.text
+    assert "PUT /strategies/templates/{strategy_template_id}/legs ignored ['legs[].leg_uid']" in caplog.text
 
 
 def test_a_body_without_unknown_fields_logs_nothing(

@@ -14,12 +14,18 @@ it does in a script:
 PATCH and DELETE (TD-15, batch 3b-2) raise core's Write* outcomes, mapped in
 ``bifrost_api.common.write_errors``: input errors are 400 there, the body is
 ``{detail}``. The merge-style PUT went in api 0.6.0 (TD-15).
+
+A plan is read with ``legs_json`` and ``source_json``, its columns' names. Since api
+0.6.7 (TD-57) POST and PATCH take those names too, so a client sends back what it
+read; ``legs`` / ``source`` still work for one release and lose to ``legs_json`` /
+``source_json`` when a body sends both. Before 0.6.7 a POST with ``legs_json`` wrote a
+plan with no legs: the create body ignored unknown fields.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -31,6 +37,7 @@ from bifrost_core.monitor.reader import strategy_plan as strategy_plan_module
 from bifrost_core.monitor.reader.strategy_plan import PlanRuleError
 from bifrost_core.monitor.schemas.strategy_plans import (
     PlanCreateBody,
+    PlanLeg,
     PlanLinkFillBody,
 )
 
@@ -40,6 +47,23 @@ router = APIRouter(prefix="/strategies", tags=["strategy-plans"])
 
 PLANS_LIMIT_DEFAULT = 200
 PLANS_LIMIT_MAX = 500
+
+
+class PlanCreateRequest(PlanCreateBody):
+    """Core's create body, plus the read names ``legs_json`` / ``source_json`` (TD-57)."""
+
+    legs_json: Optional[List[PlanLeg]] = None
+    source_json: Optional[List[Dict[str, Any]]] = None
+
+    def payload(self) -> Dict[str, Any]:
+        """What core's create_plan takes: ``legs`` / ``source``, the read names folded in."""
+        data = self.model_dump(exclude={"legs_json", "source_json"})
+        sent = self.model_dump(include={"legs_json", "source_json"}, exclude_none=True)
+        if "legs_json" in sent:
+            data["legs"] = sent["legs_json"]
+        if "source_json" in sent:
+            data["source"] = sent["source_json"]
+        return data
 
 
 @router.get("/plans", response_model=PlanList, response_model_exclude_unset=True)
@@ -83,10 +107,11 @@ def get_plan_endpoint(request: Request, strategy_plan_id: int) -> Dict[str, Any]
 
 
 @router.post("/plans")
-def create_plan_endpoint(request: Request, body: PlanCreateBody) -> Dict[str, Any]:
-    """Write one draft. `intend` is a separate step, on purpose."""
+def create_plan_endpoint(request: Request, body: PlanCreateRequest) -> Dict[str, Any]:
+    """Write one draft. `intend` is a separate step, on purpose. The legs and the source
+    chain may be sent as `legs_json` / `source_json` (the names a plan is read with)."""
     config = write_config(request)
-    payload = body.model_dump()
+    payload = body.payload()
     try:
         plan_id = strategy_plan_module.create_plan(config, payload)
     except PlanRuleError as e:

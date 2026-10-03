@@ -80,7 +80,7 @@ def test_get_instrument_classes_is_on_neither_list() -> None:
         ("POST", "/control/stop/", "/control/stop"),
         ("GET", "/control/stop", None),
         ("POST", "/control/flatten", None),
-        ("DELETE", "/strategies/structures/42", "/strategies/structures/{structure_id}"),
+        ("DELETE", "/strategies/structures/42", "/strategies/structures/{strategy_structure_id}"),
         ("GET", "/strategies/structures/42", None),
         ("GET", "/strategies/instances/7/open-option-legs", "/strategies/instances/{strategy_instance_id}/open-option-legs"),
         ("GET", "/instrument-classes", None),
