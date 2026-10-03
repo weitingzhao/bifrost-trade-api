@@ -8,6 +8,8 @@ from typing import Any, Dict, Optional, Union
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
+from bifrost_api.common.build_info import core_build_info
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["core"])
@@ -86,4 +88,5 @@ def get_health(request: Request) -> Dict[str, Any]:
     out["market_port"] = int(request.app.state.bifrost_market_port)
     out["research_port"] = int(request.app.state.bifrost_research_port)
     out["utilized_services"] = list(getattr(request.app.state, "bifrost_utilized_services", []) or [])
+    out.update(core_build_info())
     return out

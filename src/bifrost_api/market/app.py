@@ -13,6 +13,7 @@ from bifrost_core.config.startup import normalize_server_config
 from bifrost_core.monitor.reader import StatusReader
 from bifrost_core.observability.prometheus import instrument_app
 from bifrost_core.sse.queue_utils import put_nowait_drop_oldest
+from bifrost_api.common.build_info import core_build_info
 from bifrost_api.common.service_endpoints import mount_auth_capabilities
 from bifrost_api.common.request_bodies import install_request_field_log
 from bifrost_api.common.write_errors import install_write_errors
@@ -106,6 +107,7 @@ def create_market_app(
         if profile is not None:
             out["config_profile"] = profile
         out["port"] = app.state.bifrost_market_port
+        out.update(core_build_info())
         return out
 
     mount_auth_capabilities(app, ["/market/auth/capabilities"], lambda: merged_config or reader.config)

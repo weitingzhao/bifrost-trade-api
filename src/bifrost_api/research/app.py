@@ -11,6 +11,7 @@ from bifrost_core.config.profile import deployment_profile
 from bifrost_core.config.startup import normalize_server_config
 from bifrost_core.monitor.reader import StatusReader
 from bifrost_core.observability.prometheus import instrument_app
+from bifrost_api.common.build_info import core_build_info
 from bifrost_api.common.service_endpoints import mount_auth_capabilities
 from bifrost_api.deprecations import install_deprecations
 from bifrost_api.write_guard import install_write_guard
@@ -85,6 +86,7 @@ def create_research_app(
         out["port"] = int(app.state.bifrost_research_port)
         if resolved_config_path:
             out["config_path"] = str(Path(resolved_config_path).resolve())
+        out.update(core_build_info())
         return out
 
     @app.get("/health")
