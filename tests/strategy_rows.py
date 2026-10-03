@@ -32,10 +32,15 @@ class _Cursor:
     def __exit__(self, *_a: Any) -> None:
         return None
 
-    def execute(self, _sql: str, _params: Any = None) -> None:
+    def execute(self, sql: str, _params: Any = None) -> None:
+        # core 0.41.0: list_instances reads each instance's option legs for its state; these
+        # fixtures have no fills, so that read finds none (every instance reads no_fills).
+        self._legs = "signed_qty" in sql
         return None
 
     def fetchall(self) -> List[Dict[str, Any]]:
+        if getattr(self, "_legs", False):
+            return []
         return [dict(r) for r in self._rows]
 
     def fetchone(self) -> Optional[Dict[str, Any]]:

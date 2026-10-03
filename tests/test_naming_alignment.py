@@ -188,4 +188,5 @@ def test_category_patch_answers_category_id(monkeypatch: pytest.MonkeyPatch) -> 
         position_categories, "patch_position_category", lambda _c, cid, f: {"id": cid, "name": "Core"}
     )
     body = _client().patch("/position-categories/5", json={"name": "Core"}).json()
-    assert body == {"id": 5, "category_id": 5, "name": "Core", "ok": True}
+    # `id` dropped in api 0.6.12 (TD-56): one name for the key.
+    assert body == {"category_id": 5, "name": "Core", "ok": True}

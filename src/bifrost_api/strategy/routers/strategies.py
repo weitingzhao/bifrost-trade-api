@@ -295,7 +295,7 @@ def get_opportunity(request: Request, strategy_opportunity_id: int) -> Dict[str,
 
 @router.post("/opportunities")
 def create_opportunity_endpoint(request: Request, body: OpportunityBody) -> Dict[str, Any]:
-    """Create a new strategy opportunity. Body: name (required), strategy_structure_id (required), optional default_gate_safety_strategy_id, scope_type (e.g. watchlist_stk | explicit_symbols), symbols (array of strings), entry_conditions (array of { condition_type, value_text?, value_numeric? }), is_active."""
+    """Create a new strategy opportunity. Body: name (required), strategy_structure_id (required), optional default_gate_safety_strategy_id, scope_type (watchlist_stk | explicit_symbols | '' | null; any other value is 422, core 0.41.0), symbols (array of strings; watchlist_stk needs at least one, else 400), entry_conditions (array of { condition_type, value_text?, value_numeric? }), is_active."""
     control_via_db = write_config(request)
     payload = body.model_dump()
     payload["entry_conditions"] = [c.model_dump() for c in (body.entry_conditions or [])]
@@ -313,7 +313,9 @@ def create_opportunity_endpoint(request: Request, body: OpportunityBody) -> Dict
 @router.patch("/opportunities/{strategy_opportunity_id}", response_model=OpportunityDetail, response_model_exclude_unset=True)
 def patch_opportunity_endpoint(request: Request, strategy_opportunity_id: int, body: OpportunityPatch) -> Dict[str, Any]:
     """Change the fields sent (a field left out keeps its value); answer the
-    opportunity as GET does. `symbols` / `entry_conditions` replace the list whole."""
+    opportunity as GET does. `symbols` / `entry_conditions` replace the list whole.
+    `scope_type` is watchlist_stk, explicit_symbols or null ('' clears; anything else 400), and
+    a watchlist_stk rule must keep at least one symbol (400) -- core 0.41.0, TD-71."""
     config = write_target(request, f"opportunity {strategy_opportunity_id}")
     return strategy_opportunity_write_module.patch_opportunity(config, strategy_opportunity_id, body.patch_fields())
 
@@ -346,7 +348,9 @@ def list_strategy_instances(
     from_ts: Optional[float] = from_ts_query("the instance's opened_at"),
     to_ts: Optional[float] = to_ts_query("the instance's opened_at"),
 ) -> Dict[str, Any]:
-    """Return list of strategy_instance rows (SI.2). Optional filters: account_id, strategy_opportunity_id, strategy_instance_ids, opened_at range."""
+    """Return list of strategy_instance rows (SI.2). Optional filters: account_id, strategy_opportunity_id, strategy_instance_ids, opened_at range.
+    Each row carries ``state`` (no_fills / open / expired / closed) and ``closed_on``, derived by core from
+    the instance's option fills (core 0.41.0, TD-43) -- the one open / closed rule every page reads."""
     reader = request.app.state.reader
     try:
         ids = parse_strategy_instance_ids_csv(strategy_instance_ids)
@@ -403,10 +407,9 @@ def get_instance_open_option_legs(request: Request, strategy_instance_id: int) -
 
 @router.delete("/instances/{strategy_instance_id}")
 def delete_strategy_instance_endpoint(request: Request, strategy_instance_id: int) -> Dict[str, Any]:
-    """Hard delete. 409 while executions are split-allocated to it or attributed to it on
-    Golden Source; 503 when Golden Source is unreachable, 500 when its check fails --
-    nothing is deleted blind.
-    Its review goes with it; a plan that pointed at it keeps its text."""
+    """Hard delete. 409 while executions are split-allocated or attributed to it, while a
+    plan was filled by it or while it has a review (both RESTRICT since core 0.41.0, TD-43);
+    503 when the database is unreachable, 500 when its check fails -- nothing is deleted blind."""
     config = write_target(request, f"strategy instance {strategy_instance_id}")
     return deleted_body(strategy_instance_module.delete_instance_strict(config, strategy_instance_id))
 

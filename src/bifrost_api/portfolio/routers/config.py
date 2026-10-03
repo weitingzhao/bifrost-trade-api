@@ -56,13 +56,15 @@ _NO_CONNECTION = frozenset(
 
 
 def _with_category_id(row: Any) -> Any:
-    """A category row with ``category_id`` beside ``id`` (TD-57, api 0.6.7).
+    """A category row with its key as ``category_id`` (TD-57; ``id`` dropped in api 0.6.12, TD-56).
 
     The table's key is ``id``, but the path (``/position-categories/{category_id}``), the
-    tag body and every referencing column call it ``category_id``; a reader can now use
-    that one name everywhere. ``id`` stays for one release."""
-    if isinstance(row, dict) and "id" in row and "category_id" not in row:
-        return {**row, "category_id": row["id"]}
+    tag body and every referencing column call it ``category_id``, so the API says that one
+    name everywhere. api 0.6.7 sent both for one release; the frontend reads only ``category_id``."""
+    if isinstance(row, dict) and "id" in row:
+        out = {k: v for k, v in row.items() if k != "id"}
+        out.setdefault("category_id", row["id"])
+        return out
     return row
 
 
@@ -75,8 +77,7 @@ def _write_failed(err: Optional[str], fallback: str) -> Any:
 
 @router.get("/position-categories")
 def get_position_categories(request: Request) -> Dict[str, Any]:
-    """Return all position_categories rows (for dropdown and manage UI), each with
-    ``category_id`` (= ``id``, which goes next release)."""
+    """Return all position_categories rows (for dropdown and manage UI), keyed ``category_id``."""
     reader = request.app.state.reader
     items = reader.get_position_categories()
     return list_body([_with_category_id(r) for r in items or []])
@@ -84,7 +85,9 @@ def get_position_categories(request: Request) -> Dict[str, Any]:
 
 @router.post("/position-categories")
 def post_position_category(request: Request, body: PositionCategoryBody) -> Any:
-    """Create one position category. body: name (required), description, sort_order (an integer)."""
+    """Create one position category. body: name (required), description, sort_order (an integer).
+    A name already in use is 409; ``Uncategorized`` (any case) is reserved for positions without
+    a category, 400 (core 0.41.0, TD-56)."""
     control_via_db = request.app.state.control_via_db
     if not control_via_db:
         return error_response(503, POSTGRES_REQUIRED)
@@ -98,14 +101,16 @@ def post_position_category(request: Request, body: PositionCategoryBody) -> Any:
         sort_order=body.sort_order,
     )
     if gid is not None:
-        return {"ok": True, "id": gid, "category_id": gid, "name": name}
+        return {"ok": True, "category_id": gid, "name": name}
     return _write_failed(err, "Failed to create category.")
 
 
 @router.patch("/position-categories/{category_id:int}")
 def patch_position_category(request: Request, category_id: int, body: PositionCategoryPatch) -> Any:
     """Change name / description / sort_order; `null` clears description or sort_order.
-    Answers the category row plus `ok: true` (SharesBand reads `ok`; it goes next release)."""
+    Answers the category row plus `ok: true` (SharesBand reads `ok`; it goes next release).
+    A new name carries the category's Market Streams symbol order with it; a name in use is
+    409, ``Uncategorized`` is 400 (core 0.41.0, TD-56)."""
     config = write_target(request, f"position category {category_id}")
     row = position_categories_module.patch_position_category(config, category_id, body.patch_fields())
     return {**_with_category_id(row), "ok": True}
@@ -113,7 +118,8 @@ def patch_position_category(request: Request, category_id: int, body: PositionCa
 
 @router.delete("/position-categories/{category_id:int}")
 def delete_position_category(request: Request, category_id: int) -> Any:
-    """Hard delete; its tags go with it (CASCADE) and watchlist rows in it become uncategorized."""
+    """Hard delete; its tags go with it (CASCADE), watchlist rows in it become uncategorized and its
+    Market Streams symbol order is removed (``symbol_order_removed``, core 0.41.0)."""
     config = write_target(request, f"position category {category_id}")
     return deleted_body(position_categories_module.delete_position_category_strict(config, category_id))
 

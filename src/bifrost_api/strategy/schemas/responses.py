@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict
 
@@ -175,6 +175,11 @@ class InstanceRow(ResponseRow):
     created_at_epoch: Optional[float] = None
     # The list only: fills attributed or split-allocated to the instance.
     executions_count: Optional[int] = None
+    # The list only (core 0.41.0, TD-43): where the instance stands by its option fills --
+    # no_fills / open / expired (every open leg past expiry, no closing fill; counts as
+    # closed) / closed -- and the day it closed (YYYY-MM-DD; null unless expired or closed).
+    state: Optional[Literal["no_fills", "open", "expired", "closed"]] = None
+    closed_on: Optional[str] = None
 
 
 class InstanceList(ResponseRow):
