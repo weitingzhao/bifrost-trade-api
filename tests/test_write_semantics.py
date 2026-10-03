@@ -440,31 +440,32 @@ def test_a_missing_plan_is_404(monkeypatch: pytest.MonkeyPatch) -> None:
     assert_error(_account().patch("/strategies/plans/404", json={"rationale": "x"}), 404, "No plan 404.")
 
 
-def _instance_env(split: int = 0, exists: bool = True) -> _Conn:
+def _instance_env(split: int = 0, exists: bool = True, direct: int = 0) -> _Conn:
+    # core 0.37.0 (TD-09): both counts come from this env's strategy_instance_execution.
     return _Conn(
         [
             ("SELECT 1 FROM strategy_instance WHERE strategy_instance_id = %s FOR UPDATE", {"one": (1,) if exists else None}),
-            ("SELECT count(DISTINCT account_executions_id)", {"one": (split,)}),
+            ("FROM strategy_instance_execution WHERE strategy_instance_id", {"one": (direct, split)}),
             ("DELETE FROM strategy_instance", {"rowcount": 1}),
         ]
     )
 
 
 def test_an_instance_with_attributed_executions_is_409(monkeypatch: pytest.MonkeyPatch) -> None:
-    env = _instance_env()
-    _connect(monkeypatch, env, _Conn([("SELECT count(DISTINCT k)", {"one": (2,)})]))
+    env = _instance_env(direct=2)
+    _connect(monkeypatch, env, _Conn([]))
     assert_error(_account().delete("/strategies/instances/7"), 409, "2 executions are attributed to this instance.")
     assert not env.ran("DELETE FROM strategy_instance")
 
 
 def test_an_instance_with_split_executions_is_409(monkeypatch: pytest.MonkeyPatch) -> None:
-    _connect(monkeypatch, _instance_env(split=1), _Conn([("SELECT count(DISTINCT k)", {"one": (0,)})]))
+    _connect(monkeypatch, _instance_env(split=1), _Conn([]))
     assert_error(_account().delete("/strategies/instances/7"), 409, "split-allocated")
 
 
 def test_an_instance_nothing_points_at_is_deleted(monkeypatch: pytest.MonkeyPatch) -> None:
     env = _instance_env()
-    _connect(monkeypatch, env, _Conn([("SELECT count(DISTINCT k)", {"one": (0,)})]))
+    _connect(monkeypatch, env, _Conn([]))
     r = _account().delete("/strategies/instances/7")
     assert r.json() == {"deleted": "hard", "strategy_instance_id": 7, "ok": True}
     assert env.ran("DELETE FROM strategy_instance") and env.commits == 1
@@ -475,7 +476,8 @@ def test_a_missing_instance_is_404(monkeypatch: pytest.MonkeyPatch) -> None:
     assert_error(_account().delete("/strategies/instances/404"), 404, "No strategy instance 404.")
 
 
-def test_an_unreachable_golden_source_refuses_the_instance_delete_with_503(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_instance_delete_does_not_need_the_golden_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """core 0.37.0 (TD-09): attribution is this env's; an unreachable Golden Source no longer matters."""
     env = _instance_env()
 
     def _connect_or_refuse(_params: Any, golden: bool = False) -> Any:
@@ -484,8 +486,8 @@ def test_an_unreachable_golden_source_refuses_the_instance_delete_with_503(monke
         return env
 
     monkeypatch.setattr(write_support, "connect", _connect_or_refuse)
-    assert_error(_account().delete("/strategies/instances/7"), 503, "Golden Source is unreachable")
-    assert not env.ran("DELETE FROM strategy_instance")
+    assert _account().delete("/strategies/instances/7").json()["deleted"] == "hard"
+    assert env.ran("DELETE FROM strategy_instance")
 
 
 def test_a_template_in_use_is_409_naming_its_structures(monkeypatch: pytest.MonkeyPatch) -> None:

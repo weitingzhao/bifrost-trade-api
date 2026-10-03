@@ -54,7 +54,8 @@ PG_REQUIRED_FOR_EXECUTIONS = "PostgreSQL is required to write account_executions
 
 
 class ExecutionAttributionPatch(PatchBody):
-    """Strategy attribution of one execution: direct ids, or quantity splits -- not both."""
+    """Strategy attribution of one execution: a trade, or quantity splits -- not both. The
+    opportunity is the trade's (core 0.37.0): sent alone it is 400, sent with a trade it must match."""
 
     strategy_opportunity_id: Optional[StrictInt] = None
     strategy_instance_id: Optional[StrictInt] = None
@@ -464,9 +465,12 @@ def patch_execution_attribution(request: Request, execution_id: str, body: Execu
     """Change one execution's strategy attribution; answer its attribution fields
     (account_executions_id, account_id, the two ids, instance_allocations).
 
-    `null` clears a direct id. A direct id on an execution that has splits is 409 unless
-    the same patch sends `instance_allocations: []`. The instance must be on the
-    execution's account (400). Negative ids are TWS raw rows."""
+    `strategy_instance_id: null` clears the whole-fill attribution. A trade on an execution
+    that has splits is 409 unless the same patch sends `instance_allocations: []`. The
+    instance must be on the execution's account (400). An opportunity without a trade is
+    400; with one it must be the trade's (400). Written to this environment's
+    strategy_instance_execution by the fill (account_id, exec_id), so a TWS row and its
+    Flex twin change together (core 0.37.0, TD-09). Negative ids are TWS raw rows."""
     eid = _parse_account_executions_path_id(execution_id)
     config = write_target(request, f"execution {eid}")
     return accounts_module.patch_execution(config, eid, body.patch_fields())
