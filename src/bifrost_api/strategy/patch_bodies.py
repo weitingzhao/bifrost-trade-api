@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, Dict, List, Optional, Union
 
-from pydantic import StrictBool, StrictFloat, StrictInt, StrictStr
+from pydantic import Field, StrictBool, StrictFloat, StrictInt, StrictStr
 
 from bifrost_api.common.write_errors import PatchBody
 
@@ -83,9 +83,20 @@ class GateSafetyPatch(PatchBody):
     earnings_dates: Optional[List[StrictStr]] = None
 
 
+# TD-73: a trade's notes live in the journal only (Research `journal.note`). These two
+# still write for one release, marked deprecated (OpenAPI, `Deprecation: true`, a log
+# line per hit); then they go, and a later DDL wave drops the columns.
+_JOURNAL_ONLY = (
+    "Deprecated (TD-73): a trade's notes live in the Research journal; this field goes "
+    "in the next release."
+)
+
+
 class InstancePatch(PatchBody):
     label: Optional[StrictStr] = None
-    notes: Optional[StrictStr] = None
+    notes: Optional[StrictStr] = Field(
+        default=None, description=_JOURNAL_ONLY, json_schema_extra={"deprecated": True}
+    )
     opened_at: Optional[Timestamp] = None
     created_at: Optional[Timestamp] = None
 
@@ -133,5 +144,7 @@ class PlanPatch(PatchBody):
 class ReviewPatch(PatchBody):
     tags_added: Optional[List[StrictStr]] = None
     tags_dropped: Optional[List[StrictStr]] = None
-    note: Optional[StrictStr] = None
+    note: Optional[StrictStr] = Field(
+        default=None, description=_JOURNAL_ONLY, json_schema_extra={"deprecated": True}
+    )
     reviewed: Optional[StrictBool] = None

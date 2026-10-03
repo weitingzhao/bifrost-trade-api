@@ -6,7 +6,8 @@ A review is a record, never an instruction: nothing downstream reads it to act
 
     GET    /strategies/reviews                 every review
     PATCH  /strategies/reviews/{instance_id}   upsert one; fields left out are kept,
-                                               `note: null` clears the note (TD-15)
+                                               `note: null` clears the note (TD-15);
+                                               `note` is deprecated (TD-73, journal only)
     (PUT went in api 0.6.0 after a release marked replaced by PATCH; TD-15.)
 
     404  no such instance
@@ -19,9 +20,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 
 from bifrost_api.common.write_errors import write_target
+from bifrost_api.deprecations import deprecated_fields_sent
 from bifrost_api.strategy.deps import read_config
 from bifrost_api.strategy.patch_bodies import ReviewPatch
 from bifrost_core.monitor.reader import trade_review as trade_review_module
@@ -44,8 +46,12 @@ def list_reviews_endpoint(request: Request) -> Dict[str, Any]:
 
 
 @router.patch("/reviews/{strategy_instance_id}")
-def patch_review_endpoint(request: Request, strategy_instance_id: int, body: ReviewPatch) -> Dict[str, Any]:
+def patch_review_endpoint(
+    request: Request, response: Response, strategy_instance_id: int, body: ReviewPatch
+) -> Dict[str, Any]:
     """Write the fields sent; creates the review when the instance has none. Answers the
-    review row. `reviewed: true` stamps it (the first stamp stays), `false` reopens it."""
+    review row. `reviewed: true` stamps it (the first stamp stays), `false` reopens it.
+    `note` is deprecated (TD-73): a trade's notes live in the Research journal."""
+    deprecated_fields_sent(request, response, {"note"} & body.model_fields_set)
     config = write_target(request, f"the review of strategy instance {strategy_instance_id}")
     return trade_review_module.patch_review(config, strategy_instance_id, body.patch_fields())
