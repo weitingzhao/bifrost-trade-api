@@ -1,6 +1,6 @@
 """Account domain FastAPI app — merged trading + portfolio (same HTTP paths).
 
-Phase B Wave B2: single process on trading_port (8769) serving:
+Phase B Wave B2: single process on account_port (8769; legacy name trading_port) serving:
   - /executions*, /performance, /transactions* (trading)
   - /portfolio/*, /position-categories* (portfolio)
 """
@@ -86,7 +86,7 @@ def create_account_app(
     _cfg_holder["server"] = normalize_server_config(dict(_raw_server))
     reader._config["server"] = _cfg_holder["server"]
 
-    account_port = int(_cfg_holder["server"]["trading_port"])
+    account_port = int(_cfg_holder["server"]["account_port"])
     app.state.bifrost_account_port = account_port
 
 
@@ -149,14 +149,14 @@ def create_account_app(
 
 
 def run_account_server(config: dict, resolved_config_path: Optional[str] = None) -> None:
-    """Start the Account API server on trading_port (8769)."""
+    """Start the Account API server on account_port (8769)."""
     import uvicorn
 
     has_postgres = bool(config.get("postgres") or os.environ.get("PGHOST"))
     status_cfg_for_read = config if has_postgres else None
     control_via_db = config if has_postgres else None
 
-    port = int(config["server"]["trading_port"])
+    port = int(config["server"]["account_port"])
 
     reader = StatusReader(config)
     app = create_account_app(

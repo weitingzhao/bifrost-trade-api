@@ -204,7 +204,7 @@ def attach_docs_routes(
         or _sibling_openapi("api-research", int(srv["research_port"]), "/openapi.json"),
         extra_openapi_urls={
             "Account": os.environ.get("BIFROST_DOCS_ACCOUNT_OPENAPI")
-            or _sibling_openapi("api-account", int(srv["trading_port"]), "/account/openapi.json"),
+            or _sibling_openapi("api-account", int(srv["account_port"]), "/account/openapi.json"),
             "Market": os.environ.get("BIFROST_DOCS_MARKET_OPENAPI")
             or _sibling_openapi("api-market", int(srv["market_port"]), "/market/openapi.json"),
         },

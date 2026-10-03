@@ -80,7 +80,9 @@ def get_health(request: Request) -> Dict[str, Any]:
     # Ports a process listens on. docs / ops are served by this process and
     # strategy / portfolio by account, so their config ports are not reported (TD-64).
     out["monitor_port"] = int(request.app.state.bifrost_server_listen_port)
-    out["trading_port"] = int(request.app.state.bifrost_trading_port)
+    out["account_port"] = int(request.app.state.bifrost_trading_port)
+    # Deprecated name for the same port (TD-79); kept one version for readers of /health.
+    out["trading_port"] = out["account_port"]
     out["market_port"] = int(request.app.state.bifrost_market_port)
     out["research_port"] = int(request.app.state.bifrost_research_port)
     out["utilized_services"] = list(getattr(request.app.state, "bifrost_utilized_services", []) or [])

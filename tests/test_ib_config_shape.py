@@ -1,6 +1,5 @@
-"""IB YAML: required ib.host / ib.secondary shape."""
+"""IB YAML: the ib.host / ib.secondary shape (optional since TD-79)."""
 
-import pytest
 
 from bifrost_core.config.startup import get_effective_ib_config
 
@@ -132,11 +131,12 @@ def test_market_gateway_merges_listener_and_worker_slots():
     assert eff["client_id_ib_ingestor"] == 250
 
 
-def test_missing_ib_raises():
-    with pytest.raises(ValueError, match="config\\['ib'\\] is required"):
-        get_effective_ib_config({})
+def test_missing_ib_is_allowed():
+    """No Trade process opens an IB socket (TD-79): the block only labels status."""
+    eff = get_effective_ib_config({})
+    assert eff["ib2_host"] is None
 
 
-def test_missing_host_raises():
-    with pytest.raises(ValueError, match="config\\['ib'\\]\\['host'\\] is required"):
-        get_effective_ib_config({"ib": {"connect_timeout": 30}})
+def test_missing_host_is_allowed():
+    eff = get_effective_ib_config({"ib": {"connect_timeout": 30, "secondary": {"ip": "192.0.2.33"}}})
+    assert eff["ib2_host"] == "192.0.2.33"

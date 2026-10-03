@@ -166,7 +166,8 @@ def create_app(
     app.state.bifrost_server_listen_port = int(_scfg["monitor_port"])
     # Only ports a process listens on reach /health: massive / docs / ops /
     # strategy / portfolio stay in the YAML schema but no pod listens on them.
-    app.state.bifrost_trading_port = int(_scfg["trading_port"])
+    # read_config normalises the server block (account_port); a raw block may still carry trading_port.
+    app.state.bifrost_trading_port = int(_scfg.get("account_port") or _scfg["trading_port"])
     app.state.bifrost_market_port = int(_scfg["market_port"])
     app.state.bifrost_research_port = int(_scfg["research_port"])
 
