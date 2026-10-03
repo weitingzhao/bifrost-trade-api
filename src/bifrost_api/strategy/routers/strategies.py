@@ -3,11 +3,12 @@
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from bifrost_api.common.envelopes import list_body
 from bifrost_api.common.query_vocab import from_ts_query, to_ts_query
 from bifrost_api.common.write_errors import deleted_body, write_target
+from bifrost_api.deprecations import deprecated_fields_sent
 from bifrost_api.strategy.deps import write_config
 from bifrost_api.strategy.patch_bodies import (
     AllocationPatch,
@@ -373,8 +374,12 @@ def get_strategy_instance(request: Request, strategy_instance_id: int) -> Dict[s
 
 
 @router.post("/instances")
-def create_strategy_instance_endpoint(request: Request, body: StrategyInstanceCreateBody) -> Dict[str, Any]:
-    """Create a new strategy instance. Body: strategy_opportunity_id, account_id, opened_at (required), label?, notes?. opened_at: ISO 8601 or Unix seconds."""
+def create_strategy_instance_endpoint(
+    request: Request, response: Response, body: StrategyInstanceCreateBody
+) -> Dict[str, Any]:
+    """Create a new strategy instance. Body: strategy_opportunity_id, account_id, opened_at (required), label?, notes?. opened_at: ISO 8601 or Unix seconds.
+    `notes` is deprecated (TD-73): a trade's notes live in the Research journal."""
+    deprecated_fields_sent(request, response, {"notes"} & body.model_fields_set)
     reader = request.app.state.reader
     write_config(request)  # 503 without Postgres; the reader does the write
     try:
@@ -413,10 +418,12 @@ def delete_strategy_instance_endpoint(request: Request, strategy_instance_id: in
 
 @router.patch("/instances/{strategy_instance_id}", response_model=InstanceRow, response_model_exclude_unset=True)
 def update_strategy_instance_endpoint(
-    request: Request, strategy_instance_id: int, body: InstancePatch
+    request: Request, response: Response, strategy_instance_id: int, body: InstancePatch
 ) -> Dict[str, Any]:
     """Change label / notes / opened_at / created_at; `null` clears label or notes.
-    Answers the instance as GET /instances/{id} does."""
+    Answers the instance as GET /instances/{id} does. `notes` is deprecated (TD-73):
+    a trade's notes live in the Research journal."""
+    deprecated_fields_sent(request, response, {"notes"} & body.model_fields_set)
     config = write_target(request, f"strategy instance {strategy_instance_id}")
     return strategy_instance_module.patch_instance(config, strategy_instance_id, body.patch_fields())
 
