@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import base64
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -34,18 +34,16 @@ def test_decode_images_enforces_the_designs_caps() -> None:
 
 def test_insert_report_refuses_off_contract_rows() -> None:
     conn = MagicMock()
-    with patch.object(store, "ensure_schema"):
-        with pytest.raises(store.FeedbackValidationError, match="kind"):
-            store.insert_report(conn, kind="rant", title="x")
-        with pytest.raises(store.FeedbackValidationError, match="title"):
-            store.insert_report(conn, kind="bug", title="   ")
+    with pytest.raises(store.FeedbackValidationError, match="kind"):
+        store.insert_report(conn, kind="rant", title="x")
+    with pytest.raises(store.FeedbackValidationError, match="title"):
+        store.insert_report(conn, kind="bug", title="   ")
 
 
 def test_set_status_validates_the_dictionary() -> None:
     conn = MagicMock()
-    with patch.object(store, "ensure_schema"):
-        with pytest.raises(store.FeedbackValidationError, match="status"):
-            store.set_status(conn, 1, "done")
+    with pytest.raises(store.FeedbackValidationError, match="status"):
+        store.set_status(conn, 1, "done")
 
 
 def test_row_shape_carries_the_public_id() -> None:

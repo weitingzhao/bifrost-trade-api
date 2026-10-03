@@ -27,6 +27,16 @@ def _err(status: int, msg: str) -> Any:
     return error_response(status, msg)
 
 
+NOT_MIGRATED_DETAIL = "feedback store not migrated: ops_feedback is missing in Golden Source — run db-init"
+
+
+def _store_down(exc: Exception) -> Any:
+    """503 for a store that is unreachable, or was never created (db-init owns the DDL, TD-77)."""
+    if store.not_migrated(exc):
+        return _err(503, NOT_MIGRATED_DETAIL)
+    return _err(503, f"feedback store error: {exc}")
+
+
 @router.post("/research/feedback/reports")
 def post_report(body: Dict[str, Any] = Body(default={})) -> Any:
     try:
@@ -48,7 +58,7 @@ def post_report(body: Dict[str, Any] = Body(default={})) -> Any:
         return _err(400, str(exc))
     except Exception as exc:  # noqa: BLE001 — the store may be unreachable
         logger.warning("feedback insert failed: %s", exc)
-        return _err(503, f"feedback store error: {exc}")
+        return _store_down(exc)
 
 
 @router.get("/research/feedback/reports")
@@ -61,7 +71,7 @@ def get_reports(scope: str = "all", limit: int = 200) -> Any:
         return {"ok": True, "reports": rows, "count": len(rows)}
     except Exception as exc:  # noqa: BLE001
         logger.warning("feedback list failed: %s", exc)
-        return _err(503, f"feedback store error: {exc}")
+        return _store_down(exc)
 
 
 @router.get("/research/feedback/summary")
@@ -71,7 +81,7 @@ def get_summary() -> Any:
             return {"ok": True, **store.summary(conn)}
     except Exception as exc:  # noqa: BLE001
         logger.warning("feedback summary failed: %s", exc)
-        return _err(503, f"feedback store error: {exc}")
+        return _store_down(exc)
 
 
 def _by_public(raw_id: str) -> int | None:
@@ -88,7 +98,7 @@ def post_read(report_id: str) -> Any:
             row = store.mark_read(conn, rid)
         return {"ok": True, "report": row} if row else _err(404, "report not found")
     except Exception as exc:  # noqa: BLE001
-        return _err(503, f"feedback store error: {exc}")
+        return _store_down(exc)
 
 
 @router.post("/research/feedback/reports/{report_id}/status")
@@ -103,7 +113,7 @@ def post_status(report_id: str, body: Dict[str, Any] = Body(default={})) -> Any:
     except store.FeedbackValidationError as exc:
         return _err(400, str(exc))
     except Exception as exc:  # noqa: BLE001
-        return _err(503, f"feedback store error: {exc}")
+        return _store_down(exc)
 
 
 @router.post("/research/feedback/reports/{report_id}/reply")
@@ -118,7 +128,7 @@ def post_reply(report_id: str, body: Dict[str, Any] = Body(default={})) -> Any:
     except store.FeedbackValidationError as exc:
         return _err(400, str(exc))
     except Exception as exc:  # noqa: BLE001
-        return _err(503, f"feedback store error: {exc}")
+        return _store_down(exc)
 
 
 @router.get("/research/feedback/reports/{report_id}/images/{seq}")
