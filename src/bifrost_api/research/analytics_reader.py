@@ -37,7 +37,9 @@ _ANALYTICS_PG_USER = os.environ.get("ANALYTICS_PG_USER", "").strip()
 _ANALYTICS_PG_PASSWORD = os.environ.get("ANALYTICS_PG_PASSWORD", "")
 
 _DEFAULT_RESEARCH_URL = "http://research-api.research.svc.cluster.local:8795"
-_RESEARCH_TIMEOUT = float(os.environ.get("RESEARCH_API_TIMEOUT", "30"))
+# 12 s: Research answers every proxied route in < 0.5 s (DEV, 2026-10-03; screener-wide 5000 rows
+# is the slowest at 0.48 s), so a stuck Research gives a named 503 after 12 s instead of 30 s.
+_RESEARCH_TIMEOUT = float(os.environ.get("RESEARCH_API_TIMEOUT", "12"))
 
 _pool: Optional[ThreadedConnectionPool] = None
 
