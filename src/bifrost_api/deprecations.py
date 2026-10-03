@@ -178,6 +178,12 @@ def _header(scope: Scope, name: bytes) -> str:
     return ""
 
 
+def _without_deprecation(message: Message) -> List[Tuple[bytes, bytes]]:
+    """The response headers less any ``Deprecation`` a handler set for a deprecated body
+    field (TD-73): a replaced route that was sent one says so once, not twice."""
+    return [(k, v) for k, v in message.get("headers", []) if k.lower() != b"deprecation"]
+
+
 class DeprecationMarker:
     """Add ``Deprecation: true`` to a deprecated route's response and log who called it."""
 
@@ -209,7 +215,7 @@ class DeprecationMarker:
 
         async def send_marked(message: Message) -> None:
             if message["type"] == "http.response.start":
-                message = {**message, "headers": [*message.get("headers", []), (b"deprecation", b"true")]}
+                message = {**message, "headers": [*_without_deprecation(message), (b"deprecation", b"true")]}
             await send(message)
 
         await self.app(scope, receive, send_marked)
@@ -233,7 +239,7 @@ class DeprecationMarker:
 
         async def send_marked(message: Message) -> None:
             if message["type"] == "http.response.start":
-                headers = [*message.get("headers", []), (b"deprecation", b"true"), (b"link", link)]
+                headers = [*_without_deprecation(message), (b"deprecation", b"true"), (b"link", link)]
                 message = {**message, "headers": headers}
             await send(message)
 

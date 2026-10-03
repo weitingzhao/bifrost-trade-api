@@ -1,9 +1,11 @@
 """TD-73: a trade's notes live in the Research journal only.
 
-`notes` on the instance POST / PATCH and `note` on the review PATCH still write for
+`notes` on the trade POST / PATCH and `note` on the review PATCH still write for
 one release, marked deprecated: OpenAPI says so, the response carries
 `Deprecation: true` and each hit is logged with who sent it. A request that leaves
-them out is not marked. Fixtures are invented.
+them out is not marked. The checks use the /trades routes (naming R1): the old
+/strategies paths are replaced routes, marked on every response, and say so once even
+when a deprecated field was sent too. Fixtures are invented.
 """
 
 from __future__ import annotations
@@ -33,9 +35,9 @@ def _client() -> TestClient:
 
 def test_openapi_marks_the_two_fields_deprecated() -> None:
     schemas = _client().app.openapi()["components"]["schemas"]
-    assert schemas["InstancePatch"]["properties"]["notes"]["deprecated"] is True
+    assert schemas["TradePatch"]["properties"]["notes"]["deprecated"] is True
     assert schemas["ReviewPatch"]["properties"]["note"]["deprecated"] is True
-    assert "deprecated" not in schemas["InstancePatch"]["properties"]["label"]
+    assert "deprecated" not in schemas["TradePatch"]["properties"]["label"]
 
 
 def test_review_note_still_writes_but_is_marked(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
@@ -48,21 +50,21 @@ def test_review_note_still_writes_but_is_marked(monkeypatch: pytest.MonkeyPatch,
     monkeypatch.setattr(trade_review, "patch_review", _writer)
     c = _client()
     with caplog.at_level(logging.WARNING, logger="bifrost_api.deprecations"):
-        marked = c.patch("/strategies/reviews/7", json={"note": "zz", "reviewed": True}, headers={"X-Forwarded-For": "10.0.0.9"})
-    plain = c.patch("/strategies/reviews/7", json={"reviewed": True})
+        marked = c.patch("/trade-reviews/7", json={"note": "zz", "reviewed": True}, headers={"X-Forwarded-For": "10.0.0.9"})
+    plain = c.patch("/trade-reviews/7", json={"reviewed": True})
     assert marked.status_code == 200 and plain.status_code == 200
     assert marked.headers.get("deprecation") == "true"
     assert "deprecation" not in plain.headers
     assert calls == [{"note": "zz", "reviewed": True}, {"reviewed": True}]
     line = next(r.getMessage() for r in caplog.records if "deprecated body fields" in r.getMessage())
-    assert "PATCH /strategies/reviews/7 note" in line and "forwarded_for=10.0.0.9" in line
+    assert "PATCH /trade-reviews/7 note" in line and "forwarded_for=10.0.0.9" in line
 
 
 def test_instance_patch_notes_is_marked(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(strategy_instance, "patch_instance", lambda _c, _i, _f: strategy_rows.instance())
     c = _client()
-    marked = c.patch("/strategies/instances/7", json={"notes": None})
-    plain = c.patch("/strategies/instances/7", json={"label": "ZZ trade"})
+    marked = c.patch("/trades/7", json={"notes": None})
+    plain = c.patch("/trades/7", json={"label": "ZZ trade"})
     assert marked.status_code == 200 and plain.status_code == 200
     assert marked.headers.get("deprecation") == "true"
     assert "deprecation" not in plain.headers
@@ -71,11 +73,19 @@ def test_instance_patch_notes_is_marked(monkeypatch: pytest.MonkeyPatch) -> None
 def test_instance_create_notes_is_marked_and_still_passed() -> None:
     c = _client()
     body = {"strategy_opportunity_id": 3, "account_id": "U0000001", "opened_at": "2026-01-02T12:00:00Z"}
-    marked = c.post("/strategies/instances", json={**body, "notes": "zz"})
-    plain = c.post("/strategies/instances", json=body)
+    marked = c.post("/trades", json={**body, "notes": "zz"})
+    plain = c.post("/trades", json=body)
     assert marked.status_code == 200 and plain.status_code == 200, (marked.text, plain.text)
     assert marked.headers.get("deprecation") == "true"
     assert "deprecation" not in plain.headers
     reader = c.app.state.reader
     assert reader.create_strategy_instance.call_args_list[0].kwargs["notes"] == "zz"
     assert reader.create_strategy_instance.call_args_list[1].kwargs["notes"] is None
+
+
+def test_a_replaced_route_sent_a_deprecated_field_says_so_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(strategy_instance, "patch_instance", lambda _c, _i, _f: strategy_rows.instance())
+    r = _client().patch("/strategies/instances/7", json={"notes": None})
+    assert r.status_code == 200
+    assert r.headers.get_list("deprecation") == ["true"]
+    assert 'rel="successor-version"' in r.headers["link"]

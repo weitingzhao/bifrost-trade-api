@@ -28,6 +28,7 @@ def _client(reader: Any = None) -> TestClient:
 def test_the_instance_list_sends_state_and_closed_on() -> None:
     reader = MagicMock()
     row = {
+        "trade_id": 41,  # core's add_trade_names (naming R1)
         "strategy_instance_id": 41,
         "strategy_opportunity_id": 5,
         "strategy_opportunity_name": "Wheel",
