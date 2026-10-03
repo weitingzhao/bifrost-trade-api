@@ -33,7 +33,7 @@ attribution); unknown fields are ignored and logged this release.
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import StrictInt
@@ -53,6 +53,7 @@ from bifrost_api.trading.schemas.requests import (
     OptionStockLinksQueryBody,
 )
 from bifrost_core.portfolio.gateway_fills import execution_rows_from_gateway_fills
+from bifrost_core.portfolio.reader.keyset import InvalidCursor
 from bifrost_core.portfolio.reader import accounts as accounts_module
 from bifrost_core.portfolio.reader.option_stock_link import (
     delete_option_stock_link_strict,
@@ -173,14 +174,20 @@ def _publish_tws_fetch_system_message(
 _TRADE_DATE_NOTE = "Compared as a date: the timestamp's calendar day in America/Chicago."
 
 
-def _probe_total(rows: List[Any], limit: Optional[int]) -> Tuple[List[Any], Optional[int]]:
-    """``rows`` read with ``limit + 1`` (or no limit): the page, and its exact total when the
-    limit did not cut it. A cut list has no ``total`` -- its length is a floor, not a count."""
-    if limit is None:
-        return rows, len(rows)
-    if len(rows) > limit:
-        return rows[:limit], None
-    return rows, len(rows)
+_CURSOR_DESCRIPTION = (
+    "Opaque: the next_cursor of the previous page, passed back unchanged. Starts the page strictly "
+    "after that page's last row, so paging neither repeats nor skips a row when rows are added. "
+    "Omit it for the first page (the same rows as before cursors existed). A cursor this route did "
+    "not issue is 400."
+)
+
+
+def _page_total(items: List[Any], next_cursor: Optional[str], cursor: Optional[str]) -> Optional[int]:
+    """``total`` (api 0.6.6, TD-51) is sent only when the answer holds every matching row: a
+    first page (no ``cursor``) with no page after it. Otherwise ``count`` is a floor."""
+    if cursor is None and next_cursor is None:
+        return len(items)
+    return None
 
 
 @router.get("/executions")
@@ -205,6 +212,7 @@ def get_executions(
             "which returns the stored TWS quantity unchanged."
         ),
     ),
+    cursor: Optional[str] = Query(None, description=_CURSOR_DESCRIPTION + " Not with include_opt_pairs."),
 ) -> Dict[str, Any]:
     """Account-level executions/trades (R-A2). If include_opt_pairs=true: returns paired_execution_ids and opt_pairs.
 
@@ -213,6 +221,14 @@ def get_executions(
     ``total`` and ``count`` is a floor. With include_opt_pairs the reader caps the list at
     5000 even for limit=0, so a list of exactly that many has no ``total`` either.
 
+    **Paging** (api 0.6.9, core 0.40.0, TD-51): ``next_cursor`` is the cursor of the next
+    page, ``null`` on the last one (always ``null`` for limit=0). Pass it back as ``cursor``
+    with the same filters. The order is ``trade_date DESC NULLS LAST, exec_time DESC NULLS
+    LAST, account_executions_id DESC``. A page after the first has no ``total``.
+    ``include_opt_pairs`` does not page: a C<>P pair can fall on two pages, and its
+    ``opt_pairs`` cover the whole window, so ``cursor`` with it is 400 and its answer has
+    no ``next_cursor``.
+
     ``account_executions_id`` is one id space over three sources, told apart by sign
     (core ``brokerage.executions``): a positive id is the Flex row
     (``executions_raw_flex``), ``-id`` is a TWS row (``executions_raw_tws``) and
@@ -220,6 +236,12 @@ def get_executions(
     takes the same signed id."""
     reader = request.app.state.reader
     effective_limit: Optional[int] = limit if limit > 0 else None
+    if include_opt_pairs and cursor is not None:
+        return error_response(
+            400,
+            "cursor cannot be used with include_opt_pairs: a C/P pair can span two pages and "
+            "opt_pairs covers the whole window. Page without include_opt_pairs, or narrow from_ts/to_ts.",
+        )
     if include_opt_pairs:
         cap = effective_limit or 5000
         paired = dict(
@@ -236,17 +258,25 @@ def get_executions(
         )
         rows = paired.pop("executions", None) or []
         return list_body(rows, total=len(rows) if len(rows) < cap else None, **paired)
-    rows = reader.get_executions(
-        since_ts=from_ts,
-        until_ts=to_ts,
-        account_id=account_id,
-        limit=None if effective_limit is None else effective_limit + 1,
-        strategy_opportunity_id=strategy_opportunity_id,
-        strategy_instance_id=strategy_instance_id,
-        source_scope=source_scope,
-    )
-    items, total = _probe_total(list(rows or []), effective_limit)
-    return list_body(items, total=total)
+    try:
+        page = dict(
+            reader.get_executions_page(
+                since_ts=from_ts,
+                until_ts=to_ts,
+                account_id=account_id,
+                limit=effective_limit,
+                strategy_opportunity_id=strategy_opportunity_id,
+                strategy_instance_id=strategy_instance_id,
+                source_scope=source_scope,
+                cursor=cursor,
+            )
+            or {}
+        )
+    except InvalidCursor as e:
+        return error_response(400, f"Invalid cursor: {e}")
+    items = list(page.get("items") or [])
+    next_cursor = page.get("next_cursor")
+    return list_body(items, total=_page_total(items, next_cursor, cursor), next_cursor=next_cursor)
 
 
 @router.get("/executions/position-attribution")
@@ -479,20 +509,34 @@ def get_transactions(
     from_ts: Optional[float] = from_ts_query("the cash transaction's ts"),
     to_ts: Optional[float] = to_ts_query("the cash transaction's ts"),
     account_id: Optional[str] = Query(None),
-    limit: int = Query(500),
+    limit: int = Query(500, le=10000, description="Max rows to return (at most 10000)"),
+    cursor: Optional[str] = Query(None, description=_CURSOR_DESCRIPTION),
 ) -> Dict[str, Any]:
     """List account_transactions (Flex cash transactions) for Transfer & Pay page.
 
     ``total`` (api 0.6.6, TD-51): the exact number of rows the filters match, sent only
-    when ``limit`` did not cut the list (then ``count`` is a floor and ``total`` is absent)."""
+    when ``limit`` did not cut the list (then ``count`` is a floor and ``total`` is absent).
+
+    api 0.6.9 (TD-51): ``limit`` is capped at 10000 (more is 422; it was unbounded) and the
+    list pages: ``next_cursor`` (``null`` on the last page) goes back as ``cursor``. The
+    order is ``ts DESC, account_transactions_id DESC`` -- the id breaks ties, which came in
+    any order before (core 0.40.0). A page after the first has no ``total``."""
     reader = request.app.state.reader
+    try:
+        page = dict(
+            reader.get_transactions_page(
+                since_ts=from_ts, until_ts=to_ts, account_id=account_id, limit=limit, cursor=cursor
+            )
+            or {}
+        )
+    except InvalidCursor as e:
+        return error_response(400, f"Invalid cursor: {e}")
+    items = list(page.get("items") or [])
+    next_cursor = page.get("next_cursor")
     if limit <= 0:
-        # The reader sends LIMIT as given: 0 reads nothing, a negative one fails to [].
-        items = reader.get_transactions(since_ts=from_ts, until_ts=to_ts, account_id=account_id, limit=limit)
-        return list_body(items)
-    rows = reader.get_transactions(since_ts=from_ts, until_ts=to_ts, account_id=account_id, limit=limit + 1)
-    items, total = _probe_total(list(rows or []), limit)
-    return list_body(items, total=total)
+        # The reader sends LIMIT as given: 0 reads nothing, a negative one fails to []. No total.
+        return list_body(items, next_cursor=None)
+    return list_body(items, total=_page_total(items, next_cursor, cursor), next_cursor=next_cursor)
 
 
 @router.post("/executions")

@@ -44,8 +44,9 @@ def _client(reader: Optional[MagicMock] = None, control_via_db: Any = PG, gatewa
 def test_executions_list_has_items_count_and_the_old_key() -> None:
     reader = MagicMock()
     rows = [{"account_executions_id": 1, "symbol": "ZZQ"}, {"account_executions_id": 2, "symbol": "ZZQ"}]
-    reader.get_executions.return_value = rows
-    assert_list(_client(reader).get("/executions"), "executions", rows)
+    reader.get_executions_page.return_value = {"items": rows, "next_cursor": None}
+    body = assert_list(_client(reader).get("/executions"), "executions", rows)
+    assert body["next_cursor"] is None
 
 
 def test_executions_with_opt_pairs_keeps_its_pairs() -> None:
@@ -62,13 +63,15 @@ def test_executions_with_opt_pairs_keeps_its_pairs() -> None:
         ("/executions/position-attribution", "get_position_instance_attribution", "attributions"),
         (f"/executions/link-candidates?account_id={ACC}&contract_key=ZZQ%7CSTK%7C%7C%7C", "get_executions_for_strategy_link", "executions"),
         ("/executions/freshness", "get_executions_freshness", None),
-        ("/transactions", "get_transactions", "transactions"),
+        ("/transactions", "get_transactions_page", "transactions"),
     ],
 )
 def test_list_routes(path: str, reader_method: str, legacy_key: Optional[str]) -> None:
     reader = MagicMock()
     rows = [{"id": 1}, {"id": 2}, {"id": 3}]
-    getattr(reader, reader_method).return_value = rows
+    # the paged readers (core 0.40.0) answer {"items", "next_cursor"}
+    paged = reader_method.endswith("_page")
+    getattr(reader, reader_method).return_value = {"items": rows, "next_cursor": None} if paged else rows
     assert_list(_client(reader).get(path), legacy_key, rows)
 
 
