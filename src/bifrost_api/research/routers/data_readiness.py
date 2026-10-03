@@ -56,8 +56,8 @@ def _criteria_stats_analytics() -> Dict[str, Any]:
     try:
         raw = fetch_criteria_stats()
     except Exception as e:
-        logger.warning("analytics criteria_stats failed, no legacy fallback: %s", e)
-        raise HTTPException(status_code=503, detail=f"Analytics DB error: {e}")
+        logger.warning("criteria_stats failed: %s", e)
+        raise HTTPException(status_code=503, detail=str(e))
 
     fund_raw = raw.get("fundamental") if isinstance(raw.get("fundamental"), dict) else {}
     tech_raw = raw.get("technical") if isinstance(raw.get("technical"), dict) else {}
@@ -224,67 +224,39 @@ def get_fundamental_distribution_symbols(
 
 
 def _fundamental_distribution_analytics(conditions_passed: int) -> Dict[str, Any]:
-    """Fundamental distribution from dw_stock.mart_sepa_fundamental_eval (latest snapshot)."""
-    from bifrost_api.research.analytics_reader import (
-        _FUND_EVAL_TABLE,
-        fetch_fundamental_distribution_symbols,
-        get_conn,
-        latest_eval_date,
-    )
-    from psycopg2.extras import RealDictCursor
+    """Fundamental distribution from Research (``/analytics/sepa/fundamental-distribution``)."""
+    from bifrost_api.research.analytics_reader import fetch_fundamental_distribution_symbols
 
     try:
-        symbols = fetch_fundamental_distribution_symbols(conditions_passed)
-        as_of = None
-        try:
-            with get_conn() as conn:
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                    d = latest_eval_date(cur, _FUND_EVAL_TABLE)
-                    as_of = d.isoformat() if d else None
-        except Exception:
-            as_of = None
-        return {
-            "ok": True,
-            "conditions_passed": conditions_passed,
-            "count": len(symbols),
-            "symbols": symbols,
-            "as_of": as_of,
-        }
+        symbols, as_of = fetch_fundamental_distribution_symbols(conditions_passed)
     except Exception as e:
-        logger.warning("analytics fundamental_distribution failed: %s", e)
+        logger.warning("fundamental_distribution failed: %s", e)
         raise HTTPException(status_code=503, detail=str(e))
+    return {
+        "ok": True,
+        "conditions_passed": conditions_passed,
+        "count": len(symbols),
+        "symbols": symbols,
+        "as_of": as_of,
+    }
 
 
 def _technical_distribution_analytics(conditions_passed: int) -> Dict[str, Any]:
-    """Technical distribution from analytics mart (latest snapshot)."""
-    from bifrost_api.research.analytics_reader import (
-        _TECH_EVAL_TABLE,
-        fetch_technical_distribution_symbols,
-        get_conn,
-        latest_eval_date,
-    )
-    from psycopg2.extras import RealDictCursor
+    """Technical distribution from Research (``/analytics/sepa/technical-distribution``)."""
+    from bifrost_api.research.analytics_reader import fetch_technical_distribution_symbols
 
     try:
-        symbols = fetch_technical_distribution_symbols(conditions_passed)
-        as_of = None
-        try:
-            with get_conn() as conn:
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                    d = latest_eval_date(cur, _TECH_EVAL_TABLE)
-                    as_of = d.isoformat() if d else None
-        except Exception:
-            as_of = None
-        return {
-            "ok": True,
-            "conditions_passed": conditions_passed,
-            "count": len(symbols),
-            "symbols": symbols,
-            "as_of": as_of,
-        }
+        symbols, as_of = fetch_technical_distribution_symbols(conditions_passed)
     except Exception as e:
-        logger.warning("analytics technical_distribution failed: %s", e)
+        logger.warning("technical_distribution failed: %s", e)
         raise HTTPException(status_code=503, detail=str(e))
+    return {
+        "ok": True,
+        "conditions_passed": conditions_passed,
+        "count": len(symbols),
+        "symbols": symbols,
+        "as_of": as_of,
+    }
 
 
 @router.get("/research/data/readiness/technical-distribution/symbols")

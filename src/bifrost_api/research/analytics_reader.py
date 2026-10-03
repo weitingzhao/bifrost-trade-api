@@ -1,29 +1,30 @@
 """Golden Source analytics reads — thin HTTP proxy to Research API (:8795).
 
-Wave 2.3: fetch helpers no longer query ``analytics.*`` directly when the
-Research proxy is enabled. Trade research domain (:8773) keeps the same
-function signatures so ``data_readiness`` / FE paths stay stable.
+The SEPA mart reads (criteria stats, per-name evals, filters, distributions,
+screener-wide) go to Research only. A Research failure raises
+``ResearchUnavailable`` and the route answers 503 naming Research; nothing
+falls back to direct SQL (TD-49 step 1, Owner 2026-10-03).
+
+What still reads Golden Source directly through ``get_conn`` until Research
+serves it (TD-49 step 3): the criteria-stats pass-count distribution and the
+tier / momentum-grade routes in ``routers/data_readiness``; and the feedback
+store (``ops_feedback.*``), which this service owns.
 
 Env:
   RESEARCH_API_URL   — default ``http://research-api.research.svc.cluster.local:8795``
-  RESEARCH_PROXY     — ``true`` (default) to prefer HTTP; ``false`` uses direct PG
-  ANALYTICS_PG_*     — direct PG fallback / readiness_snapshot get_conn
+  ANALYTICS_PG_*     — the ``get_conn`` pool
 """
 
 from __future__ import annotations
 
-import logging
 import os
 from contextlib import contextmanager
 from datetime import date, datetime
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any, Dict, Generator, List, Optional, Tuple
 from urllib.parse import urlencode
 
 import httpx
-from psycopg2.extras import RealDictCursor
 from psycopg2.pool import ThreadedConnectionPool
-
-logger = logging.getLogger(__name__)
 
 # No fallback host or user (debt TD-54): the defaults were a LAN NodePort and a role
 # (bifrost_readonly) that exists nowhere, so a pod missing its env connected somewhere
@@ -110,11 +111,6 @@ def latest_eval_date(cur: Any, table: str) -> Optional[date]:
     return date.fromisoformat(str(raw)[:10])
 
 
-def use_research_proxy() -> bool:
-    """Prefer Research API HTTP over direct Golden Source SQL."""
-    return os.environ.get("RESEARCH_PROXY", "true").lower() in ("1", "true", "yes")
-
-
 def research_api_base() -> str:
     return (
         os.environ.get("RESEARCH_API_URL")
@@ -147,7 +143,7 @@ def _get_pool() -> ThreadedConnectionPool:
 
 @contextmanager
 def get_conn() -> Generator:
-    """Yield a pooled Golden Source connection (readiness_snapshot / fallback)."""
+    """Yield a pooled Golden Source connection (feedback store; reads Research does not serve yet)."""
     pool = _get_pool()
     conn = pool.getconn()
     try:
@@ -172,250 +168,104 @@ def _proxy_get(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, 
     return data
 
 
+class ResearchUnavailable(RuntimeError):
+    """A Research API read failed. The routes answer 503 with this message (TD-49).
+
+    There is no direct-SQL fallback: the SEPA marts are Research's, read through
+    Research's own endpoints, and a fallback that never ran (none in six days on
+    any environment) would only drift from them unseen.
+    """
+
+
+def _research_get(
+    path: str,
+    params: Optional[Dict[str, Any]] = None,
+    *,
+    missing_is_none: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """GET a Research endpoint; any failure raises ``ResearchUnavailable`` naming Research.
+
+    With ``missing_is_none`` a 404 (Research holds no row) answers None instead.
+    """
+    try:
+        return _proxy_get(path, params)
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code if exc.response is not None else None
+        if missing_is_none and code == 404:
+            return None
+        detail = ""
+        try:
+            body = exc.response.json() if exc.response is not None else None
+            if isinstance(body, dict) and body.get("detail"):
+                detail = f" — {body['detail']}"
+        except ValueError:
+            pass
+        raise ResearchUnavailable(f"Research API {path}: HTTP {code}{detail}") from exc
+    except Exception as exc:  # transport failure, timeout, non-JSON or non-object body
+        raise ResearchUnavailable(f"Research API {path}: {exc}") from exc
+
+
 # ---------------------------------------------------------------------------
-# Query helpers (proxy → Research; fallback → direct SQL)
+# SEPA mart reads — Research API only
 # ---------------------------------------------------------------------------
 
 
 def fetch_criteria_stats() -> Dict[str, Any]:
-    """Read pre-aggregated criteria pass/fail (Research or direct mart)."""
-    if use_research_proxy():
-        try:
-            data = _proxy_get("/analytics/sepa/criteria-stats")
-            out = {k: v for k, v in data.items() if k != "ok"}
-            return out
-        except Exception as exc:
-            logger.warning("Research proxy criteria-stats failed, falling back to PG: %s", exc)
-    return _fetch_criteria_stats_direct()
-
-
-def _fetch_criteria_stats_direct() -> Dict[str, Any]:
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            # No retry: a failed statement aborts the transaction, so re-running it
-            # on this cursor can only replace the real error with "current
-            # transaction is aborted" -- which is all the Screener ever showed.
-            cur.execute("SELECT domain, stats FROM dw_stock.mart_sepa_criteria_stats")
-            rows = cur.fetchall() or []
-    result: Dict[str, Any] = {}
-    for row in rows:
-        domain = row.get("domain", "unknown")
-        stats = row.get("stats")
-        if isinstance(stats, dict):
-            result[domain] = stats
-        else:
-            result[domain] = dict(row)
-    return result
+    """Pre-aggregated criteria pass/fail per domain (``dw_stock.mart_sepa_criteria_stats``)."""
+    data = _research_get("/analytics/sepa/criteria-stats") or {}
+    return {k: v for k, v in data.items() if k != "ok"}
 
 
 def fetch_fundamental_eval_single(symbol: str) -> Optional[Dict[str, Any]]:
-    if use_research_proxy():
-        try:
-            data = _proxy_get(f"/analytics/sepa/fundamental-eval/{symbol.upper()}")
-            row = data.get("row")
-            return dict(row) if isinstance(row, dict) else None
-        except httpx.HTTPStatusError as exc:
-            if exc.response is not None and exc.response.status_code == 404:
-                return None
-            logger.warning("Research proxy fundamental-eval failed, PG fallback: %s", exc)
-        except Exception as exc:
-            logger.warning("Research proxy fundamental-eval failed, PG fallback: %s", exc)
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT *
-                FROM dw_stock.mart_sepa_fundamental_eval
-                WHERE symbol = %s
-                ORDER BY eval_date DESC
-                LIMIT 1
-                """,
-                (symbol.upper(),),
-            )
-            row = cur.fetchone()
-    return dict(row) if row else None
+    """One name's latest fundamental eval row; None when Research has none (404)."""
+    data = _research_get(f"/analytics/sepa/fundamental-eval/{symbol.upper()}", missing_is_none=True)
+    row = (data or {}).get("row")
+    return dict(row) if isinstance(row, dict) else None
 
 
 def fetch_technical_eval_single(symbol: str) -> Optional[Dict[str, Any]]:
-    if use_research_proxy():
-        try:
-            data = _proxy_get(f"/analytics/sepa/technical-eval/{symbol.upper()}")
-            row = data.get("row")
-            return dict(row) if isinstance(row, dict) else None
-        except httpx.HTTPStatusError as exc:
-            if exc.response is not None and exc.response.status_code == 404:
-                return None
-            logger.warning("Research proxy technical-eval failed, PG fallback: %s", exc)
-        except Exception as exc:
-            logger.warning("Research proxy technical-eval failed, PG fallback: %s", exc)
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT *
-                FROM dw_stock.mart_sepa_technical_eval
-                WHERE symbol = %s
-                ORDER BY eval_date DESC
-                LIMIT 1
-                """,
-                (symbol.upper(),),
-            )
-            row = cur.fetchone()
-    return dict(row) if row else None
+    """One name's latest technical eval row; None when Research has none (404)."""
+    data = _research_get(f"/analytics/sepa/technical-eval/{symbol.upper()}", missing_is_none=True)
+    row = (data or {}).get("row")
+    return dict(row) if isinstance(row, dict) else None
+
+
+def _filter_symbols(data: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [
+        {"symbol": s["symbol"], "pass_count": int(s.get("pass_count") or 0)}
+        for s in ((data or {}).get("symbols") or [])
+        if isinstance(s, dict) and s.get("symbol")
+    ]
 
 
 def fetch_fundamental_filter(condition_ids: List[str], *, limit: int = 500) -> List[Dict[str, Any]]:
     valid = [c for c in condition_ids if c in FUND_CONDITION_COLUMNS]
     if not valid:
         return []
-    if use_research_proxy():
-        try:
-            data = _proxy_get(
-                "/analytics/sepa/fundamental-filter",
-                {"conditions": ",".join(valid), "limit": limit},
-            )
-            symbols = data.get("symbols") or []
-            return [
-                {"symbol": s["symbol"], "pass_count": int(s.get("pass_count") or 0)}
-                for s in symbols
-                if isinstance(s, dict) and s.get("symbol")
-            ]
-        except Exception as exc:
-            logger.warning("Research proxy fundamental-filter failed, PG fallback: %s", exc)
-    where_parts = [f"{col} = true" for col in valid]
-    where_parts.append("insufficient_data = false")
-    sql = (
-        f"SELECT symbol, pass_count FROM {_FUND_EVAL_TABLE} "
-        f"WHERE eval_date = %s AND {' AND '.join(where_parts)} "
-        "ORDER BY pass_count DESC, symbol ASC "
-        f"LIMIT {int(limit)}"
+    return _filter_symbols(
+        _research_get("/analytics/sepa/fundamental-filter", {"conditions": ",".join(valid), "limit": limit})
     )
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            as_of = latest_eval_date(cur, _FUND_EVAL_TABLE)
-            if as_of is None:
-                return []
-            cur.execute(sql, (as_of,))
-            return [dict(r) for r in (cur.fetchall() or [])]
 
 
 def fetch_technical_filter(condition_ids: List[str], *, limit: int = 500) -> List[Dict[str, Any]]:
     valid = [c for c in condition_ids if c in TECH_CONDITION_COLUMNS]
     if not valid:
         return []
-    if use_research_proxy():
-        try:
-            data = _proxy_get(
-                "/analytics/sepa/technical-filter",
-                {"conditions": ",".join(valid), "limit": limit},
-            )
-            symbols = data.get("symbols") or []
-            return [
-                {"symbol": s["symbol"], "pass_count": int(s.get("pass_count") or 0)}
-                for s in symbols
-                if isinstance(s, dict) and s.get("symbol")
-            ]
-        except Exception as exc:
-            logger.warning("Research proxy technical-filter failed, PG fallback: %s", exc)
-    where_parts = [f"{col} = true" for col in valid]
-    sql = (
-        f"SELECT symbol, pass_count FROM {_TECH_EVAL_TABLE} "
-        f"WHERE eval_date = %s AND {' AND '.join(where_parts)} "
-        "ORDER BY pass_count DESC, symbol ASC "
-        f"LIMIT {int(limit)}"
+    return _filter_symbols(
+        _research_get("/analytics/sepa/technical-filter", {"conditions": ",".join(valid), "limit": limit})
     )
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            as_of = latest_eval_date(cur, _TECH_EVAL_TABLE)
-            if as_of is None:
-                return []
-            cur.execute(sql, (as_of,))
-            return [dict(r) for r in (cur.fetchall() or [])]
 
 
-def fetch_fundamental_distribution_symbols(conditions_passed: int) -> List[Dict[str, Any]]:
-    if use_research_proxy():
-        try:
-            data = _proxy_get(
-                "/analytics/sepa/fundamental-distribution",
-                {"conditions_passed": conditions_passed},
-            )
-            return list(data.get("symbols") or [])
-        except Exception as exc:
-            logger.warning("Research proxy fund-distribution failed, PG fallback: %s", exc)
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            as_of = latest_eval_date(cur, _FUND_EVAL_TABLE)
-            if as_of is None:
-                return []
-            cur.execute(
-                f"""
-                SELECT symbol, pass_count,
-                       eps_q2q_ge_25pct, rev_q2q_ge_25pct,
-                       eps_acc_2q, rev_acc_2q,
-                       eps_3y_ge_15pct, rev_3y_ge_15pct,
-                       eps_acc_fy, rev_acc_fy
-                FROM {_FUND_EVAL_TABLE}
-                WHERE eval_date = %s
-                  AND insufficient_data = false
-                  AND pass_count = %s
-                ORDER BY symbol
-                """,
-                (as_of, conditions_passed),
-            )
-            rows = cur.fetchall() or []
-    result = []
-    for r in rows:
-        passed_conditions = [col for col in FUND_CONDITION_COLUMNS if r.get(col) is True]
-        result.append({
-            "symbol": r["symbol"],
-            "pass_count": int(r.get("pass_count") or 0),
-            "passed_conditions": passed_conditions,
-        })
-    return result
+def fetch_fundamental_distribution_symbols(conditions_passed: int) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Names passing exactly N fundamental conditions, and the eval date Research read them on."""
+    data = _research_get("/analytics/sepa/fundamental-distribution", {"conditions_passed": conditions_passed}) or {}
+    return list(data.get("symbols") or []), data.get("as_of")
 
 
-def fetch_technical_distribution_symbols(conditions_passed: int) -> List[Dict[str, Any]]:
-    if use_research_proxy():
-        try:
-            data = _proxy_get(
-                "/analytics/sepa/technical-distribution",
-                {"conditions_passed": conditions_passed},
-            )
-            return list(data.get("symbols") or [])
-        except Exception as exc:
-            logger.warning("Research proxy tech-distribution failed, PG fallback: %s", exc)
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            as_of = latest_eval_date(cur, _TECH_EVAL_TABLE)
-            if as_of is None:
-                return []
-            cur.execute(
-                f"""
-                SELECT symbol, pass_count,
-                       avg_volume_50_gt_threshold, close_ge_low52_x_1_3,
-                       close_ge_high52_x_0_75, sma50_gt_sma150,
-                       sma50_gt_sma200, sma150_gt_sma200,
-                       sma200_rising_1m, price_gt_sma50,
-                       price_gt_sma150, price_gt_sma200,
-                       crs_ge_70
-                FROM {_TECH_EVAL_TABLE}
-                WHERE eval_date = %s
-                  AND pass_count = %s
-                ORDER BY symbol
-                """,
-                (as_of, conditions_passed),
-            )
-            rows = cur.fetchall() or []
-    result = []
-    for r in rows:
-        passed_conditions = [col for col in TECH_CONDITION_COLUMNS if r.get(col) is True]
-        result.append({
-            "symbol": r["symbol"],
-            "pass_count": int(r.get("pass_count") or 0),
-            "passed_conditions": passed_conditions,
-        })
-    return result
+def fetch_technical_distribution_symbols(conditions_passed: int) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Names passing exactly N technical conditions, and the eval date Research read them on."""
+    data = _research_get("/analytics/sepa/technical-distribution", {"conditions_passed": conditions_passed}) or {}
+    return list(data.get("symbols") or []), data.get("as_of")
 
 
 def fetch_screener_wide(
@@ -423,38 +273,11 @@ def fetch_screener_wide(
     *,
     limit: int = 500,
 ) -> List[Dict[str, Any]]:
-    if use_research_proxy():
-        try:
-            params: Dict[str, Any] = {"limit": limit}
-            if symbols:
-                params["symbols"] = ",".join(s.upper() for s in symbols[:500])
-            data = _proxy_get("/analytics/sepa/screener-wide", params)
-            return [dict(r) for r in (data.get("rows") or []) if isinstance(r, dict)]
-        except Exception as exc:
-            logger.warning("Research proxy screener-wide failed, PG fallback: %s", exc)
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            if symbols:
-                syms = [s.upper() for s in symbols[:500]]
-                cur.execute(
-                    """
-                    SELECT *
-                    FROM dw_stock.mart_sepa_screener_wide
-                    WHERE symbol = ANY(%s)
-                    ORDER BY symbol
-                    """,
-                    (syms,),
-                )
-            else:
-                cur.execute(
-                    f"""
-                    SELECT *
-                    FROM dw_stock.mart_sepa_screener_wide
-                    ORDER BY overall_rank ASC NULLS LAST
-                    LIMIT {int(limit)}
-                    """
-                )
-            return [dict(r) for r in (cur.fetchall() or [])]
+    params: Dict[str, Any] = {"limit": limit}
+    if symbols:
+        params["symbols"] = ",".join(s.upper() for s in symbols[:500])
+    data = _research_get("/analytics/sepa/screener-wide", params) or {}
+    return [dict(r) for r in (data.get("rows") or []) if isinstance(r, dict)]
 
 
 def fetch_iv_percentile_latest(symbol: str) -> Optional[Dict[str, Any]]:
@@ -474,23 +297,3 @@ def fetch_iv_percentile_latest(symbol: str) -> Optional[Dict[str, Any]]:
         raise
     rows = data.get("rows") or []
     return dict(rows[0]) if rows and isinstance(rows[0], dict) else None
-
-
-def fetch_screening_ranked(*, limit: int = 500) -> List[Dict[str, Any]]:
-    if use_research_proxy():
-        try:
-            data = _proxy_get("/analytics/sepa/screening-ranked", {"limit": limit})
-            return [dict(r) for r in (data.get("rows") or []) if isinstance(r, dict)]
-        except Exception as exc:
-            logger.warning("Research proxy screening-ranked failed, PG fallback: %s", exc)
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                f"""
-                SELECT symbol, composite_score, overall_rank, decile, percentile
-                FROM dw_stock.mart_sepa_screening_ranked
-                ORDER BY overall_rank ASC NULLS LAST
-                LIMIT {int(limit)}
-                """
-            )
-            return [dict(r) for r in (cur.fetchall() or [])]
