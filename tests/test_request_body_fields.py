@@ -30,6 +30,8 @@ def current() -> Dict[str, List[str]]:
         for name, cls in inspect.getmembers(module, inspect.isclass):
             if name.startswith("_") or cls.__module__ != module.__name__ or not issubclass(cls, LenientItem):
                 continue
+            if cls.__name__ != name:
+                continue  # an old name kept as an alias (GateSafetyBody = GateSetBody, naming R1)
             out[name] = sorted((f.alias or n) for n, f in cls.model_fields.items())
     return dict(sorted(out.items()))
 

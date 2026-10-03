@@ -56,19 +56,6 @@
     "quantity",
     "trade_id"
   ],
-  "GateSafetyBody": [
-    "dim_coverage",
-    "dim_direction",
-    "dim_risk",
-    "dim_structure",
-    "dim_time",
-    "dim_volatility",
-    "earnings_dates",
-    "gates",
-    "is_active",
-    "name",
-    "version"
-  ],
   "GateSetBody": [
     "dim_coverage",
     "dim_direction",
