@@ -250,6 +250,7 @@ PROBE = {
     "activity": [{"source": "trades", "last_ts": "2031-03-04T14:00:00Z"}],
     "sample": {"label": "trades", "rows": 12},
     "clone_groups": [{"name": "trades", "tables": ["strategy_instance", "trade_review"], "note": "…"}],
+    "watchlist": {"label": "optionable_stocks", "symbols": ["QZAA", "QZFF"], "count": 2},
 }
 
 

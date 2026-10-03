@@ -9,13 +9,20 @@ platform must not learn Trade concepts (D13), so Trade answers by role instead
       "generated_at": "2031-03-04T14:30:00Z",
       "activity": [{"source": "trades", "last_ts": "…Z" | null, "detail"?: "missing"}, …],
       "sample": {"label": "trades", "rows": 89},
-      "clone_groups": [{"name": "trades", "tables": ["strategy_instance", …], "note": "…"}, …]
+      "clone_groups": [{"name": "trades", "tables": ["strategy_instance", …], "note": "…"}, …],
+      "watchlist": {"label": "optionable_stocks", "symbols": ["AAPL", …], "count": 42}
     }
 
 ``clone_groups[].tables`` is each group's seeds plus every table referencing them,
 transitively (what ``TRUNCATE … CASCADE`` on the seeds would empty), read from
 ``pg_constraint`` per request. A read that cannot happen is 503 with the reason --
 the platform shows ``unknown`` and never falls back to querying tables itself (R2).
+
+``watchlist`` (core 0.44.0) is this env's optionable stocks (``sec_type = 'STK'``,
+``optionable``), upper-cased, distinct and sorted; the platform unions them across envs for
+``GET /api/v1/watchlist/union`` instead of selecting from ``public.watchlist`` (Owner
+2026-10-03, option A). A missing table is ``symbols: null`` with a ``detail``. The route has
+no response model: the reader's dict is the response, so a new reader key reaches the platform.
 
 Served at ``/data-probe`` (``GET /api/ops/data-probe`` once the gateway routes that path)
 and at ``/ops/data-probe``, which the gateway's existing ``/api/ops/ops/`` rule already
