@@ -1,4 +1,4 @@
-"""Response models for allocations, opportunities, gate-safety sets, instances and plans
+"""Response models for allocations, opportunities, gate sets, trades and plans
 (TD-24, batch 3c-1; Owner decision B).
 
 Each model declares the fields core's reader returns -- the reader's SELECT list and
@@ -118,11 +118,11 @@ class OpportunityList(ResponseRow):
     count: int
 
 
-# --- gate safety ------------------------------------------------------------------------
+# --- gate sets (table gate_safety_strategy, a legacy name: D6-A) ------------------------
 
 
-class GateSafetyRow(ResponseRow):
-    """GET /strategies/gate-safety item."""
+class GateSetRow(ResponseRow):
+    """GET /gate-sets item (and GET /strategies/gate-safety until R4)."""
 
     gate_safety_strategy_id: int
     name: str
@@ -138,8 +138,8 @@ class GateSafetyRow(ResponseRow):
     structure_type: Optional[str]
 
 
-class GateSafetyDetail(GateSafetyRow):
-    """GET /strategies/gate-safety/{id}, PATCH /gate-safety/{id}."""
+class GateSetDetail(GateSetRow):
+    """GET / PATCH /gate-sets/{id} (and /strategies/gate-safety/{id} until R4)."""
 
     # Core's GateParams as nested objects (strategy / state / intent / guard), the shape of
     # GET /gate-safety/defaults; without strategy.earnings.dates (see earnings_dates).
@@ -148,17 +148,26 @@ class GateSafetyDetail(GateSafetyRow):
     earnings_dates: List[str]
 
 
-class GateSafetyList(ResponseRow):
-    items: List[GateSafetyRow]
+class GateSetList(ResponseRow):
+    items: List[GateSetRow]
     count: int
 
 
-# --- instances --------------------------------------------------------------------------
+# The old class names (naming R1); they go in R4.
+GateSafetyRow = GateSetRow
+GateSafetyDetail = GateSetDetail
+GateSafetyList = GateSetList
 
 
-class InstanceRow(ResponseRow):
-    """GET /strategies/instances item, GET /instances/{id}, PATCH /instances/{id}."""
+# --- trades (table strategy_instance until R3) ------------------------------------------
 
+
+class TradeRow(ResponseRow):
+    """GET /trades item, GET / PATCH /trades/{trade_id} (and /strategies/instances… until R4)."""
+
+    # The trade's id under its name (core 0.42.0); strategy_instance_id is the same value
+    # until R4.
+    trade_id: int
     strategy_instance_id: int
     strategy_opportunity_id: int
     strategy_opportunity_name: Optional[str]
@@ -182,9 +191,14 @@ class InstanceRow(ResponseRow):
     closed_on: Optional[str] = None
 
 
-class InstanceList(ResponseRow):
-    items: List[InstanceRow]
+class TradeList(ResponseRow):
+    items: List[TradeRow]
     count: int
+
+
+# The old class names (naming R1); they go in R4.
+InstanceRow = TradeRow
+InstanceList = TradeList
 
 
 # --- plans ------------------------------------------------------------------------------
@@ -235,6 +249,8 @@ class PlanRow(ResponseRow):
     filled_at: Optional[Timestamp]
     cancelled_at: Optional[Timestamp]
     strategy_instance_id: Optional[int]
+    # The same id under the trade's name (core 0.42.0, naming R1).
+    trade_id: Optional[int] = None
     parent_strategy_plan_id: Optional[int]
     created_at: Timestamp
     updated_at: Timestamp

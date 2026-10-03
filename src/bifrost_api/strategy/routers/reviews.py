@@ -1,4 +1,7 @@
-"""`/strategies/reviews` — the trader's review of each strategy instance.
+"""`/strategies/reviews` — the trader's review of each trade.
+
+Replaced by ``/trade-reviews`` (naming R1, api 0.7.0; ``bifrost_api.strategy.routers.trades``):
+these routes answer the same until R4 and are marked in ``REPLACED_ROUTES``.
 
 Review › Queue and Review › Single trade read the same rows (design Rev .110).
 A review is a record, never an instruction: nothing downstream reads it to act
@@ -10,7 +13,7 @@ A review is a record, never an instruction: nothing downstream reads it to act
                                                `note` is deprecated (TD-73, journal only)
     (PUT went in api 0.6.0 after a release marked replaced by PATCH; TD-15.)
 
-    404  no such instance
+    404  no such trade
     400  a bad tag, note or flag (PATCH; core's reason)
     503  Postgres is not configured for writes
 """
@@ -53,5 +56,5 @@ def patch_review_endpoint(
     review row. `reviewed: true` stamps it (the first stamp stays), `false` reopens it.
     `note` is deprecated (TD-73): a trade's notes live in the Research journal."""
     deprecated_fields_sent(request, response, {"note"} & body.model_fields_set)
-    config = write_target(request, f"the review of strategy instance {strategy_instance_id}")
+    config = write_target(request, f"the review of trade {strategy_instance_id}")
     return trade_review_module.patch_review(config, strategy_instance_id, body.patch_fields())

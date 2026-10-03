@@ -16,6 +16,8 @@ The canonical names, for every route that takes the idea:
 ``from_date``   ``YYYY-MM-DD``, inclusive lower bound
 ``to_date``     ``YYYY-MM-DD``, inclusive upper bound
 ``limit``       the most rows to return (a route's own default and cap are unchanged)
+``trade_id``    one Trade (the table is ``strategy_instance`` until naming R3)
+``trade_ids``   comma-separated Trade ids
 ==============  =====================================================================
 
 The unit is in the name: ``_ts`` is always Unix seconds and ``_date`` always a
@@ -50,21 +52,30 @@ TO_TS = "to_ts"
 FROM_DATE = "from_date"
 TO_DATE = "to_date"
 LIMIT = "limit"
+TRADE_ID = "trade_id"
+TRADE_IDS = "trade_ids"
 
-CANONICAL_NAMES: FrozenSet[str] = frozenset({EXPIRY, OPTION_RIGHT, FROM_TS, TO_TS, FROM_DATE, TO_DATE, LIMIT})
+CANONICAL_NAMES: FrozenSet[str] = frozenset(
+    {EXPIRY, OPTION_RIGHT, FROM_TS, TO_TS, FROM_DATE, TO_DATE, LIMIT, TRADE_ID, TRADE_IDS}
+)
 
 _TS_RANGE = {"since_ts": FROM_TS, "until_ts": TO_TS}
+# naming R1 (api 0.7.0): the Trade's id under its name; the instance names go in R4.
+_TRADE = {"strategy_instance_id": TRADE_ID}
+_TRADES_LIST = {"opened_at_from": FROM_TS, "opened_at_until": TO_TS, "strategy_instance_ids": TRADE_IDS}
 
 # (method, path as the app sees it) -> {old name: canonical name}. Paths are the ones
 # the app serves (Traefik strips ``/api/<domain>``). Removed next release, route by
 # route, once a release has gone by with no "deprecated query params" line for it.
 QUERY_ALIASES: Dict[Tuple[str, str], Dict[str, str]] = {
     # account app (trading + strategy routers)
-    ("GET", "/executions"): dict(_TS_RANGE),
-    ("GET", "/performance"): dict(_TS_RANGE),
+    ("GET", "/executions"): {**_TS_RANGE, **_TRADE},
+    ("GET", "/performance"): {**_TS_RANGE, **_TRADE},
     ("GET", "/transactions"): dict(_TS_RANGE),
     ("GET", "/strategies/win-rate"): dict(_TS_RANGE),
-    ("GET", "/strategies/instances"): {"opened_at_from": FROM_TS, "opened_at_until": TO_TS},
+    ("GET", "/trades/win-rate"): dict(_TS_RANGE),
+    ("GET", "/strategies/instances"): dict(_TRADES_LIST),
+    ("GET", "/trades"): dict(_TRADES_LIST),
     ("GET", "/executions/stock-link-candidates"): {"trade_date_from": FROM_DATE, "trade_date_to": TO_DATE},
     # research app
     ("GET", "/research/greeks"): {"right": OPTION_RIGHT},
@@ -109,6 +120,16 @@ def from_date_query(column: str, *, note: str = "") -> Any:
 def to_date_query(column: str, *, note: str = "") -> Any:
     """``to_date``: ``YYYY-MM-DD``, ``column <= to_date``."""
     return Query(None, alias=TO_DATE, description=_join(f"YYYY-MM-DD, inclusive: {column} <= to_date.", note))
+
+
+def trade_id_query(*, note: str = "") -> Any:
+    """``trade_id``: one Trade (``strategy_instance_id`` before api 0.7.0)."""
+    return Query(None, alias=TRADE_ID, description=_join("Filter by trade id.", note))
+
+
+def trade_ids_query(*, note: str = "") -> Any:
+    """``trade_ids``: comma-separated Trade ids (``strategy_instance_ids`` before api 0.7.0)."""
+    return Query(None, alias=TRADE_IDS, description=_join("Comma-separated trade ids (e.g. 1,2,3).", note))
 
 
 def _join(text: str, note: str) -> str:

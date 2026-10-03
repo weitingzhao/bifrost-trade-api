@@ -6,20 +6,20 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from bifrost_api.common.envelopes import list_body
-from bifrost_api.common.query_vocab import from_ts_query, to_ts_query
+from bifrost_api.common.query_vocab import from_ts_query, to_ts_query, trade_ids_query
 from bifrost_api.common.write_errors import deleted_body, write_target
-from bifrost_api.deprecations import deprecated_fields_sent
 from bifrost_api.strategy.deps import write_config
 from bifrost_api.strategy.patch_bodies import (
     AllocationPatch,
-    GateSafetyPatch,
-    InstancePatch,
+    GateSetPatch,
     OpportunityPatch,
     StructurePatch,
     TemplatePatch,
+    TradePatch,
 )
+from bifrost_api.strategy.routers import trades as trades_module
 from bifrost_api.strategy.schemas.requests import (
-    GateSafetyBody,
+    GateSetBody,
     StructureBody,
     TemplateBody,
     TemplateCharacteristicsBody,
@@ -29,12 +29,12 @@ from bifrost_api.strategy.schemas.requests import (
 from bifrost_api.strategy.schemas.responses import (
     AllocationList,
     AllocationRow,
-    GateSafetyDetail,
-    GateSafetyList,
-    InstanceList,
-    InstanceRow,
+    GateSetDetail,
+    GateSetList,
     OpportunityDetail,
     OpportunityList,
+    TradeList,
+    TradeRow,
 )
 from bifrost_core.monitor.reader import gate_safety_write as gate_safety_write_module
 from bifrost_core.monitor.reader.errors import WriteError
@@ -42,7 +42,6 @@ from bifrost_core.monitor.reader import strategy_allocation_write as strategy_al
 from bifrost_core.monitor.reader import strategy_opportunity_write as strategy_opportunity_write_module
 from bifrost_core.monitor.reader import strategy_structure_write as strategy_structure_write_module
 from bifrost_core.monitor.reader import strategy_rules_delete as strategy_rules_delete_module
-from bifrost_core.monitor.reader import strategy_instance as strategy_instance_module
 from bifrost_core.monitor.reader import template_config_write as template_config_write_module
 from bifrost_core.monitor.schemas.gate_params import default_gates
 from bifrost_core.monitor.schemas.strategies import (
@@ -51,10 +50,6 @@ from bifrost_core.monitor.schemas.strategies import (
     StrategyInstanceCreateBody,
 )
 from bifrost_core.monitor.services import option_strategy_templates
-from bifrost_core.monitor.services.strategy_parsing import (
-    parse_opened_at_to_unix,
-    parse_strategy_instance_ids_csv,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +57,7 @@ router = APIRouter(prefix="/strategies", tags=["strategies"])
 
 # Bodies and answers (TD-24, batch 3c-1): POST / PUT bodies are typed
 # (bifrost_api.strategy.schemas.requests -- strict types, unknown fields ignored and
-# logged this release); allocations, opportunities, gate-safety sets and instances
+# logged this release); allocations, opportunities, gate sets and trades
 # answer through the response models in bifrost_api.strategy.schemas.responses.
 #
 # Writes (TD-15, batch 3b-2): PATCH changes only the fields sent and answers the
@@ -324,87 +319,48 @@ def patch_opportunity_endpoint(request: Request, strategy_opportunity_id: int, b
 @router.get("/win-rate")
 def get_strategy_win_rate(
     request: Request,
-    from_ts: Optional[float] = from_ts_query("the time of the fills counted toward each instance"),
-    to_ts: Optional[float] = to_ts_query("the time of the fills counted toward each instance"),
+    from_ts: Optional[float] = from_ts_query("the time of the fills counted toward each trade"),
+    to_ts: Optional[float] = to_ts_query("the time of the fills counted toward each trade"),
 ) -> Dict[str, Any]:
-    """Return per-structure win-rate rows and ``totals_all`` (all instances combined).
-
-    ``total_profit`` = sum of execution-derived Net PnL for instances with strictly positive net (same rule for every structure);
-    ``total_loss`` = sum of those nets for instances with net &lt; 0 only (same Net PnL as Instance Detail;
-    omitted when no such instance).
-    """
-    reader = request.app.state.reader
-    return reader.get_strategy_win_rate(since_ts=from_ts, until_ts=to_ts)
+    """Replaced by GET /trades/win-rate (naming R1); the same answer until R4."""
+    return trades_module.trade_win_rate(request, from_ts, to_ts)
 
 
-@router.get("/instances", response_model=InstanceList, response_model_exclude_unset=True)
+# --- trades under their old path: replaced by /trades (naming R1, api 0.7.0) ---------------
+# Same functions as bifrost_api.strategy.routers.trades; marked in REPLACED_ROUTES, gone in R4.
+
+
+@router.get("/instances", response_model=TradeList, response_model_exclude_unset=True)
 def list_strategy_instances(
     request: Request,
     account_id: Optional[str] = Query(None, description="Filter by account ID"),
     strategy_opportunity_id: Optional[int] = Query(None, description="Filter by strategy opportunity ID"),
-    strategy_instance_ids: Optional[str] = Query(
-        None,
-        description="Comma-separated strategy instance IDs (e.g. 1,2,3)",
-    ),
-    from_ts: Optional[float] = from_ts_query("the instance's opened_at"),
-    to_ts: Optional[float] = to_ts_query("the instance's opened_at"),
+    trade_ids: Optional[str] = trade_ids_query(note="strategy_instance_ids is read the same until R4."),
+    from_ts: Optional[float] = from_ts_query("the trade's opened_at"),
+    to_ts: Optional[float] = to_ts_query("the trade's opened_at"),
 ) -> Dict[str, Any]:
-    """Return list of strategy_instance rows (SI.2). Optional filters: account_id, strategy_opportunity_id, strategy_instance_ids, opened_at range.
-    Each row carries ``state`` (no_fills / open / expired / closed) and ``closed_on``, derived by core from
-    the instance's option fills (core 0.41.0, TD-43) -- the one open / closed rule every page reads."""
-    reader = request.app.state.reader
-    try:
-        ids = parse_strategy_instance_ids_csv(strategy_instance_ids)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    items: List[Dict[str, Any]] = reader.list_strategy_instances(
-        account_id=account_id,
-        strategy_opportunity_id=strategy_opportunity_id,
-        strategy_instance_ids=ids,
-        opened_at_from=from_ts,
-        opened_at_until=to_ts,
-    )
-    return list_body(items)
+    """Replaced by GET /trades."""
+    return trades_module.list_trades(request, account_id, strategy_opportunity_id, trade_ids, from_ts, to_ts)
 
 
-@router.get("/instances/{strategy_instance_id}", response_model=InstanceRow, response_model_exclude_unset=True)
+@router.get("/instances/{strategy_instance_id}", response_model=TradeRow, response_model_exclude_unset=True)
 def get_strategy_instance(request: Request, strategy_instance_id: int) -> Dict[str, Any]:
-    """Return one strategy_instance by id. 404 if not found."""
-    reader = request.app.state.reader
-    row = reader.get_strategy_instance_by_id(strategy_instance_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Strategy instance not found")
-    return row
+    """Replaced by GET /trades/{trade_id}."""
+    return trades_module.get_trade(request, strategy_instance_id)
 
 
 @router.post("/instances")
 def create_strategy_instance_endpoint(
     request: Request, response: Response, body: StrategyInstanceCreateBody
 ) -> Dict[str, Any]:
-    """Create a new strategy instance. Body: strategy_opportunity_id, account_id, opened_at (required), label?, notes?. opened_at: ISO 8601 or Unix seconds.
-    `notes` is deprecated (TD-73): a trade's notes live in the Research journal."""
-    deprecated_fields_sent(request, response, {"notes"} & body.model_fields_set)
-    reader = request.app.state.reader
-    write_config(request)  # 503 without Postgres; the reader does the write
-    try:
-        opened_at_val = parse_opened_at_to_unix(body.opened_at)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    sid = reader.create_strategy_instance(
-        strategy_opportunity_id=body.strategy_opportunity_id,
-        account_id=body.account_id.strip(),
-        opened_at=opened_at_val,
-        label=body.label.strip() if body.label else None,
-        notes=body.notes.strip() if body.notes else None,
-    )
-    if sid is None:
-        raise HTTPException(status_code=500, detail="Failed to create strategy instance")
-    return {"strategy_instance_id": sid}
+    """Replaced by POST /trades. `notes` is deprecated (TD-73): notes live in the Research journal."""
+    return trades_module.create_trade(request, body, response)
 
 
 @router.get("/instances/{strategy_instance_id}/open-option-legs")
 def get_instance_open_option_legs(request: Request, strategy_instance_id: int) -> Dict[str, Any]:
-    """Return current open OPT positions linked to this instance (derived from executions intersected with positions)."""
+    """Return current open OPT positions linked to this trade (derived from executions intersected with positions).
+    Deprecated without a successor (TD-40)."""
     reader = request.app.state.reader
     legs = reader.get_instance_open_option_legs(strategy_instance_id)
     return list_body(legs, strategy_instance_id=strategy_instance_id)
@@ -412,23 +368,16 @@ def get_instance_open_option_legs(request: Request, strategy_instance_id: int) -
 
 @router.delete("/instances/{strategy_instance_id}")
 def delete_strategy_instance_endpoint(request: Request, strategy_instance_id: int) -> Dict[str, Any]:
-    """Hard delete. 409 while executions are split-allocated or attributed to it, while a
-    plan was filled by it or while it has a review (both RESTRICT since core 0.41.0, TD-43);
-    503 when the database is unreachable, 500 when its check fails -- nothing is deleted blind."""
-    config = write_target(request, f"strategy instance {strategy_instance_id}")
-    return deleted_body(strategy_instance_module.delete_instance_strict(config, strategy_instance_id))
+    """Replaced by DELETE /trades/{trade_id}."""
+    return trades_module.delete_trade(request, strategy_instance_id)
 
 
-@router.patch("/instances/{strategy_instance_id}", response_model=InstanceRow, response_model_exclude_unset=True)
+@router.patch("/instances/{strategy_instance_id}", response_model=TradeRow, response_model_exclude_unset=True)
 def update_strategy_instance_endpoint(
-    request: Request, response: Response, strategy_instance_id: int, body: InstancePatch
+    request: Request, response: Response, strategy_instance_id: int, body: TradePatch
 ) -> Dict[str, Any]:
-    """Change label / notes / opened_at / created_at; `null` clears label or notes.
-    Answers the instance as GET /instances/{id} does. `notes` is deprecated (TD-73):
-    a trade's notes live in the Research journal."""
-    deprecated_fields_sent(request, response, {"notes"} & body.model_fields_set)
-    config = write_target(request, f"strategy instance {strategy_instance_id}")
-    return strategy_instance_module.patch_instance(config, strategy_instance_id, body.patch_fields())
+    """Replaced by PATCH /trades/{trade_id}. `notes` is deprecated (TD-73)."""
+    return trades_module.patch_trade(request, strategy_instance_id, body, response)
 
 
 @router.get("/allocations", response_model=AllocationList, response_model_exclude_unset=True)
@@ -476,7 +425,7 @@ def patch_allocation_endpoint(request: Request, strategy_allocation_id: int, bod
     return strategy_allocation_write_module.patch_allocation(config, strategy_allocation_id, body.patch_fields())
 
 
-@router.get("/gate-safety", response_model=GateSafetyList, response_model_exclude_unset=True)
+@router.get("/gate-safety", response_model=GateSetList, response_model_exclude_unset=True)
 def list_gate_safety(request: Request) -> Dict[str, Any]:
     """Return list of gate_safety_strategy rows for management dropdown."""
     reader = request.app.state.reader
@@ -492,7 +441,7 @@ def get_gate_safety_defaults() -> Dict[str, Any]:
     return {"gates": default_gates()}
 
 
-@router.get("/gate-safety/{gate_safety_strategy_id}", response_model=GateSafetyDetail, response_model_exclude_unset=True)
+@router.get("/gate-safety/{gate_safety_strategy_id}", response_model=GateSetDetail, response_model_exclude_unset=True)
 def get_gate_safety_by_id(request: Request, gate_safety_strategy_id: int) -> Dict[str, Any]:
     """Return full gate set for UI edit: metadata + gates + earnings_dates. 404 if not found."""
     reader = request.app.state.reader
@@ -503,7 +452,7 @@ def get_gate_safety_by_id(request: Request, gate_safety_strategy_id: int) -> Dic
 
 
 @router.post("/gate-safety")
-def create_gate_safety_endpoint(request: Request, body: GateSafetyBody) -> Dict[str, Any]:
+def create_gate_safety_endpoint(request: Request, body: GateSetBody) -> Dict[str, Any]:
     """Create a new gate safety set. Body: name, optional version / six dims / is_active, gates, optional earnings_dates."""
     control_via_db = write_config(request)
     if not (body.name or "").strip():
@@ -518,7 +467,7 @@ def create_gate_safety_endpoint(request: Request, body: GateSafetyBody) -> Dict[
 
 
 @router.put("/gate-safety/{gate_safety_strategy_id}")
-def update_gate_safety_endpoint(request: Request, gate_safety_strategy_id: int, body: GateSafetyBody) -> Dict[str, Any]:
+def update_gate_safety_endpoint(request: Request, gate_safety_strategy_id: int, body: GateSetBody) -> Dict[str, Any]:
     """Update an existing gate safety set. Body same as POST."""
     control_via_db = write_config(request)
     if not (body.name or "").strip():
@@ -534,8 +483,8 @@ def update_gate_safety_endpoint(request: Request, gate_safety_strategy_id: int, 
     return {"ok": True}
 
 
-@router.patch("/gate-safety/{gate_safety_strategy_id}", response_model=GateSafetyDetail, response_model_exclude_unset=True)
-def patch_gate_safety_endpoint(request: Request, gate_safety_strategy_id: int, body: GateSafetyPatch) -> Dict[str, Any]:
+@router.patch("/gate-safety/{gate_safety_strategy_id}", response_model=GateSetDetail, response_model_exclude_unset=True)
+def patch_gate_safety_endpoint(request: Request, gate_safety_strategy_id: int, body: GateSetPatch) -> Dict[str, Any]:
     """Change the fields sent; answer the set as GET /gate-safety/{id} does. `gates` is a
     partial object deep-merged into the stored gates; `earnings_dates` replaces the list."""
     config = write_target(request, f"gate safety set {gate_safety_strategy_id}")

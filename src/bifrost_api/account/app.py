@@ -97,7 +97,15 @@ def create_account_app(
         portfolio_model_router,
         portfolio_short_legs_router,
     )
-    from bifrost_api.strategy.routers import plans_router, reviews_router, saved_searches_router, strategies_router
+    from bifrost_api.strategy.routers import (
+        gate_sets_router,
+        plans_router,
+        preferences_router,
+        reviews_router,
+        saved_searches_router,
+        strategies_router,
+        trades_router,
+    )
 
     app.include_router(executions_router)
     # Phase B merged the trading, strategy and portfolio domains in here: this app
@@ -113,6 +121,11 @@ def create_account_app(
     app.include_router(plans_router)
     app.include_router(saved_searches_router)
     app.include_router(reviews_router)
+    # naming R1 (api 0.7.0, D5-A): the trade, its reviews, gate sets and saved searches under
+    # their own names; the /strategies/... routes above answer the same until R4.
+    app.include_router(trades_router)
+    app.include_router(gate_sets_router)
+    app.include_router(preferences_router)
 
     @app.get("/health")
     def account_health() -> Any:

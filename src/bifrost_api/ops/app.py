@@ -130,6 +130,12 @@ def wire_ops_control_plane(
 
     app.include_router(market_ingest_router)
 
+    # D8-A (naming R1, api 0.7.0): the platform reads Trade's activity and clone groups
+    # here instead of naming Trade tables.
+    from bifrost_api.ops.routers.data_probe import router as data_probe_router
+
+    app.include_router(data_probe_router)
+
     from bifrost_api.common.build_info import core_build_info
     from bifrost_api.common.service_endpoints import mount_auth_capabilities
 

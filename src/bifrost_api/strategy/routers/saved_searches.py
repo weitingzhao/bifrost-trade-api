@@ -1,5 +1,8 @@
 """`/strategies/saved-searches` — a page's scope kept under a name.
 
+Replaced by ``/preferences/saved-searches`` (naming R1, D5-A; same functions,
+``bifrost_api.strategy.routers.preferences``); these routes go in R4.
+
 Trade design Rev .139: Plans' Save as list writes one, the sidebar lists them
 on every page. Stored server-side for the one operator (Owner 2026-10-01); the
 rules and the table are core's (`saved_search`, core 0.28.0).

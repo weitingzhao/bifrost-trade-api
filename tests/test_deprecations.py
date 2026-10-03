@@ -109,13 +109,14 @@ def test_a_marked_route_says_so_and_logs_its_caller(caplog: pytest.LogCaptureFix
         ("PUT", "/instrument-classes/ZZFI"),
         ("PATCH", "/strategies/plans/42"),
         ("PUT", "/strategies/templates/3/legs"),
-        ("PUT", "/strategies/gate-safety/3"),
         ("PUT", "/position-categories/tag"),
+        ("GET", "/strategies/allocations"),
+        ("GET", "/trades"),
+        ("GET", "/gate-sets/3"),
     ],
 )
-def test_nothing_is_marked_replaced_since_0_6_0(method: str, path: str) -> None:
-    """TD-15: the merge PUTs went in api 0.6.0, so the list is empty until the next successor."""
-    assert REPLACED_ROUTES == {}
+def test_the_td15_puts_and_the_new_routes_are_not_marked_replaced(method: str, path: str) -> None:
+    """TD-15: the merge PUTs went in api 0.6.0; what is left replaced is the naming R1 moves."""
     assert replaced_route(method, path) is None
 
 

@@ -33,7 +33,7 @@ attribution); unknown fields are ignored and logged this release.
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import StrictInt
@@ -44,6 +44,7 @@ from bifrost_api.common.query_vocab import (
     from_ts_query,
     to_date_query,
     to_ts_query,
+    trade_id_query,
 )
 from bifrost_api.common.write_errors import PatchBody, deleted_body, write_target
 from bifrost_api.trading.schemas.requests import (
@@ -74,12 +75,21 @@ PG_REQUIRED_FOR_EXECUTIONS = "PostgreSQL is required to write account_executions
 
 class ExecutionAttributionPatch(PatchBody):
     """Strategy attribution of one execution: a trade, or quantity splits -- not both. The
-    opportunity is the trade's (core 0.37.0): sent alone it is 400, sent with a trade it must match."""
+    opportunity is the trade's (core 0.37.0): sent alone it is 400, sent with a trade it must match.
+
+    ``trade_id`` / ``fill_splits`` are the names from api 0.7.0 (naming R1);
+    ``strategy_instance_id`` / ``instance_allocations`` still work until R4 and lose when
+    both are sent. The answer carries both."""
 
     strategy_opportunity_id: Optional[StrictInt] = None
+    trade_id: Optional[StrictInt] = None
+    # [{trade_id, quantity}], replaced whole; [] removes the splits.
+    fill_splits: Optional[List[Dict[str, Any]]] = None
     strategy_instance_id: Optional[StrictInt] = None
-    # [{strategy_instance_id, allocated_quantity}], replaced whole; [] removes the splits.
+    # [{strategy_instance_id, allocated_quantity}]: the old name of fill_splits.
     instance_allocations: Optional[List[Dict[str, Any]]] = None
+
+    READ_NAMES: ClassVar[Dict[str, str]] = {"trade_id": "strategy_instance_id", "fill_splits": "instance_allocations"}
 
 # What core's option-stock link readers and writers answer, by status. Core returns a
 # message rather than a reason code, so the route sorts by the message
@@ -199,7 +209,7 @@ def get_executions(
     limit: int = Query(200, ge=0, le=10000, description="Max rows to return; 0 = no limit"),
     include_opt_pairs: bool = Query(False, description="Include C<>P pairing"),
     strategy_opportunity_id: Optional[int] = Query(None, description="Filter by strategy opportunity ID"),
-    strategy_instance_id: Optional[int] = Query(None, description="Filter by strategy instance ID"),
+    strategy_instance_id: Optional[int] = trade_id_query(),
     source_scope: Optional[str] = Query(
         None,
         description=(
@@ -465,25 +475,25 @@ def get_performance(
     account_id: Optional[str] = Query(None),
     granularity: str = Query("day", description="day | week | month"),
     strategy_opportunity_id: Optional[int] = Query(None, description="Filter by strategy opportunity ID"),
-    strategy_instance_id: Optional[int] = Query(None, description="Filter by strategy instance ID"),
+    strategy_instance_id: Optional[int] = trade_id_query(),
     source_scope: str = Query(
         "performance_book",
         description="performance_book (default, account_executions_final) | on_the_fly (account_executions_fly)",
     ),
     summary_only: bool = Query(
         False,
-        description="With strategy_instance_id only: return summary via one SQL aggregate (fast)",
+        description="With trade_id only: return summary via one SQL aggregate (fast)",
     ),
 ) -> Dict[str, Any]:
     """Performance stats and calendar PnL. Default source_scope=performance_book reads account_executions_final (flex+journal only)."""
     reader = request.app.state.reader
     if summary_only:
         if strategy_instance_id is None:
-            raise HTTPException(status_code=400, detail="summary_only requires strategy_instance_id")
+            raise HTTPException(status_code=400, detail="summary_only requires trade_id")
         if (account_id is not None and str(account_id).strip()) or strategy_opportunity_id is not None:
             raise HTTPException(
                 status_code=400,
-                detail="summary_only allows only strategy_instance_id (no account_id / opportunity filter)",
+                detail="summary_only allows only trade_id (no account_id / opportunity filter)",
             )
         out = reader.get_performance_instance_summary(
             strategy_instance_id=strategy_instance_id,
@@ -554,9 +564,9 @@ def post_execution(request: Request, body: ExecutionCreateBody) -> Any:
         )
     new_account_executions_id = insert_one_execution(control_via_db, body.declared(exclude_unset=True))
     if new_account_executions_id is None:
-        if body.instance_allocations:
+        if body.sends_splits():
             return error_response(
-                400, "Failed to add execution (instance_allocations rejected or database error)."
+                400, "Failed to add execution (fill_splits rejected or database error)."
             )
         return error_response(500, "Failed to add execution (database error).")
     return {"ok": True, "account_executions_id": new_account_executions_id, "message": "Execution record added."}
@@ -579,9 +589,9 @@ def put_execution(request: Request, account_executions_id: str, body: ExecutionU
         return error_response(503, PG_REQUIRED_FOR_EXECUTIONS)
     if update_one_execution(control_via_db, eid, body.declared(exclude_unset=True)):
         return {"ok": True, "message": "Execution record updated."}
-    if body.instance_allocations:
+    if body.sends_splits():
         return error_response(
-            400, "Update failed (instance_allocations rejected, account_executions_id missing, or database error)."
+            400, "Update failed (fill_splits rejected, account_executions_id missing, or database error)."
         )
     # Core answers False both for a missing row and for a database error (it logs the
     # latter); a missing row is the one a caller reaches, so 404.
@@ -591,11 +601,12 @@ def put_execution(request: Request, account_executions_id: str, body: ExecutionU
 @router.patch("/executions/{account_executions_id}/attribution")
 def patch_execution_attribution(request: Request, account_executions_id: str, body: ExecutionAttributionPatch) -> Any:
     """Change one execution's strategy attribution; answer its attribution fields
-    (account_executions_id, account_id, the two ids, instance_allocations).
+    (account_executions_id, account_id, the opportunity, trade_id and fill_splits -- with
+    strategy_instance_id and instance_allocations beside them until R4).
 
-    `strategy_instance_id: null` clears the whole-fill attribution. A trade on an execution
-    that has splits is 409 unless the same patch sends `instance_allocations: []`. The
-    instance must be on the execution's account (400). An opportunity without a trade is
+    `trade_id: null` clears the whole-fill attribution. A trade on an execution
+    that has splits is 409 unless the same patch sends `fill_splits: []`. The
+    trade must be on the execution's account (400). An opportunity without a trade is
     400; with one it must be the trade's (400). Written to this environment's
     strategy_instance_execution by the fill (account_id, exec_id), so a TWS row and its
     Flex twin change together (core 0.37.0, TD-09). The id is signed by source (see the

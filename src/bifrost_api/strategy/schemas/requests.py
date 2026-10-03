@@ -117,8 +117,8 @@ class StructureBody(LenientBody):
     meta: Optional[List[StructureMetaItem]] = None
 
 
-class GateSafetyBody(LenientBody):
-    """POST /strategies/gate-safety and PUT /strategies/gate-safety/{id} (a full replace).
+class GateSetBody(LenientBody):
+    """POST /gate-sets and PUT /gate-sets/{id} (a full replace; /strategies/gate-safety… until R4).
 
     ``name`` is required (the route, 400). ``gates`` is the nested gates object, checked
     against core's ``GateParams`` (400 with the reason); its earnings dates go in the
@@ -135,6 +135,10 @@ class GateSafetyBody(LenientBody):
     is_active: Optional[StrictBool] = None
     gates: Optional[Dict[str, Any]] = None
     earnings_dates: Optional[List[StrictStr]] = None
+
+
+# The old class name (D6-A, naming R1); goes in R4.
+GateSafetyBody = GateSetBody
 
 
 class SavedSearchBody(LenientBody):

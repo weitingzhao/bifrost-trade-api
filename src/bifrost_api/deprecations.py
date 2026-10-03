@@ -75,14 +75,41 @@ DEPRECATED_ROUTES: FrozenSet[Tuple[str, str]] = frozenset(
 )
 
 
-# (method, path template) -> "METHOD successor template". The successor's path
-# parameters are named as in the replaced route's template, so a hit's ids carry over.
+# (method, path template) -> "METHOD successor template", the successor written as it is
+# served. A hit's ids carry over by position: the successor's n-th path parameter takes
+# the replaced route's n-th (so {strategy_instance_id} fills {trade_id:int}).
+#
+# The TD-15 merge PUTs went in api 0.6.0. PUT /executions/{account_executions_id} is not
+# here: ExecutionFormModal edits the fill columns through it and those have no PATCH yet.
+#
+# Naming program R1 (api 0.7.0, decision pack 2026-10-03 D4/D5): the Trade, its reviews,
+# gate sets and saved searches move out of /strategies. The old routes answer the same
+# through the same functions until R4, which deletes them once Loki has shown no
+# "replaced route hit" for 4 days after a PROD release cycle (D4-A).
+# GET /strategies/instances/{id}/open-option-legs stays in DEPRECATED_ROUTES (no successor).
+_TRADE = "/trades/{trade_id:int}"
+_GATE_SET = "/gate-sets/{gate_safety_strategy_id:int}"
 REPLACED_ROUTES: Dict[Tuple[str, str], str] = {
-    # Empty since api 0.6.0 (TD-15): the merge PUTs on templates, opportunities,
-    # allocations, plans and reviews were deleted after a release with no caller, and
-    # PUT /instrument-classes became a true create-or-replace. PUT /executions/{account_executions_id}
-    # is not here: ExecutionFormModal edits the fill columns through it and those have no
-    # PATCH yet (attribution callers use PATCH /executions/{id}/attribution).
+    ("GET", "/strategies/instances"): "GET /trades",
+    ("POST", "/strategies/instances"): "POST /trades",
+    ("GET", "/strategies/instances/{strategy_instance_id}"): f"GET {_TRADE}",
+    ("PATCH", "/strategies/instances/{strategy_instance_id}"): f"PATCH {_TRADE}",
+    ("DELETE", "/strategies/instances/{strategy_instance_id}"): f"DELETE {_TRADE}",
+    ("GET", "/strategies/win-rate"): "GET /trades/win-rate",
+    ("GET", "/strategies/reviews"): "GET /trade-reviews",
+    ("PATCH", "/strategies/reviews/{strategy_instance_id}"): "PATCH /trade-reviews/{trade_id:int}",
+    ("GET", "/strategies/gate-safety"): "GET /gate-sets",
+    ("POST", "/strategies/gate-safety"): "POST /gate-sets",
+    ("GET", "/strategies/gate-safety/defaults"): "GET /gate-sets/defaults",
+    ("GET", "/strategies/gate-safety/{gate_safety_strategy_id}"): f"GET {_GATE_SET}",
+    ("PUT", "/strategies/gate-safety/{gate_safety_strategy_id}"): f"PUT {_GATE_SET}",
+    ("PATCH", "/strategies/gate-safety/{gate_safety_strategy_id}"): f"PATCH {_GATE_SET}",
+    ("DELETE", "/strategies/gate-safety/{gate_safety_strategy_id}"): f"DELETE {_GATE_SET}",
+    ("GET", "/strategies/saved-searches"): "GET /preferences/saved-searches",
+    ("POST", "/strategies/saved-searches"): "POST /preferences/saved-searches",
+    ("DELETE", "/strategies/saved-searches/{preference_saved_search_id}"): (
+        "DELETE /preferences/saved-searches/{preference_saved_search_id:int}"
+    ),
 }
 
 
@@ -115,9 +142,10 @@ def _compile_named(template: str) -> Pattern[str]:
     return re.compile("^" + "".join(out) + "/?$")
 
 
+# Literal templates first: GET /strategies/gate-safety/defaults is not the id route.
 _REPLACED_MATCHERS: List[Tuple[str, str, str, Pattern[str]]] = sorted(
-    (method, template, successor, _compile_named(template))
-    for (method, template), successor in REPLACED_ROUTES.items()
+    ((method, template, successor, _compile_named(template)) for (method, template), successor in REPLACED_ROUTES.items()),
+    key=lambda m: (m[0], "{" in m[1], m[1]),
 )
 
 
@@ -128,7 +156,8 @@ def replaced_route(method: str, path: str) -> Optional[Tuple[str, str, str]]:
         hit = pattern.match(path) if method_ == m else None
         if hit:
             successor_path = successor.split(" ", 1)[1]
-            link = _PARAM.sub(lambda p: quote(hit.group(p.group(1)), safe=""), successor_path)
+            ids = iter(hit.groups())
+            link = _PARAM.sub(lambda _p: quote(next(ids, ""), safe=""), successor_path)
             return template, successor, link
     return None
 

@@ -68,7 +68,7 @@ class AllocationPatch(PatchBody):
     strategy_opportunity_ids: Optional[List[StrictInt]] = None
 
 
-class GateSafetyPatch(PatchBody):
+class GateSetPatch(PatchBody):
     name: Optional[StrictStr] = None
     version: Optional[StrictInt] = None
     dim_direction: Optional[StrictStr] = None
@@ -92,13 +92,21 @@ _JOURNAL_ONLY = (
 )
 
 
-class InstancePatch(PatchBody):
+# The gate set's old class name (D6-A, naming R1); goes in R4.
+GateSafetyPatch = GateSetPatch
+
+
+class TradePatch(PatchBody):
     label: Optional[StrictStr] = None
     notes: Optional[StrictStr] = Field(
         default=None, description=_JOURNAL_ONLY, json_schema_extra={"deprecated": True}
     )
     opened_at: Optional[Timestamp] = None
     created_at: Optional[Timestamp] = None
+
+
+# The trade's old class name (naming R1); goes in R4.
+InstancePatch = TradePatch
 
 
 class PlanPatch(PatchBody):
@@ -129,22 +137,22 @@ class PlanPatch(PatchBody):
     legs_json: Optional[List[Dict[str, Any]]] = None
     source_json: Optional[List[Dict[str, Any]]] = None
 
-    # read name -> the name core's patch_plan takes
+    # read name -> the name core's patch_plan takes (PatchBody.patch_fields maps them)
     READ_NAMES: ClassVar[Dict[str, str]] = {"legs_json": "legs", "source_json": "source"}
-
-    def patch_fields(self) -> Dict[str, Any]:
-        """The fields sent, under the names core's patch_plan takes (``legs`` / ``source``)."""
-        out = super().patch_fields()
-        for read_name, write_name in self.READ_NAMES.items():
-            if read_name in out:
-                out[write_name] = out.pop(read_name)
-        return out
 
 
 class ReviewPatch(PatchBody):
+    """``tags_added_json`` / ``tags_dropped_json`` are the names a review is read with from
+    api 0.7.0 (naming R1; the columns take them in R3); ``tags_added`` / ``tags_dropped``
+    still work until R4 and lose when both are sent."""
+
     tags_added: Optional[List[StrictStr]] = None
     tags_dropped: Optional[List[StrictStr]] = None
+    tags_added_json: Optional[List[StrictStr]] = None
+    tags_dropped_json: Optional[List[StrictStr]] = None
     note: Optional[StrictStr] = Field(
         default=None, description=_JOURNAL_ONLY, json_schema_extra={"deprecated": True}
     )
     reviewed: Optional[StrictBool] = None
+
+    READ_NAMES: ClassVar[Dict[str, str]] = {"tags_added_json": "tags_added", "tags_dropped_json": "tags_dropped"}

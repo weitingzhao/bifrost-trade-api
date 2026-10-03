@@ -457,26 +457,26 @@ def _instance_env(split: int = 0, exists: bool = True, direct: int = 0) -> _Conn
 def test_an_instance_with_attributed_executions_is_409(monkeypatch: pytest.MonkeyPatch) -> None:
     env = _instance_env(direct=2)
     _connect(monkeypatch, env, _Conn([]))
-    assert_error(_account().delete("/strategies/instances/7"), 409, "2 executions are attributed to this instance.")
+    assert_error(_account().delete("/strategies/instances/7"), 409, "2 fills are attributed to this trade.")
     assert not env.ran("DELETE FROM strategy_instance")
 
 
 def test_an_instance_with_split_executions_is_409(monkeypatch: pytest.MonkeyPatch) -> None:
     _connect(monkeypatch, _instance_env(split=1), _Conn([]))
-    assert_error(_account().delete("/strategies/instances/7"), 409, "split-allocated")
+    assert_error(_account().delete("/strategies/instances/7"), 409, "split to this trade")
 
 
 def test_an_instance_nothing_points_at_is_deleted(monkeypatch: pytest.MonkeyPatch) -> None:
     env = _instance_env()
     _connect(monkeypatch, env, _Conn([]))
     r = _account().delete("/strategies/instances/7")
-    assert r.json() == {"deleted": "hard", "strategy_instance_id": 7, "ok": True}
+    assert r.json() == {"deleted": "hard", "strategy_instance_id": 7, "trade_id": 7, "ok": True}
     assert env.ran("DELETE FROM strategy_instance") and env.commits == 1
 
 
 def test_a_missing_instance_is_404(monkeypatch: pytest.MonkeyPatch) -> None:
     _connect(monkeypatch, _instance_env(exists=False), _Conn([]))
-    assert_error(_account().delete("/strategies/instances/404"), 404, "No strategy instance 404.")
+    assert_error(_account().delete("/strategies/instances/404"), 404, "No trade 404.")
 
 
 def test_the_instance_delete_does_not_need_the_golden_source(monkeypatch: pytest.MonkeyPatch) -> None:

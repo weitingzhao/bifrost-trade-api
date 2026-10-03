@@ -19,10 +19,17 @@ from bifrost_api.common.request_bodies import LenientBody, LenientItem
 
 
 class InstanceAllocationItem(LenientItem):
-    """One split of a fill across trades; the splits must sum to the fill's quantity (core, 400)."""
+    """One split of a fill across trades, old names (until R4); see :class:`FillSplitItem`."""
 
     strategy_instance_id: Optional[StrictInt] = None
     allocated_quantity: Optional[StrictFloat] = None
+
+
+class FillSplitItem(LenientItem):
+    """One split of a fill across trades; the splits must sum to the fill's quantity (core, 400)."""
+
+    trade_id: Optional[StrictInt] = None
+    quantity: Optional[StrictFloat] = None
 
 
 class _ExecutionFields(LenientBody):
@@ -45,10 +52,18 @@ class _ExecutionFields(LenientBody):
     commission: Optional[StrictFloat] = None
     realized_pnl: Optional[StrictFloat] = None
     currency: Optional[StrictStr] = None
-    # Direct attribution, or instance_allocations -- not both.
+    # Direct attribution (trade_id), or fill_splits -- not both. strategy_instance_id /
+    # instance_allocations are the old names (until R4); the new name wins when both are sent
+    # (core 0.42.0 reads either).
     strategy_opportunity_id: Optional[StrictInt] = None
+    trade_id: Optional[StrictInt] = None
+    fill_splits: Optional[List[FillSplitItem]] = None
     strategy_instance_id: Optional[StrictInt] = None
     instance_allocations: Optional[List[InstanceAllocationItem]] = None
+
+    def sends_splits(self) -> bool:
+        """Whether non-empty splits were sent, under either name."""
+        return bool(self.fill_splits or self.instance_allocations)
 
 
 class ExecutionCreateBody(_ExecutionFields):

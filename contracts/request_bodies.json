@@ -8,6 +8,7 @@
     "exchange",
     "exec_id",
     "expiry",
+    "fill_splits",
     "instance_allocations",
     "option_right",
     "order_id",
@@ -22,7 +23,8 @@
     "strategy_opportunity_id",
     "strike",
     "symbol",
-    "time"
+    "time",
+    "trade_id"
   ],
   "ExecutionUpdateBody": [
     "account_id",
@@ -33,6 +35,7 @@
     "exchange",
     "exec_time",
     "expiry",
+    "fill_splits",
     "instance_allocations",
     "option_right",
     "order_id",
@@ -46,9 +49,27 @@
     "strategy_opportunity_id",
     "strike",
     "symbol",
-    "time"
+    "time",
+    "trade_id"
+  ],
+  "FillSplitItem": [
+    "quantity",
+    "trade_id"
   ],
   "GateSafetyBody": [
+    "dim_coverage",
+    "dim_direction",
+    "dim_risk",
+    "dim_structure",
+    "dim_time",
+    "dim_volatility",
+    "earnings_dates",
+    "gates",
+    "is_active",
+    "name",
+    "version"
+  ],
+  "GateSetBody": [
     "dim_coverage",
     "dim_direction",
     "dim_risk",

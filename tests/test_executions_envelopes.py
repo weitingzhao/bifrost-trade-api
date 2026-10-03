@@ -142,7 +142,7 @@ def test_post_execution_rejected_splits_is_400(monkeypatch: pytest.MonkeyPatch) 
         "price": 2,
         "instance_allocations": [{"strategy_instance_id": 3, "allocated_quantity": 5}],
     }
-    assert_error(_client().post("/executions", json=body), 400, "instance_allocations rejected", {"account_executions_id": None})
+    assert_error(_client().post("/executions", json=body), 400, "fill_splits rejected", {"account_executions_id": None})
 
 
 @pytest.mark.parametrize(

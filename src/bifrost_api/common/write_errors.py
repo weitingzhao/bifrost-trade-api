@@ -21,7 +21,7 @@ not parse (wrong type, unknown key, empty PATCH) is still FastAPI's 422.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, ClassVar, Dict
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -94,6 +94,11 @@ class PatchBody(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # read name -> the name core's patch function takes. A body may offer a field under the
+    # name it is read with (TD-57) or its new name (naming R1); the read name wins when a
+    # client sends both, and patch_fields hands core the name it takes.
+    READ_NAMES: ClassVar[Dict[str, str]] = {}
+
     @model_validator(mode="after")
     def _names_a_field(self) -> "PatchBody":
         if not self.model_fields_set:
@@ -103,5 +108,10 @@ class PatchBody(BaseModel):
         return self
 
     def patch_fields(self) -> Dict[str, Any]:
-        """Exactly what the client sent, explicit nulls included."""
-        return self.model_dump(exclude_unset=True)
+        """Exactly what the client sent, explicit nulls included, under the names core takes
+        (``READ_NAMES``; the read name wins over the other)."""
+        out = self.model_dump(exclude_unset=True)
+        for read_name, write_name in self.READ_NAMES.items():
+            if read_name in out:
+                out[write_name] = out.pop(read_name)
+        return out

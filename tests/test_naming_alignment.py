@@ -39,6 +39,7 @@ PATH_IDS = {
     "strategy_allocation_id",
     "gate_safety_strategy_id",
     "strategy_instance_id",
+    "trade_id",  # naming R1: /trades/{trade_id}; strategy_instance_id goes with the old routes in R4
     "strategy_plan_id",
     "preference_saved_search_id",
     "account_executions_id",
