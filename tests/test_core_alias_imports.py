@@ -35,13 +35,8 @@ READER_PACKAGE = "bifrost_core.monitor.reader"
 # TD-40 deletes the /control/* routes in this file; what they still import from the
 # aliases goes with them. Drop this entry once the file no longer imports any of these.
 ALLOWED: Dict[str, Set[str]] = {
-    "src/bifrost_api/monitor/routers/daemon.py": {
-        "bifrost_core.config.startup.get_effective_ib_config",
-        "bifrost_core.monitor.reader.sync_accounts_snapshot_to_db",
-        "bifrost_core.monitor.reader.write_control_command",
-        "bifrost_core.monitor.reader.write_heartbeat_interval",
-        "bifrost_core.monitor.reader.write_run_status",
-    },
+    # names the alias only to assert daemon.py does not import it
+    "tests/test_core_public_names.py": {"bifrost_core.config.startup"},
 }
 
 

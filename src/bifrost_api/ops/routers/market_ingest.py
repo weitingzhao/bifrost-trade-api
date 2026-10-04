@@ -3,7 +3,7 @@
 Read only. ``POST /ops/market-ingest/control`` (start / stop / restart / reset, the only
 path that scaled a workload, the daemon included) and ``POST
 /ops/market-ingest/clear-conflict-leases`` had no caller and no traffic in the release
-they were marked deprecated, and are gone (TD-40, api 0.7.6)."""
+they were marked deprecated, and are gone (TD-40, api 0.8.0)."""
 
 from __future__ import annotations
 

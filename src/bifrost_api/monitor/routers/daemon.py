@@ -2,7 +2,7 @@
 
 The other control routes (monitor stop / connect / release IB, daemon stop, retry and
 release IB, replay and ticker-subscription refreshes, heartbeat interval) had no caller
-and no traffic in the release they were marked deprecated, and are gone (TD-40, api 0.7.6).
+and no traffic in the release they were marked deprecated, and are gone (TD-40, api 0.8.0).
 Imports name core's canonical modules, not the ``monitor.reader`` / ``config.startup``
 re-exports (TD-80 C1-a).
 """

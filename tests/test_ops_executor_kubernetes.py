@@ -114,7 +114,7 @@ async def test_resolve_namespace_from_file(tmp_path, monkeypatch):
 
 
 def test_the_executor_cannot_patch_a_workload():
-    """TD-40 (api 0.7.6): its only writer, POST /ops/market-ingest/control, is gone, and the
+    """TD-40 (api 0.8.0): its only writer, POST /ops/market-ingest/control, is gone, and the
     scale / rollout-restart path went with it. Nothing in api scales the daemon."""
     for name in ("_systemctl", "_systemctl_workload", "_scale_workload", "_rollout_restart_workload",
                  "_patch_deployment", "_patch_statefulset", "set_daemon_scale_guard"):

@@ -156,7 +156,7 @@ def test_each_app_refuses_an_anonymous_viewer(app_name: str, method: str, path: 
 
 
 def test_no_route_needs_admin() -> None:
-    """The last admin-only routes (monitor IB disconnect / reconnect) went in TD-40 (api 0.7.6)."""
+    """The last admin-only routes (monitor IB disconnect / reconnect) went in TD-40 (api 0.8.0)."""
     for app in _apps().values():
         for method, path in _write_routes(app):
             assert required_role(method, path) in ("operator", None), (method, path)

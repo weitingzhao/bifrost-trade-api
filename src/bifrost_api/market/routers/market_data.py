@@ -3,7 +3,7 @@
 Reads only. The bars fetch / backfill / delete, watchlist EOD refresh, index
 refresh and holiday write routes had no caller and no traffic and are gone (TD-40);
 the Market Data Plugin owns ingest and the holiday calendar. ``GET /bars/latest``,
-``/bars/coverage`` and ``/market/trading-day`` followed in api 0.7.6 (no hits in the
+``/bars/coverage`` and ``/market/trading-day`` followed in api 0.8.0 (no hits in the
 release they were marked deprecated)."""
 
 import logging

@@ -1,6 +1,6 @@
 """Status endpoints: run status, open orders, risk summary.
 
-GET /operations answered [] since the daemon operations log retired; it went in api 0.7.6 (TD-40)."""
+GET /operations answered [] since the daemon operations log retired; it went in api 0.8.0 (TD-40)."""
 
 import logging
 import threading

@@ -2,7 +2,7 @@
 
 TD-40: every retired path had 0 hits in all retained access logs (25+ days, every
 env) and no caller in any sibling repo; the ones marked deprecated first (api 0.2.2 /
-0.6.1) had no hit but agents' own checks in Loki before they went in api 0.7.6. TD-58: the dims writes went with core's
+0.6.1) had no hit but agents' own checks in Loki before they went in api 0.8.0. TD-58: the dims writes went with core's
 writers. TD-64: every process-exit route (lifecycle belongs to Kubernetes), while
 each capabilities path stays, now served by one shared function. Each list below
 pairs what went with what had to stay.
@@ -38,7 +38,7 @@ RETIRED: Dict[str, Set[Tuple[str, str]]] = {
             "gap-ack", "symbol-technical-tiers",
             # deleted in api 0.5.0 after one release marked deprecated (TD-40/TD-16)
             "momentum-distribution",
-            # deleted in api 0.7.6 after one release marked deprecated with no hits (TD-40)
+            # deleted in api 0.8.0 after one release marked deprecated with no hits (TD-40)
             "fundamental-filter", "technical-filter", "symbols-snapshot",
         )),
         ("GET", "/research/option-expirations"),
@@ -57,7 +57,7 @@ RETIRED: Dict[str, Set[Tuple[str, str]]] = {
         ("POST", "/market/holidays"),
         ("DELETE", "/market/holidays"),
         ("POST", "/market/shutdown"),
-        # api 0.7.6 (TD-40): marked deprecated, no hits
+        # api 0.8.0 (TD-40): marked deprecated, no hits
         ("GET", "/bars/latest"),
         ("GET", "/bars/coverage"),
         ("GET", "/market/trading-day"),
@@ -74,7 +74,7 @@ RETIRED: Dict[str, Set[Tuple[str, str]]] = {
         ("PUT", "/strategies/allocations/{strategy_allocation_id}"),
         ("PUT", "/strategies/plans/{strategy_plan_id}"),
         ("PUT", "/strategies/reviews/{strategy_instance_id}"),
-        # api 0.7.6 (TD-40): marked deprecated, no hits
+        # api 0.8.0 (TD-40): marked deprecated, no hits
         ("GET", "/executions/link-candidates"),
         ("PATCH", "/executions/strategy-attribution"),
         ("DELETE", "/strategies/structures/{strategy_structure_id}"),
@@ -84,7 +84,7 @@ RETIRED: Dict[str, Set[Tuple[str, str]]] = {
         ("POST", "/api/server/shutdown"),
         ("POST", "/ops/shutdown"),
         ("POST", "/research/docs/shutdown"),
-        # api 0.7.6 (TD-40): marked deprecated, no hits. The monitor's IB and daemon
+        # api 0.8.0 (TD-40): marked deprecated, no hits. The monitor's IB and daemon
         # control writes, the always-empty operations log, and the ingest control writes.
         *(("POST", f"/control/{k}") for k in (
             "monitor_stop", "monitor_release_ib", "monitor_connect", "stop", "retry_ib", "release_ib",

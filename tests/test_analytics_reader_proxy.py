@@ -43,7 +43,7 @@ def no_sql(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 # The helpers that used to fall back to SQL, and those that read SQL with no proxy at
 # all until step 3, each with an argument list. The fundamental / technical filter and
-# screener-wide helpers went with their routes (TD-40, api 0.7.6).
+# screener-wide helpers went with their routes (TD-40, api 0.8.0).
 _HELPERS: Dict[str, Callable[[], Any]] = {
     "criteria-stats": lambda: ar.fetch_criteria_stats(),
     "fundamental-eval": lambda: ar.fetch_fundamental_eval_single("zzqa"),

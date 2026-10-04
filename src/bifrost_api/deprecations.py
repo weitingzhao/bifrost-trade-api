@@ -5,7 +5,7 @@ readiness backfills, the market write block and the dims stubs went in wave 3a; 
 rest were marked rather than deleted: every response carried ``Deprecation: true`` and
 every hit was logged with who sent it (behind Traefik the client is the gateway, so read
 ``forwarded_for``). After a release with no hits a route is deleted; a route with hits
-gets its caller found first. All of them went in api 0.7.6 (no hits but agents' checks),
+gets its caller found first. All of them went in api 0.8.0 (no hits but agents' checks),
 so the list is empty until the next route is marked.
 
 Middleware, like ``write_guard``, so no router body is touched and the docs routes
@@ -34,7 +34,7 @@ from bifrost_api.common.query_vocab import install_query_aliases
 
 logger = logging.getLogger(__name__)
 
-# Empty since api 0.7.6. The 25 routes marked here in api 0.2.2 (10-02) and 0.6.1 (10-03) --
+# Empty since api 0.8.0. The 25 routes marked here in api 0.2.2 (10-02) and 0.6.1 (10-03) --
 # the monitor's IB / daemon control writes, GET /operations, the market-ingest control and
 # lease-clearing writes, GET /executions/link-candidates, PATCH /executions/strategy-attribution,
 # DELETE /strategies/structures/{id}, GET /strategies/instances/{id}/open-option-legs,

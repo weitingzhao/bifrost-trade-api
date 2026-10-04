@@ -1,6 +1,6 @@
 """Routes no repo calls are marked before they go (debt TD-40, decision B).
 
-The list itself is empty since api 0.7.6 (every marked route was deleted); the
+The list itself is empty since api 0.8.0 (every marked route was deleted); the
 mechanism is tested on a route marked for the test. Nothing here reaches IB, Redis
 or a DB: a marked read is answered by whatever a test app without stores returns --
 only the header and the log line are under test.
@@ -75,7 +75,7 @@ def test_get_instrument_classes_is_on_neither_list() -> None:
 
 
 def test_the_list_is_empty_after_td40() -> None:
-    """api 0.7.6: every marked route had no hit but agents' checks and was deleted."""
+    """api 0.8.0: every marked route had no hit but agents' checks and was deleted."""
     assert DEPRECATED_ROUTES == frozenset()
     for method, path in (("POST", "/control/flatten"), ("GET", "/strategies/structures/42"), ("GET", "/health")):
         assert deprecated_route(method, path) is None

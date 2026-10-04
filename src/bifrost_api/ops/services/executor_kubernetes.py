@@ -2,7 +2,7 @@
 
 Reads only: replicas, readiness and the daemon's scale guard for the services table and
 /ops/health. The write path (scale / rollout restart behind ``POST /ops/market-ingest/control``,
-the only caller, guarded for the daemon by D10's freeze) went with that route (TD-40, api 0.7.6);
+the only caller, guarded for the daemon by D10's freeze) went with that route (TD-40, api 0.8.0);
 nothing in api patches a workload any more."""
 
 from __future__ import annotations

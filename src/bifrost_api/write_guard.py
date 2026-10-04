@@ -16,7 +16,7 @@ app sees (after Traefik strips ``/api/<domain>``) is enough:
 
 No route needs admin any more: the process-exit routes went in TD-64 (lifecycle
 belongs to Kubernetes) and the monitor's IB disconnect / reconnect routes, the last
-``ADMIN_PATHS``, in TD-40 (api 0.7.6, no caller and no traffic).
+``ADMIN_PATHS``, in TD-40 (api 0.8.0, no caller and no traffic).
 
 The role comes from ``OpsAuth`` (``ops/auth.py``): an ``Authorization: Bearer``
 token, else ``ops.auth.default_role``. Until each environment lowers
