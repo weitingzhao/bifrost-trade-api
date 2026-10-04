@@ -15,7 +15,7 @@ from fastapi import APIRouter, Body, Response
 
 from bifrost_api.common.envelopes import error_response
 from bifrost_api.research import feedback_store as store
-from bifrost_api.research.analytics_reader import get_conn
+from bifrost_api.research.feedback_store import get_conn
 
 logger = logging.getLogger(__name__)
 

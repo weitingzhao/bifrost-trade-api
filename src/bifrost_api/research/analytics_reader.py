@@ -9,39 +9,27 @@ The tier marts (``dw_stock.mart_sepa_tier_*``), the momentum grades
 (``features.stock_signal_momentum_daily``) and the criteria-stats pass-count
 distributions go to Research too (0.157.0 endpoints; TD-49 step 3).
 
-``get_conn`` now serves only the feedback store (``ops_feedback.*``), which this
-service owns.
+This module holds no database connection. The feedback store, the research
+app's only Golden Source writer, owns its own (``feedback_store.get_conn``,
+role ``feedback_writer``, api 0.7.5); the analytics connection env and the
+shared ``analytics_writer`` role it named are no longer read anywhere here.
 
 Env:
   RESEARCH_API_URL   — default ``http://research-api.research.svc.cluster.local:8795``
-  ANALYTICS_PG_*     — the ``get_conn`` pool (feedback store)
 """
 
 from __future__ import annotations
 
 import os
-from contextlib import contextmanager
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 import httpx
-from psycopg2.pool import ThreadedConnectionPool
-
-# No fallback host or user (debt TD-54): the defaults were a LAN NodePort and a role
-# (bifrost_readonly) that exists nowhere, so a pod missing its env connected somewhere
-# unintended or failed late. Every Deployment sets ANALYTICS_PG_* (base manifest).
-_ANALYTICS_PG_HOST = os.environ.get("ANALYTICS_PG_HOST", "").strip()
-_ANALYTICS_PG_PORT = int(os.environ.get("ANALYTICS_PG_PORT", "5432"))
-_ANALYTICS_PG_DATABASE = os.environ.get("ANALYTICS_PG_DATABASE", "bifrost_golden_source")
-_ANALYTICS_PG_USER = os.environ.get("ANALYTICS_PG_USER", "").strip()
-_ANALYTICS_PG_PASSWORD = os.environ.get("ANALYTICS_PG_PASSWORD", "")
 
 _DEFAULT_RESEARCH_URL = "http://research-api.research.svc.cluster.local:8795"
 # 12 s: Research answers every proxied route in < 0.5 s (DEV, 2026-10-03; screener-wide 5000 rows
 # is the slowest at 0.48 s), so a stuck Research gives a named 503 after 12 s instead of 30 s.
 _RESEARCH_TIMEOUT = float(os.environ.get("RESEARCH_API_TIMEOUT", "12"))
-
-_pool: Optional[ThreadedConnectionPool] = None
 
 FUND_CONDITION_COLUMNS = [
     "eps_q2q_ge_25pct",
@@ -97,39 +85,6 @@ def research_api_base() -> str:
         or os.environ.get("VITE_RESEARCH_API")
         or _DEFAULT_RESEARCH_URL
     ).rstrip("/")
-
-
-def _get_pool() -> ThreadedConnectionPool:
-    global _pool
-    if _pool is None or _pool.closed:
-        if not _ANALYTICS_PG_HOST or not _ANALYTICS_PG_USER:
-            raise RuntimeError(
-                "Golden Source direct connection needs ANALYTICS_PG_HOST and ANALYTICS_PG_USER; "
-                "this process has no fallback host or user."
-            )
-        _pool = ThreadedConnectionPool(
-            minconn=1,
-            maxconn=5,
-            host=_ANALYTICS_PG_HOST,
-            port=_ANALYTICS_PG_PORT,
-            dbname=_ANALYTICS_PG_DATABASE,
-            user=_ANALYTICS_PG_USER,
-            password=_ANALYTICS_PG_PASSWORD,
-            connect_timeout=10,
-            options="-c statement_timeout=30000",
-        )
-    return _pool
-
-
-@contextmanager
-def get_conn() -> Generator:
-    """Yield a pooled Golden Source connection — the feedback store (``ops_feedback.*``) only."""
-    pool = _get_pool()
-    conn = pool.getconn()
-    try:
-        yield conn
-    finally:
-        pool.putconn(conn)
 
 
 def _proxy_get(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

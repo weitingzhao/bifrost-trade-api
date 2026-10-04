@@ -117,7 +117,7 @@ Research **不写** `strategy_opportunity`。表结构与列见 `bifrost-trade-c
 - `routers/` — 五个 router（见上表）
 - `sepa/` — `financials_data.py`（经 Plugin 读基本面）；`readiness_snapshot.py` 随 TD-40 删除
 - `sepa_engine/stock_option_pcr.py` — put/call 比与按到期日的链汇总
-- 顶层模块：`market_data_client.py`（Plugin HTTP）、`analytics_reader.py`（Research API 代理；SEPA 读失败答 503，不回落直连 SQL，TD-49）、`feedback_store.py` / `feedback_schema.py`、
+- 顶层模块：`market_data_client.py`（Plugin HTTP）、`analytics_reader.py`（Research API 代理；SEPA 读失败答 503，不回落直连 SQL，TD-49；不持有数据库连接）、`feedback_store.py`（research app 唯一的 Golden Source 连接：`FEEDBACK_PG_*`、角色 `feedback_writer`，只能读写 `ops_feedback`，0.7.5）/ `feedback_schema.py`（DDL，db-init 以 `bifrost` 执行）、
   `contract_key_bridge.py`、`iv_atm.py`、`market_pg.py` 等
 - `indicators/`、`screener/`、`schemas/`、`sepa_engine/sepa/` 只有空的 `__init__.py`
 

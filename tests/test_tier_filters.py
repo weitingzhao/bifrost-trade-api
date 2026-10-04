@@ -13,15 +13,19 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from bifrost_api.research import analytics_reader as ar
+from bifrost_api.research import analytics_reader as ar, feedback_store
 from bifrost_api.research.routers import data_readiness as dr
 
 
 @pytest.fixture(autouse=True)
 def no_sql(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
-    """No tier or grade route reads Golden Source directly any more."""
+    """No tier or grade route reads Golden Source directly any more.
+
+    The research app's only Golden Source pool is the feedback store's (api 0.7.5;
+    analytics_reader holds none), so building it fails the test.
+    """
     guard = MagicMock(side_effect=AssertionError("direct SQL must not run"))
-    monkeypatch.setattr(ar, "get_conn", guard)
+    monkeypatch.setattr(feedback_store, "_get_pool", guard)
     return guard
 
 

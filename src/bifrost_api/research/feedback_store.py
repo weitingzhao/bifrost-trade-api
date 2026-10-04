@@ -2,8 +2,18 @@
 
 Installation-keyed (Spec §20.5: reports are the system's — one stream across
 dev/stg/prod), living in Golden Source beside ops_jobs.* and owned by this
-side. The runtime connection is ``analytics_reader.get_conn`` (role
-``analytics_writer``). Research never writes here.
+side. Research never writes here.
+
+The store owns its connection (``get_conn`` below, TD-49 D4 / TD-77 E5, api
+0.7.5): its own ``FEEDBACK_PG_*`` env and its own role, ``feedback_writer``,
+which may read and write ``ops_feedback`` and nothing else. Until 0.7.5 it
+borrowed ``analytics_reader.get_conn`` and with it ``analytics_writer``, a role
+that can also write ``dw_stock``, ``features``, ``raw_broker`` and ``journal``.
+
+Env (no fallback host, user or password, debt TD-54; a missing one is a 503
+naming it, not a connection to somewhere unintended):
+  FEEDBACK_PG_HOST, FEEDBACK_PG_USER, FEEDBACK_PG_PASSWORD   — required
+  FEEDBACK_PG_PORT (5432), FEEDBACK_PG_DATABASE (bifrost_golden_source)
 
 The design's contract (Rev .96/.97): four kinds, `blocks trading` chosen by
 the reporter at submit, six statuses, replies land on the row and reading the
@@ -20,11 +30,68 @@ import base64
 import binascii
 import json
 import logging
-from typing import Any, Dict, List, Optional
+import os
+import threading
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional
 
 from psycopg2.extras import RealDictCursor
+from psycopg2.pool import ThreadedConnectionPool
 
 logger = logging.getLogger(__name__)
+
+# ── connection (the store's own; role feedback_writer) ──
+
+_REQUIRED_ENV = ("FEEDBACK_PG_HOST", "FEEDBACK_PG_USER", "FEEDBACK_PG_PASSWORD")
+_pool: Optional[ThreadedConnectionPool] = None
+_pool_lock = threading.Lock()
+
+
+def conn_params() -> Dict[str, Any]:
+    """The pool's connection parameters, read from ``FEEDBACK_PG_*`` when the pool is built.
+
+    Raises ``RuntimeError`` naming every missing variable.
+    """
+    missing = [k for k in _REQUIRED_ENV if not os.environ.get(k, "").strip()]
+    if missing:
+        raise RuntimeError(
+            f"feedback store connection needs {', '.join(missing)} "
+            "(role feedback_writer, Secret bifrost-feedback-secrets); this process has no fallback"
+        )
+    return {
+        "host": os.environ["FEEDBACK_PG_HOST"].strip(),
+        "port": int(os.environ.get("FEEDBACK_PG_PORT", "").strip() or "5432"),
+        "dbname": os.environ.get("FEEDBACK_PG_DATABASE", "").strip() or "bifrost_golden_source",
+        "user": os.environ["FEEDBACK_PG_USER"].strip(),
+        "password": os.environ["FEEDBACK_PG_PASSWORD"],
+    }
+
+
+def _get_pool() -> ThreadedConnectionPool:
+    global _pool
+    with _pool_lock:
+        if _pool is None or _pool.closed:
+            _pool = ThreadedConnectionPool(
+                minconn=1,
+                maxconn=5,
+                connect_timeout=10,
+                options="-c statement_timeout=30000",
+                application_name="trade-api-feedback",
+                **conn_params(),
+            )
+        return _pool
+
+
+@contextmanager
+def get_conn() -> Iterator[Any]:
+    """Yield a pooled Golden Source connection for ``ops_feedback.*`` (role feedback_writer)."""
+    pool = _get_pool()
+    conn = pool.getconn()
+    try:
+        yield conn
+    finally:
+        pool.putconn(conn)
+
 
 KINDS = ("bug", "data", "idea", "howto")
 STATUSES = ("new", "triaged", "progress", "fixed", "answered", "wontfix")
