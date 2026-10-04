@@ -1,7 +1,8 @@
 """Routes retired with no caller and no traffic stay retired; their neighbours stay served.
 
 TD-40: every retired path had 0 hits in all retained access logs (25+ days, every
-env) and no caller in any sibling repo. TD-58: the dims writes went with core's
+env) and no caller in any sibling repo; the ones marked deprecated first (api 0.2.2 /
+0.6.1) had no hit but agents' own checks in Loki before they went in api 0.7.6. TD-58: the dims writes went with core's
 writers. TD-64: every process-exit route (lifecycle belongs to Kubernetes), while
 each capabilities path stays, now served by one shared function. Each list below
 pairs what went with what had to stay.
@@ -37,6 +38,8 @@ RETIRED: Dict[str, Set[Tuple[str, str]]] = {
             "gap-ack", "symbol-technical-tiers",
             # deleted in api 0.5.0 after one release marked deprecated (TD-40/TD-16)
             "momentum-distribution",
+            # deleted in api 0.7.6 after one release marked deprecated with no hits (TD-40)
+            "fundamental-filter", "technical-filter", "symbols-snapshot",
         )),
         ("GET", "/research/option-expirations"),
         ("GET", "/research/option-oi"),
@@ -54,6 +57,10 @@ RETIRED: Dict[str, Set[Tuple[str, str]]] = {
         ("POST", "/market/holidays"),
         ("DELETE", "/market/holidays"),
         ("POST", "/market/shutdown"),
+        # api 0.7.6 (TD-40): marked deprecated, no hits
+        ("GET", "/bars/latest"),
+        ("GET", "/bars/coverage"),
+        ("GET", "/market/trading-day"),
     },
     "account": {
         ("POST", "/strategies/dims/{dim_type}"),
@@ -67,11 +74,26 @@ RETIRED: Dict[str, Set[Tuple[str, str]]] = {
         ("PUT", "/strategies/allocations/{strategy_allocation_id}"),
         ("PUT", "/strategies/plans/{strategy_plan_id}"),
         ("PUT", "/strategies/reviews/{strategy_instance_id}"),
+        # api 0.7.6 (TD-40): marked deprecated, no hits
+        ("GET", "/executions/link-candidates"),
+        ("PATCH", "/executions/strategy-attribution"),
+        ("DELETE", "/strategies/structures/{strategy_structure_id}"),
+        ("GET", "/strategies/instances/{strategy_instance_id}/open-option-legs"),
     },
     "monitor": {
         ("POST", "/api/server/shutdown"),
         ("POST", "/ops/shutdown"),
         ("POST", "/research/docs/shutdown"),
+        # api 0.7.6 (TD-40): marked deprecated, no hits. The monitor's IB and daemon
+        # control writes, the always-empty operations log, and the ingest control writes.
+        *(("POST", f"/control/{k}") for k in (
+            "monitor_stop", "monitor_release_ib", "monitor_connect", "stop", "retry_ib", "release_ib",
+            "refresh_replay", "refresh_ticker_subscriptions", "release_ticker_subscriptions",
+            "init_ticker_subscriptions", "set_heartbeat_interval",
+        )),
+        ("GET", "/operations"),
+        ("POST", "/ops/market-ingest/control"),
+        ("POST", "/ops/market-ingest/clear-conflict-leases"),
     },
 }
 
@@ -80,17 +102,14 @@ KEPT: Dict[str, Set[Tuple[str, str]]] = {
         ("GET", f"{R}/{k}") for k in (
             "summary", "criteria-stats", "tier-stats", "momentum-grades",
             "momentum-filter", "technical-distribution/symbols", "fundamental-distribution/symbols",
-            "symbols-snapshot", "symbol-statements", "symbol-fundamental-raw-data", "technical-filter",
-            "tier-filter", "fundamental-conditions", "symbol-technical-conditions", "fundamental-filter",
+            "symbol-statements", "symbol-fundamental-raw-data",
+            "tier-filter", "fundamental-conditions", "symbol-technical-conditions",
             "symbol-option-pcr",
         )
     } | {("GET", "/auth/capabilities"), ("GET", "/health")},
     "market": {
         ("GET", "/market/holidays"),
-        ("GET", "/market/trading-day"),
         ("GET", "/bars"),
-        ("GET", "/bars/coverage"),
-        ("GET", "/bars/latest"),
         ("GET", "/bars/benchmark"),
         ("GET", "/bars/stats"),
         ("GET", "/market/auth/capabilities"),
@@ -99,6 +118,10 @@ KEPT: Dict[str, Set[Tuple[str, str]]] = {
     "account": {
         ("GET", "/strategies/dims"),
         ("GET", "/strategies/gate-safety/defaults"),
+        ("GET", "/strategies/structures/{strategy_structure_id}"),
+        ("PUT", "/strategies/structures/{strategy_structure_id}"),
+        ("PATCH", "/strategies/structures/{strategy_structure_id}"),
+        ("GET", "/executions/stock-link-candidates"),
         *(("GET", f"/{d}/auth/capabilities") for d in ("account", "trading", "portfolio", "strategy")),
         ("GET", "/health"),
     },
@@ -109,6 +132,11 @@ KEPT: Dict[str, Set[Tuple[str, str]]] = {
         ("GET", "/health"),
         ("GET", "/ops/health"),
         ("GET", "/research/docs/health"),
+        # the desk's controls stay (TD-40 removed only the uncalled ones)
+        *(("POST", f"/control/{k}") for k in ("suspend", "resume", "flatten", "refresh_accounts")),
+        ("GET", "/status"),
+        ("GET", "/open-orders"),
+        ("GET", "/ops/market-ingest/services"),
     },
 }
 

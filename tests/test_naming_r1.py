@@ -165,11 +165,6 @@ def test_a_replaced_hit_is_logged_with_its_successor(stores: Any, caplog: pytest
     assert "use GET /trades/{trade_id:int}" in line and "r1-test" in line
 
 
-def test_open_option_legs_stays_deprecated_without_a_successor() -> None:
-    r = _client().get("/strategies/instances/41/open-option-legs")
-    assert r.headers.get("deprecation") == "true" and "link" not in r.headers
-
-
 # --- query names --------------------------------------------------------------------------
 
 

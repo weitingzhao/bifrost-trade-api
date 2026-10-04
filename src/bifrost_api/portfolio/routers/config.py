@@ -25,7 +25,6 @@ from bifrost_api.portfolio.schemas.requests import (
     InstrumentClassBody,
     PositionCategoryBody,
     PositionTagBody,
-    StrategyAttributionBatchBody,
     SymbolOrderBody,
 )
 from bifrost_core.portfolio.reader import instrument_class as instrument_class_module
@@ -122,39 +121,6 @@ def delete_position_category(request: Request, category_id: int) -> Any:
     Market Streams symbol order is removed (``symbol_order_removed``, core 0.41.0)."""
     config = write_target(request, f"position category {category_id}")
     return deleted_body(position_categories_module.delete_position_category_strict(config, category_id))
-
-
-@router.patch("/executions/strategy-attribution")
-def patch_execution_strategy_attribution(request: Request, body: StrategyAttributionBatchBody) -> Any:
-    """Batch update strategy attribution on executions (this environment's
-    trade_execution -- strategy_instance_execution before core 0.45.0 -- core 0.37.0).
-    body: account_id (required), contract_key OR execution_ids[], strategy_opportunity_id, strategy_instance_id
-    (null or absent clears; a non-integer is 422). An opportunity without a trade, or a trade
-    on another account, writes nothing (404, as for no match)."""
-    control_via_db = request.app.state.control_via_db
-    if not control_via_db:
-        return error_response(503, POSTGRES_REQUIRED)
-    reader = request.app.state.reader
-    account_id = (body.account_id or "").strip()
-    if not account_id:
-        return error_response(400, "account_id is required.")
-    contract_key = (body.contract_key or "").strip() or None
-    execution_ids = list(body.execution_ids) if body.execution_ids else None
-    if not contract_key and not execution_ids:
-        return error_response(400, "contract_key or execution_ids is required.")
-    count = reader.batch_update_execution_strategy(
-        account_id, contract_key, execution_ids, body.strategy_opportunity_id, body.strategy_instance_id
-    )
-    if count < 0:
-        return error_response(
-            409,
-            "One or more executions have instance_allocations; clear or edit splits before batch attribution.",
-        )
-    if count > 0:
-        return {"ok": True, "updated": count}
-    # Core answers 0 both when nothing matched and when the UPDATE raised (it logs the
-    # latter); nothing matching is the case a caller can reach, so 404.
-    return error_response(404, "No matching executions found or update failed.")
 
 
 @router.put("/position-categories/tag")

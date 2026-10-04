@@ -121,9 +121,6 @@ ACCOUNT_CASES: List[Tuple[str, str, Dict[str, Any], Tuple[Any, str], Any]] = [
      (None, "set_market_streams_symbol_order"), True),  # useMarketStreamsSymbolOrder
     ("PUT", "/instrument-classes/ZZFI%7CSTK%7C%7C%7C", {"instrument_class": "fixed_income"},
      (None, "set_instrument_class"), (True, None)),  # SharesBand.register
-    ("PATCH", "/executions/strategy-attribution",
-     {"account_id": ACC, "contract_key": "ZZQ|STK|||", "strategy_opportunity_id": 5, "strategy_instance_id": None},
-     (None, "batch_update_execution_strategy"), 2),  # deprecated; no FE caller
     ("POST", "/executions", EXECUTION_CREATE, (ex, "insert_one_execution"), -101),
     ("POST", "/executions", QUICK_CLOSE, (ex, "insert_one_execution"), -1000000101),
     ("POST", "/executions", {k: v for k, v in EXECUTION_UPDATE.items() if k != "exec_time"} | {"time": 1930487400},
@@ -235,8 +232,6 @@ WRONG_TYPES = [
     ("POST", "/strategies/saved-searches", {"route": "/trade/plans", "label": "x", "state": "ZZQ"}),
     ("POST", "/position-categories", {"name": "Watching", "sort_order": "2"}),
     ("PUT", "/position-categories/symbol-order", {"category_name": "Core", "symbols": "ZZQ"}),
-    ("PATCH", "/executions/strategy-attribution", {"account_id": ACC, "contract_key": "ZZQ|STK|||",
-                                                    "strategy_instance_id": "41"}),
     ("POST", "/executions", {**EXECUTION_CREATE, "strategy_instance_id": "x"}),
     ("POST", "/executions", {**EXECUTION_CREATE, "price": "1.15"}),
     ("PUT", "/executions/-101", {"strategy_opportunity_id": "abc"}),

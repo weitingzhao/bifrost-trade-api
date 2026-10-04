@@ -41,17 +41,15 @@ def no_sql(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     return guard
 
 
-# The 8 helpers that used to fall back to SQL, and the 3 that read SQL with no
-# proxy at all until step 3, each with an argument list.
+# The helpers that used to fall back to SQL, and those that read SQL with no proxy at
+# all until step 3, each with an argument list. The fundamental / technical filter and
+# screener-wide helpers went with their routes (TD-40, api 0.7.6).
 _HELPERS: Dict[str, Callable[[], Any]] = {
     "criteria-stats": lambda: ar.fetch_criteria_stats(),
     "fundamental-eval": lambda: ar.fetch_fundamental_eval_single("zzqa"),
     "technical-eval": lambda: ar.fetch_technical_eval_single("zzqa"),
-    "fundamental-filter": lambda: ar.fetch_fundamental_filter(["eps_acc_2q"]),
-    "technical-filter": lambda: ar.fetch_technical_filter(["crs_ge_70"]),
     "fundamental-distribution": lambda: ar.fetch_fundamental_distribution_symbols(4),
     "technical-distribution": lambda: ar.fetch_technical_distribution_symbols(8),
-    "screener-wide": lambda: ar.fetch_screener_wide(symbols=["zzqa"]),
     "tier-stats": lambda: ar.fetch_tier_stats("momentum"),
     "tier-filter": lambda: ar.fetch_tier_filter("structure", ["bb_squeeze"], 0, "all", 10),
     "momentum-grades": lambda: ar.fetch_momentum_grades("A", 10),
@@ -118,24 +116,6 @@ def test_fetch_criteria_stats_via_proxy(monkeypatch: pytest.MonkeyPatch) -> None
     assert out == {"fundamental": {"pass": 1}, "technical": {"pass": 2}}
     client.get.assert_called_once()
     assert "/analytics/sepa/criteria-stats" in client.get.call_args[0][0]
-
-
-def test_fetch_screener_wide_unwraps_rows(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RESEARCH_API_URL", "http://research.test")
-
-    mock_resp = MagicMock()
-    mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {"ok": True, "rows": [{"symbol": "ZZQA"}], "count": 1}
-
-    with patch("bifrost_api.research.analytics_reader.httpx.Client") as client_cls:
-        client = MagicMock()
-        client.__enter__.return_value = client
-        client.__exit__.return_value = False
-        client.get.return_value = mock_resp
-        client_cls.return_value = client
-        rows = ar.fetch_screener_wide(symbols=["zzqa"])
-
-    assert rows == [{"symbol": "ZZQA"}]
 
 
 def test_distribution_returns_researchs_as_of(no_sql: MagicMock) -> None:

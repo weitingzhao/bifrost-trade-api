@@ -47,8 +47,8 @@
 
 | 进程 | 写入 |
 |------|------|
-| monitor | per-env `settings`（`POST /config/ib`、`POST /config/active-strategy`）；daemon 控制命令写 per-env Redis 控制流（`/control/*`）；IB Operator 客户端的连接管理（`/control/monitor_*`、`/control/refresh_accounts`）；ops 控制面：market-ingest 的 K8s 操作，审计发往 platform-api |
-| account | `strategy_template` / `_structure` / `_opportunity` / `_allocation` / `_instance`、`gate_safety_strategy`（strategies）；`strategy_plan`（plans）；`trade_review`（reviews）；`preference_saved_search`（saved_searches）；`preference_position_categories` / `_tags` / `preference_market_streams_symbol_order`、`preference_instrument_class`（portfolio config）；Golden Source `raw_broker.executions_raw_*` / `commissions` 的手工成交与策略归属，以及 per-env 桥表 `account_execution_instance_allocation` / `account_execution_option_stock_link`（executions、`PATCH /executions/strategy-attribution`） |
+| monitor | per-env `settings`（`POST /config/ib`、`POST /config/active-strategy`）；desk 的 daemon 控制只剩四个：`/control/suspend`、`/control/resume`、`/control/flatten` 写 per-env Redis 控制流 / 运行态，`/control/refresh_accounts` 经 IB Operator 取账户写库；其余 `/control/*`（`monitor_*`、`stop`、`retry_ib`、`release_ib`、replay / ticker 订阅、心跳间隔）与 `GET /operations` 已删（TD-40，api 0.7.6，0 调用方、标记后 0 流量）。ops：market-ingest 只读（服务表），`POST /ops/market-ingest/control` 与 `clear-conflict-leases` 已删，api 里没有任何代码再扩缩或重启 K8s 工作负载；审计发往 platform-api |
+| account | `strategy_template` / `_structure` / `_opportunity` / `_allocation` / `_instance`、`gate_safety_strategy`（strategies）；`strategy_plan`（plans）；`trade_review`（reviews）；`preference_saved_search`（saved_searches）；`preference_position_categories` / `_tags` / `preference_market_streams_symbol_order`、`preference_instrument_class`（portfolio config）；Golden Source `raw_broker.executions_raw_*` / `commissions` 的手工成交与策略归属，以及 per-env 桥表 `account_execution_instance_allocation` / `account_execution_option_stock_link`（executions；批量归属 `PATCH /executions/strategy-attribution` 已删，TD-40） |
 | market | `watchlist`；实时报价的按需登记 / 清理写 Redis（`/quotes/refresh-options`、`/quotes/cleanup`）。bars / holidays / indices 只读：回补、删除、EOD 刷新、指数刷新与假日写入路由已删（TD-40，0 调用方 0 流量），采集归 Market Data Plugin |
 | research | Golden Source `ops_feedback.*`（feedback，见 core `docs/DATABASE.md`；DDL 在 `feedback_schema.py`，由 db-init 的 `scripts/run_db_refresh_schema.py` 执行，请求路径不建表，TD-77）。`/research/data/readiness/*` 只剩读：回补、gap-ack、snapshot 与各 gaps 路由已删（TD-40） |
 
@@ -63,8 +63,8 @@ Research **不写** `strategy_opportunity`。表结构与列见 `bifrost-trade-c
 - 各 app 的 `GET <prefix>/auth/capabilities`（monitor `/api/server`、`/ops`、`/research/docs`；account `/account`、`/trading`、`/portfolio`、`/strategy`；market `/market`；research 无前缀）都由
   `bifrost_api/common/service_endpoints.mount_auth_capabilities` 挂载，读的配置与 write guard 相同。新 app 用它，不要再抄一份。
 - Research router 取 DB 配置用 `research/deps.db_config`；strategy router 的 503（无 Postgres 写配置）用 `strategy/deps.write_config` / `db_not_configured`。
-- `GET /status`、`GET /operations`、`POST /control/{action}` **只在 monitor**（daemon 状态与控制），不是各进程的通用模式。
-- SSE：`GET /quotes/stream`（market）、`GET /api/messages/stream`（monitor）、ops market-ingest 的流。响应自己带
+- `GET /status`、`POST /control/{action}` **只在 monitor**（daemon 状态与 desk 的四个控制），不是各进程的通用模式。
+- SSE：`GET /quotes/stream`（market）、`GET /api/messages/stream`（monitor）。响应自己带
   `X-Accel-Buffering: no` 和 `Cache-Control: no-cache`；新增 SSE 端点照此设置。
 
 ### 响应信封（TD-16 / TD-17，Owner 决策 B：先加后删）
@@ -95,7 +95,7 @@ Research **不写** `strategy_opportunity`。表结构与列见 `bifrost-trade-c
   没配 / 连不上）否则 500。路由里不要再 `try/except` 这些；没配 Postgres 用 `write_target(request, what)`（同一个 503）。
 - **老 PUT**：这一版行为不变，在 `deprecations.REPLACED_ROUTES` 里登记「被谁取代」——响应带 `Deprecation: true` 与
   `Link: <successor>; rel="successor-version"`，日志 `replaced route hit … use <successor>`。与 `DEPRECATED_ROUTES`（没人调用、
-  准备删的路由）互斥。下一版 PUT 变真正的整体替换。新增 merge 式写入一律做 PATCH，不要再加 merge 式 PUT。
+  准备删的路由；api 0.7.6 起为空，上一批 25 条已删）互斥。下一版 PUT 变真正的整体替换。新增 merge 式写入一律做 PATCH，不要再加 merge 式 PUT。
 
 ### 请求与响应模型（TD-24，0.3.1，决策 B 先加后收）
 

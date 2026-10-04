@@ -267,8 +267,6 @@ def test_each_patch_body_offers_exactly_what_core_patches(model: Any, patchable:
 DELETE_CASES: List[Tuple[str, str, Any, str, Dict[str, Any]]] = [
     ("account", "/strategies/templates/7", template_config_write, "delete_template_strict",
      {"deleted": "hard", "strategy_template_id": 7}),
-    ("account", "/strategies/structures/7", strategy_structure_write, "delete_structure_strict",
-     {"deleted": "soft", "strategy_structure_id": 7, "was_active": True, "cleared_daemon_setting": False}),
     ("account", "/strategies/opportunities/7", strategy_rules_delete, "delete_opportunity_strict",
      {"deleted": "hard", "strategy_opportunity_id": 7}),
     ("account", "/strategies/allocations/7", strategy_rules_delete, "delete_allocation_strict",

@@ -304,38 +304,6 @@ def get_position_attribution(
     return list_body(items)
 
 
-@router.get("/executions/link-candidates")
-def get_executions_link_candidates(
-    request: Request,
-    account_id: str = Query(..., description="IB account id"),
-    contract_key: Optional[str] = Query(None, description="Exact contract_key match (preferred)"),
-    symbol: Optional[str] = Query(None),
-    expiry: Optional[str] = Query(None, description="Option expiry (any format; used if contract_key yields no rows)"),
-    strike: Optional[float] = Query(None),
-    option_right: Optional[str] = Query(None, description="C or P"),
-    limit: int = Query(200, ge=1, le=500),
-) -> Any:
-    """Existing account_executions rows to link strategy attribution (no insert)."""
-    reader = request.app.state.reader
-    if not (contract_key and contract_key.strip()) and (
-        not (symbol and symbol.strip()) or strike is None or expiry is None or str(expiry).strip() == ""
-    ):
-        return error_response(
-            400,
-            "Provide contract_key, or symbol+expiry+strike for fallback matching.",
-        )
-    items = reader.get_executions_for_strategy_link(
-        account_id=account_id.strip(),
-        contract_key=(contract_key or "").strip() or None,
-        symbol=(symbol or "").strip() or None,
-        expiry=expiry,
-        strike=strike,
-        option_right=(option_right or "").strip() or None,
-        limit=limit,
-    )
-    return list_body(items)
-
-
 @router.post("/executions/option-stock-links/query")
 def post_option_stock_links_query(request: Request, body: OptionStockLinksQueryBody) -> Any:
     """Bulk load link rows for many option_account_executions_id values (grouped by account_id).

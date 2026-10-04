@@ -1,25 +1,18 @@
-"""Market and bars: OHLC, coverage, trading-day, holidays.
+"""Market and bars: OHLC, benchmark, stats, holidays.
 
 Reads only. The bars fetch / backfill / delete, watchlist EOD refresh, index
 refresh and holiday write routes had no caller and no traffic and are gone (TD-40);
-the Market Data Plugin owns ingest and the holiday calendar."""
+the Market Data Plugin owns ingest and the holiday calendar. ``GET /bars/latest``,
+``/bars/coverage`` and ``/market/trading-day`` followed in api 0.7.6 (no hits in the
+release they were marked deprecated)."""
 
 import logging
-import time
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Query, Request
 
 from bifrost_api.common.query_vocab import expiry_query, option_right_query
-from bifrost_core.monitor.reader.reference_indices_merge import merge_reference_indices
-from bifrost_core.monitor.reader.symbol_normalize import norm_bars_symbol
-from bifrost_core.monitor.services.market_jobs import (
-    TOLERANCE_END_SEC_NON_TRADING,
-    TOLERANCE_END_SEC_TRADING_DAY,
-    coverage_status,
-    get_watchlist_stock_symbols,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -155,22 +148,6 @@ def get_bars(
     return out
 
 
-@router.get("/bars/latest")
-def get_bars_latest(
-    request: Request,
-    symbol: Optional[str] = Query(None),
-    period: Optional[str] = Query("1 D"),
-) -> Dict[str, Any]:
-    """Return latest bar time (Unix) for symbol+period."""
-    reader = request.app.state.reader
-    sym = (symbol or "").strip()
-    if not sym:
-        return {"latest": None, "message": "Missing symbol parameter."}
-    per = (period or "1 D").strip()
-    t = reader.get_bars_latest(symbol=sym, period=per)
-    return {"latest": t}
-
-
 @router.get("/bars/benchmark")
 def get_bars_benchmark(
     request: Request,
@@ -218,22 +195,6 @@ def get_bars_stats(
 
 # --- Market calendar ---
 
-@router.get("/market/trading-day")
-def get_market_trading_day(
-    request: Request,
-    date_param: Optional[str] = Query(None, alias="date", description="Date YYYY-MM-DD; default today America/New_York"),
-) -> Dict[str, Any]:
-    """Return whether the given date is a US (NYSE) trading day."""
-    reader = request.app.state.reader
-    if date_param and date_param.strip():
-        date_str = date_param.strip()
-    else:
-        from zoneinfo import ZoneInfo
-        date_str = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
-    is_trading = reader.get_is_us_trading_day(date_str)
-    return {"date": date_str, "is_trading_day": is_trading}
-
-
 @router.get("/market/holidays")
 def get_market_holidays(
     request: Request,
@@ -246,86 +207,3 @@ def get_market_holidays(
 
 
 # --- Bars coverage ---
-
-@router.get("/bars/coverage")
-def get_bars_coverage(
-    request: Request,
-    symbols: Optional[str] = Query(None, description="Comma-separated symbols; if omitted, use Watchlist stocks + reference indices"),
-) -> Dict[str, Any]:
-    """Return coverage (count, min/max ts) plus target range from config and status: ok | gap_end | missing."""
-    app = request.app
-    reader = app.state.reader
-    control_via_db = app.state.control_via_db
-    if symbols is not None and str(symbols).strip():
-        sym_list = [s.strip() for s in str(symbols).split(",") if s and s.strip()]
-    else:
-        sym_list = list(get_watchlist_stock_symbols(reader))
-        seen_norms = {norm_bars_symbol(x) for x in sym_list}
-        refs = merge_reference_indices(
-            (control_via_db or {}).get("reference_indices"),
-            (reader.config or {}).get("reference_indices"),
-        )
-        for ref in refs:
-            s = (ref.get("symbol") or "").strip()
-            if not s:
-                continue
-            nk = norm_bars_symbol(s)
-            if nk not in seen_norms:
-                seen_norms.add(nk)
-                sym_list.append(s)
-        try:
-            for s in reader.get_distinct_caret_bar_symbols():
-                if not s:
-                    continue
-                nk = norm_bars_symbol(s)
-                if nk not in seen_norms:
-                    seen_norms.add(nk)
-                    sym_list.append(s)
-        except Exception:
-            pass
-    coverage = reader.get_bars_coverage(symbols=sym_list)
-    try:
-        from bifrost_core.config.startup import read_config
-        config, _ = read_config()
-    except Exception:
-        config = {}
-    hb = (config.get("history_backfill") or {}).get("stock") or {}
-    daily_years = float(hb.get("daily_years", 10.0))
-    min_weeks = float(hb.get("min_weeks", 1.0))
-    five_min_months = float(hb.get("5min_months", 1.0))
-    one_hour_months = float(hb.get("1hour_months", 3.0))
-    policy = {"daily_years": daily_years, "min_weeks": min_weeks, "5min_months": five_min_months, "1hour_months": one_hour_months}
-    now_ts = time.time()
-    one_day = 86400.0
-    target_end_ts = now_ts
-    target_daily_start = now_ts - (365 * daily_years * one_day)
-    target_min_start = now_ts - (7 * min_weeks * one_day)
-    target_5min_start = now_ts - (30 * five_min_months * one_day)
-    target_1hour_start = now_ts - (30 * one_hour_months * one_day)
-    # Today (America/New_York): if trading day, end-gap tolerance = 1 day; else (weekend/holiday) = 2 days.
-    try:
-        from zoneinfo import ZoneInfo
-        today_str = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
-        is_trading_today = reader.get_is_us_trading_day(today_str)
-    except Exception:
-        is_trading_today = True
-    tolerance_end_sec = TOLERANCE_END_SEC_TRADING_DAY if is_trading_today else TOLERANCE_END_SEC_NON_TRADING
-    enriched = []
-    for item in coverage:
-        day = item.get("stock_day") or {}
-        day_ts_s = day.get("min_ts")
-        day_ts_e = day.get("max_ts")
-        day_cnt = day.get("count") or 0
-        day_status = coverage_status(day_ts_s, day_ts_e, day_cnt, target_daily_start, target_end_ts, tolerance_end_sec)
-        stock_day_enriched = {**day, "target_start_ts": target_daily_start, "target_end_ts": target_end_ts, "status": day_status}
-        mins = item.get("stock_min") or {}
-        min_1 = mins.get("1 min") or {}
-        min_5 = mins.get("5 mins") or {}
-        min_1h = mins.get("1 hour") or {}
-        stock_min_enriched = {
-            "1 min": {**min_1, "target_start_ts": target_min_start, "target_end_ts": target_end_ts, "status": coverage_status(min_1.get("min_ts"), min_1.get("max_ts"), min_1.get("count") or 0, target_min_start, target_end_ts, tolerance_end_sec)},
-            "5 mins": {**min_5, "target_start_ts": target_5min_start, "target_end_ts": target_end_ts, "status": coverage_status(min_5.get("min_ts"), min_5.get("max_ts"), min_5.get("count") or 0, target_5min_start, target_end_ts, tolerance_end_sec)},
-            "1 hour": {**min_1h, "target_start_ts": target_1hour_start, "target_end_ts": target_end_ts, "status": coverage_status(min_1h.get("min_ts"), min_1h.get("max_ts"), min_1h.get("count") or 0, target_1hour_start, target_end_ts, tolerance_end_sec)},
-        }
-        enriched.append({"symbol": item.get("symbol"), "stock_day": stock_day_enriched, "stock_min": stock_min_enriched})
-    return {"coverage": enriched, "policy": policy}

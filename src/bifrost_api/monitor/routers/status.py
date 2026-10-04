@@ -1,11 +1,13 @@
-"""Status endpoints: run status, operations, risk summary."""
+"""Status endpoints: run status, open orders, risk summary.
+
+GET /operations answered [] since the daemon operations log retired; it went in api 0.7.6 (TD-40)."""
 
 import logging
 import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Request
 
 from bifrost_core.monitor.reader.reference_indices_merge import (
     augment_reference_indices_with_caret_symbols,
@@ -637,24 +639,6 @@ def get_open_orders(request: Request) -> Dict[str, Any]:
     reader = request.app.state.reader
     items: List[Any] = reader.get_open_orders()
     return {"open_orders": items}
-
-
-@router.get("/operations")
-def get_operations(
-    request: Request,
-    since_ts: Optional[float] = Query(None, description="Filter operations with ts >= this"),
-    until_ts: Optional[float] = Query(None, description="Filter operations with ts <= this"),
-    operation_type: Optional[str] = Query(
-        None, alias="type", description="Filter by type (hedge_intent, order_sent, fill, reject, cancel)"
-    ),
-    limit: int = Query(100, ge=1, le=1000),
-) -> Dict[str, Any]:
-    """Return operations list with optional filters (R-M4b)."""
-    reader = request.app.state.reader
-    items = reader.get_operations(
-        since_ts=since_ts, until_ts=until_ts, type_filter=operation_type, limit=limit
-    )
-    return {"operations": items}
 
 
 @router.get("/risk_summary")

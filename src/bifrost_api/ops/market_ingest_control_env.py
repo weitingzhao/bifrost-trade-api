@@ -8,11 +8,8 @@ while separate ``bifrost:ops:lease:*`` keys may be filtered or unavailable.
 from __future__ import annotations
 
 import logging
-import socket
-import time
 from typing import Optional
 
-from bifrost_core.core.redis_health_keys import ENGINE_OPS_ACTIVE_REDIS_FIELD
 
 logger = logging.getLogger(__name__)
 
@@ -52,13 +49,6 @@ def meta_redis_url_from_ops_config(config: dict) -> Optional[str]:
     from bifrost_core.core.redis_url import redis_url_from_config
 
     return redis_url_from_config(config or {})
-
-
-def control_hostname() -> str:
-    try:
-        return (socket.gethostname() or "unknown").strip() or "unknown"
-    except Exception:
-        return "unknown"
 
 
 def _redis_conn(redis_url: str):
@@ -118,22 +108,6 @@ def read_control_env(redis_url: str, lease_key: str) -> Optional[str]:
         return None
 
 
-def write_control_env(redis_url: str, lease_key: str, profile: str) -> None:
-    norm = normalize_control_profile(profile)
-    if not norm:
-        raise ValueError(f"invalid control profile: {profile!r}")
-    key = (lease_key or "").strip()
-    if not key:
-        raise ValueError("empty lease_key")
-    r = _redis_conn(redis_url)
-    now = time.time()
-    r.hset(key, mapping={
-        BIFROST_OPS_CONTROL_ENV_FIELD: norm,
-        BIFROST_OPS_CONTROL_HOST_FIELD: control_hostname(),
-        BIFROST_OPS_CONTROL_UPDATED_AT_FIELD: str(now),
-    })
-
-
 def clear_control_env(redis_url: str, lease_key: str) -> None:
     key = (lease_key or "").strip()
     if not key:
@@ -152,20 +126,3 @@ def clear_control_env(redis_url: str, lease_key: str) -> None:
 
 
 # ── Trading Engine: lease + active marker also live inside its health hash ──
-
-def write_trading_engine_ops_lease(redis_url: str, meta_key: str, profile: str) -> None:
-    """Lease + ``engine_ops_active`` + ``updated_at`` for Dev/Prod exclusivity (trading_engine only)."""
-    norm = normalize_control_profile(profile)
-    if not norm:
-        raise ValueError(f"invalid control profile: {profile!r}")
-    key = (meta_key or "").strip()
-    if not key:
-        raise ValueError("empty redis_meta_key")
-    r = _redis_conn(redis_url)
-    r.hset(key, mapping={
-        BIFROST_OPS_CONTROL_ENV_FIELD: norm,
-        BIFROST_OPS_CONTROL_HOST_FIELD: control_hostname(),
-        BIFROST_OPS_CONTROL_UPDATED_AT_FIELD: str(time.time()),
-        ENGINE_OPS_ACTIVE_REDIS_FIELD: "1",
-        "updated_at": str(time.time()),
-    })

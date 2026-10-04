@@ -61,7 +61,6 @@ def test_executions_with_opt_pairs_keeps_its_pairs() -> None:
     "path,reader_method,legacy_key",
     [
         ("/executions/position-attribution", "get_position_instance_attribution", "attributions"),
-        (f"/executions/link-candidates?account_id={ACC}&contract_key=ZZQ%7CSTK%7C%7C%7C", "get_executions_for_strategy_link", "executions"),
         ("/executions/freshness", "get_executions_freshness", None),
         ("/transactions", "get_transactions_page", "transactions"),
     ],
@@ -103,11 +102,6 @@ def test_stock_link_candidates_list_keeps_its_window() -> None:
 
 
 # --- 400 ---------------------------------------------------------------------------------
-
-
-def test_link_candidates_without_a_key_is_400() -> None:
-    r = _client().get(f"/executions/link-candidates?account_id={ACC}&symbol=ZZQ")
-    assert_error(r, 400, "Provide contract_key", {"executions": []})
 
 
 def test_links_query_without_batches_is_400() -> None:

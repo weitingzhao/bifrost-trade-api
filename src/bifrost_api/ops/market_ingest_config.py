@@ -8,7 +8,7 @@ default meta key is applied. (account_sync_daemon was deleted with account-sync,
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from bifrost_core.core.redis_health_keys import (
     BIFROST_HEALTH_DAEMON_TRADING_ENGINE,
@@ -138,12 +138,3 @@ def market_ingest_services_from_config(config: dict) -> List[Dict[str, str]]:
     if not out:
         return list(DEFAULT_MARKET_INGEST_SERVICES)
     return _ensure_socket_feed_rows_for_daemon_only_yaml(out)
-
-
-def market_ingest_service_by_id(config: dict, service_id: str) -> Optional[Dict[str, str]]:
-    """Lookup by official id (legacy request ids are normalized first)."""
-    sid = canonical_ingest_service_id(service_id)
-    for row in market_ingest_services_from_config(config):
-        if row["id"] == sid:
-            return row
-    return None

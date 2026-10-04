@@ -16,7 +16,6 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
-from bifrost_core.core.message_center import publish_ib_service_stopped_messages
 from bifrost_core.core.redis_health_keys import (
     ENGINE_OPS_ACTIVE_REDIS_FIELD,
     redis_hash_field_truthy,
@@ -157,93 +156,3 @@ def _hash_looks_connected(m: Dict[str, str], sid: str) -> bool:
     if sid == "trading_engine":
         return redis_hash_field_truthy(m, ENGINE_OPS_ACTIVE_REDIS_FIELD)
     return False
-
-
-def clear_ingest_health_after_stop(redis_url: str, meta_key: str, service_id: str) -> None:
-    """HSET disconnected snapshot on the ingest health hash (does not delete the key)."""
-    key = (meta_key or "").strip()
-    if not key:
-        return
-    sid = (service_id or "").strip()
-    now = time.time()
-    r = _conn(redis_url)
-    try:
-        prior = _hgetall(r, key) if sid in (
-            "ib_ingestor",
-            "ib_market",
-            "ib_account_agent",
-            "ib_operator",
-        ) else {}
-        if sid in ("ib_ingestor", "ib_market"):
-            r.hset(
-                key,
-                mapping={
-                    "client_id": "0",
-                    "connected": "0",
-                    "last_msg_ts": str(now),
-                    "reconnects": "0",
-                    "msg_count": "0",
-                    "updated_at": str(now),
-                },
-            )
-        elif sid == "ib_operator":
-            from bifrost_core.ib_operator.health_redis import (
-                operator_health_dict_to_redis_hash,
-                prune_legacy_operator_health_hash_fields,
-            )
-
-            h = {
-                "host": {
-                    "connected": False,
-                    "client_id": 0,
-                    "last_error": "",
-                    "reconnects": 0,
-                },
-                "secondary": None,
-                "service_alive": False,
-                "operator_alive": False,
-                "updated_at": now,
-                "last_cmd_ts": 0.0,
-                "cmd_count": 0,
-            }
-            mapping = operator_health_dict_to_redis_hash(h)
-            r.hset(key, mapping=mapping)
-            prune_legacy_operator_health_hash_fields(r, key)
-        elif sid == "ib_account_agent":
-            r.hset(
-                key,
-                mapping={
-                    "connected": "0",
-                    "host_connected": "0",
-                    "host_alive": "0",
-                    "client_id": "0",
-                    "host_client_id": "0",
-                    "secondary_connected": "0",
-                    "last_msg_ts": str(now),
-                    "reconnects": "0",
-                    "msg_count": "0",
-                    "updated_at": str(now),
-                },
-            )
-        elif sid == "trading_engine":
-            r.hset(
-                key,
-                mapping={
-                    ENGINE_OPS_ACTIVE_REDIS_FIELD: "0",
-                    "updated_at": str(now),
-                },
-            )
-        else:
-            logger.debug("clear_ingest_health_after_stop: unknown service_id=%s", sid)
-        if prior:
-            try:
-                publish_ib_service_stopped_messages(
-                    r,
-                    service_id=sid,
-                    health_hash=prior,
-                    occurred_at=now,
-                )
-            except Exception as e:
-                logger.warning("clear_ingest_health_after_stop: message center publish failed: %s", e)
-    finally:
-        r.close()

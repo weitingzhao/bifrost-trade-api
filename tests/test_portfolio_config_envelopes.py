@@ -42,7 +42,6 @@ def _call(c: TestClient, method: str, path: str, body: Optional[Dict[str, Any]] 
 
 NO_PG_CASES = [
     ("POST", "/position-categories", {"name": "Core"}, {"id": None}),
-    ("PATCH", "/executions/strategy-attribution", {"account_id": "U0000001", "contract_key": "ZZQ|STK|||"}, {}),
     ("PUT", "/position-categories/tag", {"account_id": "U0000001", "contract_key": "ZZQ|STK|||"}, {}),
     ("PUT", "/position-categories/symbol-order", {"category_name": "Core", "symbols": ["ZZQ"]}, {}),
     ("PUT", "/instrument-classes/ZZFI", {"instrument_class": "cash_like"}, {}),
@@ -65,8 +64,6 @@ def test_without_postgres_every_write_is_503(method: str, path: str, body: Any, 
 
 BAD_INPUT_CASES = [
     ("POST", "/position-categories", {"name": "  "}, "name is required.", {"id": None}),
-    ("PATCH", "/executions/strategy-attribution", {"contract_key": "ZZQ|STK|||"}, "account_id is required.", {}),
-    ("PATCH", "/executions/strategy-attribution", {"account_id": "U0000001"}, "contract_key or execution_ids", {}),
     ("PUT", "/position-categories/tag", {"contract_key": "ZZQ|STK|||"}, "account_id is required.", {}),
     ("PUT", "/position-categories/tag", {"account_id": "U0000001"}, "contract_key is required.", {}),
     ("PUT", "/position-categories/symbol-order", {"symbols": []}, "category_name is required.", {}),
@@ -138,37 +135,6 @@ def test_instrument_class_without_a_connection_is_503() -> None:
     reader.set_instrument_class.return_value = (False, "Database connection failed.")
     r = _client(reader).put("/instrument-classes/ZZFI", json={"instrument_class": "stock"})
     assert_error(r, 503, "Database connection failed.")
-
-
-# --- strategy attribution: 404 / 409 ----------------------------------------------------
-
-
-def test_attribution_with_nothing_matched_is_404() -> None:
-    reader = MagicMock()
-    reader.batch_update_execution_strategy.return_value = 0
-    r = _client(reader).patch(
-        "/executions/strategy-attribution", json={"account_id": "U0000001", "execution_ids": [11, 12]}
-    )
-    assert_error(r, 404, "No matching executions", {"updated": 0})
-
-
-def test_attribution_over_split_allocations_is_409_with_ok_and_error_now() -> None:
-    reader = MagicMock()
-    reader.batch_update_execution_strategy.return_value = -1
-    r = _client(reader).patch(
-        "/executions/strategy-attribution", json={"account_id": "U0000001", "contract_key": "ZZQ|STK|||"}
-    )
-    assert_error(r, 409, "instance_allocations", {"updated": 0})
-
-
-def test_attribution_success_keeps_its_shape() -> None:
-    reader = MagicMock()
-    reader.batch_update_execution_strategy.return_value = 2
-    r = _client(reader).patch(
-        "/executions/strategy-attribution",
-        json={"account_id": "U0000001", "execution_ids": [11, 12], "strategy_instance_id": 4},
-    )
-    assert r.status_code == 200 and r.json() == {"ok": True, "updated": 2}
 
 
 # --- lists ------------------------------------------------------------------------------

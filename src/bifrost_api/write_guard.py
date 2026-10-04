@@ -12,10 +12,11 @@ remembering to add it. The exceptions are fixed paths, so matching the path the
 app sees (after Traefik strips ``/api/<domain>``) is enough:
 
 - ``READ_ONLY_POSTS``: POSTs that only read, open to a viewer.
-- ``ADMIN_PATHS``: IB disconnect / reconnect, which act on the connection
-  every environment's gateway shares. (The process-exit routes that were here
-  are gone, TD-64: lifecycle belongs to Kubernetes.)
 - everything else that is not GET / HEAD / OPTIONS: operator.
+
+No route needs admin any more: the process-exit routes went in TD-64 (lifecycle
+belongs to Kubernetes) and the monitor's IB disconnect / reconnect routes, the last
+``ADMIN_PATHS``, in TD-40 (api 0.7.6, no caller and no traffic).
 
 The role comes from ``OpsAuth`` (``ops/auth.py``): an ``Authorization: Bearer``
 token, else ``ops.auth.default_role``. Until each environment lowers
@@ -46,15 +47,6 @@ READ_ONLY_POSTS = frozenset(
     }
 )
 
-ADMIN_PATHS = frozenset(
-    {
-        "/control/monitor_stop",
-        "/control/monitor_release_ib",
-        "/control/monitor_connect",
-    }
-)
-
-
 def required_role(method: str, path: str) -> Optional[str]:
     """The role a request needs, or None when the guard lets it through."""
     if method.upper() in SAFE_METHODS:
@@ -62,8 +54,6 @@ def required_role(method: str, path: str) -> Optional[str]:
     p = path.rstrip("/") or "/"
     if p in READ_ONLY_POSTS:
         return None
-    if p in ADMIN_PATHS:
-        return "admin"
     return "operator"
 
 

@@ -48,15 +48,3 @@ class InstrumentClassBody(LenientBody):
 
     instrument_class: Optional[StrictStr] = None
     note: Optional[StrictStr] = None
-
-
-class StrategyAttributionBatchBody(LenientBody):
-    """PATCH /executions/strategy-attribution (deprecated, no caller): ``account_id`` and
-    ``contract_key`` or ``execution_ids`` are required (400). A null id clears it; a
-    malformed one is 422 -- before 0.3.1 it was read as null and cleared the attribution."""
-
-    account_id: Optional[StrictStr] = None
-    contract_key: Optional[StrictStr] = None
-    execution_ids: Optional[List[StrictInt]] = None
-    strategy_opportunity_id: Optional[StrictInt] = None
-    strategy_instance_id: Optional[StrictInt] = None

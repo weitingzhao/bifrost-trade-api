@@ -210,32 +210,6 @@ def fetch_technical_eval_single(symbol: str) -> Optional[Dict[str, Any]]:
     return dict(row) if isinstance(row, dict) else None
 
 
-def _filter_symbols(data: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [
-        {"symbol": s["symbol"], "pass_count": int(s.get("pass_count") or 0)}
-        for s in ((data or {}).get("symbols") or [])
-        if isinstance(s, dict) and s.get("symbol")
-    ]
-
-
-def fetch_fundamental_filter(condition_ids: List[str], *, limit: int = 500) -> List[Dict[str, Any]]:
-    valid = [c for c in condition_ids if c in FUND_CONDITION_COLUMNS]
-    if not valid:
-        return []
-    return _filter_symbols(
-        _research_get("/analytics/sepa/fundamental-filter", {"conditions": ",".join(valid), "limit": limit})
-    )
-
-
-def fetch_technical_filter(condition_ids: List[str], *, limit: int = 500) -> List[Dict[str, Any]]:
-    valid = [c for c in condition_ids if c in TECH_CONDITION_COLUMNS]
-    if not valid:
-        return []
-    return _filter_symbols(
-        _research_get("/analytics/sepa/technical-filter", {"conditions": ",".join(valid), "limit": limit})
-    )
-
-
 def fetch_fundamental_distribution_symbols(conditions_passed: int) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """Names passing exactly N fundamental conditions, and the eval date Research read them on."""
     data = _research_get("/analytics/sepa/fundamental-distribution", {"conditions_passed": conditions_passed}) or {}
@@ -246,18 +220,6 @@ def fetch_technical_distribution_symbols(conditions_passed: int) -> Tuple[List[D
     """Names passing exactly N technical conditions, and the eval date Research read them on."""
     data = _research_get("/analytics/sepa/technical-distribution", {"conditions_passed": conditions_passed}) or {}
     return list(data.get("symbols") or []), data.get("as_of")
-
-
-def fetch_screener_wide(
-    symbols: Optional[List[str]] = None,
-    *,
-    limit: int = 500,
-) -> List[Dict[str, Any]]:
-    params: Dict[str, Any] = {"limit": limit}
-    if symbols:
-        params["symbols"] = ",".join(s.upper() for s in symbols[:500])
-    data = _research_get("/analytics/sepa/screener-wide", params) or {}
-    return [dict(r) for r in (data.get("rows") or []) if isinstance(r, dict)]
 
 
 def fetch_tier_stats(tier: str) -> Dict[str, Any]:

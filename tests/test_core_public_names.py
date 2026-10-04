@@ -34,3 +34,22 @@ def test_the_reader_is_read_through_its_public_config() -> None:
     private = re.compile(r"\breader\._[a-z]")
     found = [f"{p.relative_to(ROOT)}:{i}" for p in SOURCES for i, line in enumerate(p.read_text().splitlines(), 1) if private.search(line)]
     assert found == []
+
+
+def test_the_desk_controls_import_core_canonical_modules() -> None:
+    """TD-80 C1-a (with TD-40, api 0.7.6): monitor/routers/daemon.py names the modules that define
+    what it calls, so core can drop the ``monitor.reader`` / ``config.startup`` re-exports. The
+    functions are the same objects, so the desk's routes behave as before."""
+    import bifrost_core.config.startup as startup
+    import bifrost_core.config.yaml_config as yaml_config
+    import bifrost_core.monitor.reader as reader_pkg
+    import bifrost_core.monitor.reader.status as status
+    import bifrost_core.portfolio.reader.accounts as accounts
+
+    path = ROOT / "src" / "bifrost_api" / "monitor" / "routers" / "daemon.py"
+    modules = {node.module for node in ast.walk(ast.parse(path.read_text())) if isinstance(node, ast.ImportFrom)}
+    assert not modules & {"bifrost_core.monitor.reader", "bifrost_core.config.startup"}
+    assert reader_pkg.write_control_command is status.write_control_command
+    assert reader_pkg.write_run_status is status.write_run_status
+    assert reader_pkg.sync_accounts_snapshot_to_db is accounts.sync_accounts_snapshot_to_db
+    assert startup.get_effective_ib_config is yaml_config.get_effective_ib_config

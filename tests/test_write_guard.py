@@ -17,7 +17,7 @@ from bifrost_api.account.app import create_account_app
 from bifrost_api.market.app import create_market_app
 from bifrost_api.monitor.app import create_app as create_monitor_app
 from bifrost_api.research.app import create_research_app
-from bifrost_api.write_guard import ADMIN_PATHS, READ_ONLY_POSTS, WriteGuard, required_role
+from bifrost_api.write_guard import READ_ONLY_POSTS, WriteGuard, required_role
 from tests.contract.helpers import full_server_config
 from tests.route_listing import served_routes
 
@@ -83,8 +83,6 @@ def _write_routes(app: Any) -> Iterator[tuple]:
         ("POST", "/control/flatten", "operator"),
         ("POST", "/research/screener", None),
         ("POST", "/research/screener/", None),
-        ("POST", "/control/monitor_stop", "admin"),
-        ("POST", "/control/monitor_connect", "admin"),
     ],
 )
 def test_required_role(method: str, path: str, role: Optional[str]) -> None:
@@ -99,7 +97,7 @@ def test_every_deployed_app_runs_the_guard() -> None:
 def test_every_named_exception_is_a_real_write_route() -> None:
     """A path that no longer exists is a stale exception, and a typo is a write left at operator."""
     served = {path for app in _apps().values() for _, path in _write_routes(app)}
-    assert not sorted((READ_ONLY_POSTS | ADMIN_PATHS) - served)
+    assert not sorted(READ_ONLY_POSTS - served)
 
 
 # ── what a caller gets ──
@@ -157,12 +155,11 @@ def test_each_app_refuses_an_anonymous_viewer(app_name: str, method: str, path: 
     assert r.status_code == 403
 
 
-def test_disconnecting_ib_needs_admin() -> None:
-    c = _client("monitor", "viewer")
-    refused = c.post("/control/monitor_connect", headers=_bearer(OPERATOR))
-    assert refused.status_code == 403 and refused.json()["required_role"] == "admin"
-    # Past the guard the handler finds no IB Operator client in a test app and says so.
-    assert c.post("/control/monitor_connect", headers=_bearer(ADMIN)).status_code == 503
+def test_no_route_needs_admin() -> None:
+    """The last admin-only routes (monitor IB disconnect / reconnect) went in TD-40 (api 0.7.6)."""
+    for app in _apps().values():
+        for method, path in _write_routes(app):
+            assert required_role(method, path) in ("operator", None), (method, path)
 
 
 def test_default_role_operator_keeps_todays_behaviour() -> None:

@@ -1,8 +1,9 @@
 """Routes no repo calls are marked before they go (debt TD-40, decision B).
 
-Nothing here reaches IB, Redis or a DB: the marked write is refused by the write
-guard (anonymous viewer), and the marked read is answered by whatever a test app
-without stores returns — only the header and the log line are under test.
+The list itself is empty since api 0.7.6 (every marked route was deleted); the
+mechanism is tested on a route marked for the test. Nothing here reaches IB, Redis
+or a DB: a marked read is answered by whatever a test app without stores returns --
+only the header and the log line are under test.
 """
 
 from __future__ import annotations
@@ -73,32 +74,45 @@ def test_get_instrument_classes_is_on_neither_list() -> None:
     assert ("GET", "/instrument-classes") not in DEPRECATED_ROUTES | set(REPLACED_ROUTES)
 
 
+def test_the_list_is_empty_after_td40() -> None:
+    """api 0.7.6: every marked route had no hit but agents' checks and was deleted."""
+    assert DEPRECATED_ROUTES == frozenset()
+    for method, path in (("POST", "/control/flatten"), ("GET", "/strategies/structures/42"), ("GET", "/health")):
+        assert deprecated_route(method, path) is None
+
+
+_MARKED = "/strategies/structures/{strategy_structure_id}"
+
+
 @pytest.mark.parametrize(
     "method, path, hit",
     [
-        ("POST", "/control/stop", "/control/stop"),
-        ("POST", "/control/stop/", "/control/stop"),
-        ("GET", "/control/stop", None),
-        ("POST", "/control/flatten", None),
-        ("DELETE", "/strategies/structures/42", "/strategies/structures/{strategy_structure_id}"),
-        ("GET", "/strategies/structures/42", None),
-        ("GET", "/strategies/instances/7/open-option-legs", "/strategies/instances/{strategy_instance_id}/open-option-legs"),
-        ("GET", "/instrument-classes", None),
+        ("GET", "/strategies/structures/42", _MARKED),
+        ("GET", "/strategies/structures/42/", _MARKED),
+        ("PUT", "/strategies/structures/42", None),
+        ("GET", "/strategies/structures", None),
     ],
 )
-def test_deprecated_route(method: str, path: str, hit: Any) -> None:
+def test_the_marker_matches_a_template(monkeypatch: pytest.MonkeyPatch, method: str, path: str, hit: Any) -> None:
+    monkeypatch.setattr(dep, "_MATCHERS", [("GET", _MARKED, dep._compile(_MARKED))])
     assert deprecated_route(method, path) == hit
 
 
-def test_a_marked_route_says_so_and_logs_its_caller(caplog: pytest.LogCaptureFixture) -> None:
-    client = TestClient(_apps()["monitor"], raise_server_exceptions=False)
+def test_a_marked_route_says_so_and_logs_its_caller(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The mechanism stays for the next route marked before it goes."""
+    monkeypatch.setattr(dep, "_MATCHERS", [("PUT", _MARKED, dep._compile(_MARKED))])
+    client = TestClient(_apps()["account"], raise_server_exceptions=False)
     with caplog.at_level(logging.WARNING, logger="bifrost_api.deprecations"):
-        r = client.post("/control/stop", headers={"User-Agent": "td40-test", "X-Forwarded-For": "192.0.2.7"})
-    # Refused by the write guard first; still marked, still logged.
+        r = client.put(
+            "/strategies/structures/42", json={}, headers={"User-Agent": "td40-test", "X-Forwarded-For": "192.0.2.7"}
+        )
+    # Refused by the write guard first (anonymous viewer); still marked, still logged.
     assert r.status_code == 403
     assert r.headers.get("deprecation") == "true"
     line = next(rec.getMessage() for rec in caplog.records if "deprecated route hit" in rec.getMessage())
-    assert "/control/stop" in line and "td40-test" in line and "192.0.2.7" in line
+    assert _MARKED in line and "td40-test" in line and "192.0.2.7" in line
 
 
 @pytest.mark.parametrize(

@@ -28,7 +28,7 @@ _FALLBACK_INDEX_HTML = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Bifrost Trader API</title></head>
 <body style="font-family:system-ui;padding:1rem;">
   <p><strong>Bifrost Trader API</strong> — No production build found. Run <code>cd frontend && npm run build</code>, or use dev UI: <code>./scripts/run_frontend.sh dev</code>.</p>
-  <p><a href="/docs">/docs</a> · <a href="/status">/status</a> (JSON schema v8, nested) · <a href="/operations">/operations</a></p>
+  <p><a href="/docs">/docs</a> · <a href="/status">/status</a> (JSON schema v8, nested)</p>
 </body></html>"""
 
 

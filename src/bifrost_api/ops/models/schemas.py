@@ -1,27 +1,11 @@
-"""Pydantic models for Ops market-ingest control and audit."""
+"""Pydantic models for the Ops audit log."""
 
 from __future__ import annotations
 
 import time
-from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel, Field
-
-
-class MarketIngestAction(str, Enum):
-    """Market ingest systemd control (includes ``reset`` — IB client release before restart)."""
-
-    START = "start"
-    STOP = "stop"
-    RESTART = "restart"
-    RESET = "reset"
-
-
-class MarketIngestControlRequest(BaseModel):
-    service_id: str = Field(..., min_length=1)
-    action: MarketIngestAction
-
 
 # ── Audit ─────────────────────────────────────────────────────────────────────
 

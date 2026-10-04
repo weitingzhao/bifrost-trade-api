@@ -47,48 +47,6 @@ def _named_deployment(name: str, replicas: int, ready: int):
 
 
 @pytest.mark.asyncio
-async def test_daemon_start_blocked_by_d10_freeze(executor):
-    executor._read_deployment = AsyncMock(return_value=_named_deployment("daemon", 0, 0))
-    executor._patch_deployment = AsyncMock()
-
-    with pytest.raises(PermissionError, match="BLOCKED \\(D10\\)"):
-        await executor._systemctl("start", "bifrost-engine.service")
-
-    executor._patch_deployment.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_daemon_restart_scale_up_blocked_by_d10_freeze(executor):
-    executor._read_deployment = AsyncMock(return_value=_named_deployment("daemon", 0, 0))
-    executor._patch_deployment = AsyncMock()
-
-    with pytest.raises(PermissionError, match="BLOCKED \\(D10\\)"):
-        await executor._systemctl("restart", "bifrost-engine.service")
-
-    executor._patch_deployment.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_daemon_rollout_restart_allowed_when_already_running(executor):
-    """Freeze blocks scale-up only; rollout of running observe daemon is OK."""
-    executor._read_deployment = AsyncMock(return_value=_named_deployment("daemon", 2, 2))
-    executor._patch_deployment = AsyncMock()
-    # account-sync already up — co-scale start should no-op
-    async def _ready(name: str):
-        if name == "daemon":
-            return 2, 2, "deployment"
-        if name == "account-sync":
-            return 1, 1, "deployment"
-        return 0, 0, "deployment"
-
-    executor._workload_ready_replicas = AsyncMock(side_effect=_ready)
-
-    result = await executor._systemctl("restart", "bifrost-engine.service")
-    assert result["action"] == "restart"
-    executor._patch_deployment.assert_awaited()
-
-
-@pytest.mark.asyncio
 async def test_workload_status_snapshot_includes_daemon_mode(executor):
     async def _ready(name: str):
         mapping = {
@@ -112,41 +70,11 @@ def test_normalize_daemon_scale_guard_defaults_to_freeze():
     assert KubernetesExecutor.resolve_daemon_scale_guard({"daemon_scale_guard": "off"}) == "off"
 
 
-@pytest.mark.asyncio
-async def test_systemctl_start_scales_deployment(executor):
-    executor._read_deployment = AsyncMock(return_value=_fake_deployment(0, 0))
-    executor._patch_deployment = AsyncMock()
-    result = await executor._systemctl("start", "bifrost-ib-ingestor.service")
-    assert result["method"] == "kubernetes"
-    assert result["deployment"] == "ib-market-gateway"
-    executor._patch_deployment.assert_awaited_once()
-    body = executor._patch_deployment.await_args.args[1]
-    assert body["spec"]["replicas"] == 1
-
-
 def _fake_statefulset(replicas: int, ready: int):
     return SimpleNamespace(
         spec=SimpleNamespace(replicas=replicas),
         status=SimpleNamespace(ready_replicas=ready),
     )
-
-
-@pytest.mark.asyncio
-async def test_ib_unit_falls_back_to_statefulset_restart(executor):
-    """W5: IB socket is a StatefulSet — Deployment read 404s, control uses STS."""
-    from kubernetes.client.rest import ApiException
-
-    executor._read_deployment = AsyncMock(side_effect=ApiException(status=404))
-    executor._read_statefulset = AsyncMock(return_value=_fake_statefulset(1, 1))
-    executor._patch_statefulset = AsyncMock()
-    executor._patch_deployment = AsyncMock()
-
-    result = await executor._systemctl("restart", "bifrost-ib-ingestor.service")
-
-    assert result["kind"] == "statefulset"
-    assert result["statefulset"] == "ib-market-gateway"
-    executor._patch_statefulset.assert_awaited_once()
-    executor._patch_deployment.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -183,3 +111,18 @@ async def test_resolve_namespace_from_file(tmp_path, monkeypatch):
         path_cls.return_value.is_file.return_value = True
         path_cls.return_value.read_text.return_value = "bifrost-dev\n"
         assert KubernetesExecutor.resolve_namespace({}) == "bifrost-dev"
+
+
+def test_the_executor_cannot_patch_a_workload():
+    """TD-40 (api 0.7.6): its only writer, POST /ops/market-ingest/control, is gone, and the
+    scale / rollout-restart path went with it. Nothing in api scales the daemon."""
+    for name in ("_systemctl", "_systemctl_workload", "_scale_workload", "_rollout_restart_workload",
+                 "_patch_deployment", "_patch_statefulset", "set_daemon_scale_guard"):
+        assert not hasattr(KubernetesExecutor, name), name
+
+
+@pytest.mark.asyncio
+async def test_a_unit_outside_the_whitelist_reads_unknown(executor):
+    executor._read_deployment = AsyncMock(return_value=_fake_deployment(1, 1))
+    assert await executor.systemctl_is_active("bifrost-not-listed.service") == "unknown"
+    executor._read_deployment.assert_not_awaited()

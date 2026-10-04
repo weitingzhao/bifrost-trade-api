@@ -1,11 +1,15 @@
-"""Kubernetes workload executor for the daemon and ingest workloads (account-sync deleted, TD-22)."""
+"""Kubernetes workload reader for the daemon and ingest workloads (account-sync deleted, TD-22).
+
+Reads only: replicas, readiness and the daemon's scale guard for the services table and
+/ops/health. The write path (scale / rollout restart behind ``POST /ops/market-ingest/control``,
+the only caller, guarded for the daemon by D10's freeze) went with that route (TD-40, api 0.7.6);
+nothing in api patches a workload any more."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
@@ -14,14 +18,12 @@ from bifrost_api.ops.workload_map import deployment_for_unit, is_managed_unit
 logger = logging.getLogger(__name__)
 
 _DAEMON_DEPLOYMENT = "daemon"
-_VALID_ACTIONS = frozenset({"start", "stop", "restart"})
 _VALID_DAEMON_SCALE_GUARDS = frozenset({"freeze", "observe", "off"})
-_D10_FREEZE_MESSAGE = "Trading execution is BLOCKED (D10). Daemon scale-up requires Owner unlock."
 _HEALTH_WORKLOAD_NAMES = (_DAEMON_DEPLOYMENT,)
 
 
 class KubernetesExecutor:
-    """Control whitelisted systemd-style units through Kubernetes workloads."""
+    """Read whitelisted systemd-style units as Kubernetes workloads."""
 
     def __init__(
         self,
@@ -66,17 +68,6 @@ class KubernetesExecutor:
     def daemon_scale_guard(self) -> str:
         return self._daemon_scale_guard
 
-    def set_daemon_scale_guard(self, guard: str) -> None:
-        self._daemon_scale_guard = self.normalize_daemon_scale_guard(guard)
-
-    def _assert_daemon_scale_allowed(self, action: str, *, scaling_up: bool) -> None:
-        if (
-            self._daemon_scale_guard == "freeze"
-            and scaling_up
-            and action in ("start", "restart")
-        ):
-            raise PermissionError(_D10_FREEZE_MESSAGE)
-
     def _init_clients(self) -> bool:
         try:
             from kubernetes import client, config as k8s_config
@@ -100,13 +91,9 @@ class KubernetesExecutor:
     def namespace(self) -> str:
         return self._namespace
 
-    def _validate(self, action: str, unit: str) -> None:
-        if action not in _VALID_ACTIONS:
-            raise PermissionError(f"Action {action!r} is not allowed")
-        normalized = unit.removesuffix(".service")
+    def _is_allowed(self, unit: str) -> bool:
         allowed = {item.removesuffix(".service") for item in self._allowed}
-        if normalized not in allowed:
-            raise PermissionError(f"Unit {unit!r} is not allowed")
+        return unit.removesuffix(".service") in allowed
 
     async def _run_sync(self, fn, *args, **kwargs):
         return await asyncio.to_thread(fn, *args, **kwargs)
@@ -116,16 +103,6 @@ class KubernetesExecutor:
             raise RuntimeError("Kubernetes API client is not initialized")
         return await self._run_sync(self._apps.read_namespaced_deployment, name, self._namespace)
 
-    async def _patch_deployment(self, name: str, body: dict):
-        if not self._apps:
-            raise RuntimeError("Kubernetes API client is not initialized")
-        return await self._run_sync(
-            self._apps.patch_namespaced_deployment,
-            name,
-            self._namespace,
-            body,
-        )
-
     async def _read_statefulset(self, name: str):
         if not self._apps:
             raise RuntimeError("Kubernetes API client is not initialized")
@@ -133,16 +110,6 @@ class KubernetesExecutor:
             self._apps.read_namespaced_stateful_set,
             name,
             self._namespace,
-        )
-
-    async def _patch_statefulset(self, name: str, body: dict):
-        if not self._apps:
-            raise RuntimeError("Kubernetes API client is not initialized")
-        return await self._run_sync(
-            self._apps.patch_namespaced_stateful_set,
-            name,
-            self._namespace,
-            body,
         )
 
     async def _read_workload(self, name: str) -> tuple[str, Any]:
@@ -162,95 +129,6 @@ class KubernetesExecutor:
             logger.debug("read workload %s: %s", name, exc)
             return 0, 0, "deployment"
         return int(obj.spec.replicas or 0), int(obj.status.ready_replicas or 0), kind
-
-    async def _scale_workload(self, kind: str, name: str, replicas: int) -> Dict[str, Any]:
-        replicas = max(0, replicas)
-        body = {"spec": {"replicas": replicas}}
-        if kind == "statefulset":
-            await self._patch_statefulset(name, body)
-        else:
-            await self._patch_deployment(name, body)
-        out: Dict[str, Any] = {
-            "method": "kubernetes",
-            "action": "scale",
-            "namespace": self._namespace,
-            "kind": kind,
-            "replicas": replicas,
-            "message": f"scaled {kind}/{name} to {replicas} in {self._namespace}",
-        }
-        out["deployment" if kind == "deployment" else "statefulset"] = name
-        return out
-
-    async def _rollout_restart_workload(self, kind: str, name: str) -> Dict[str, Any]:
-        body = {
-            "spec": {
-                "template": {
-                    "metadata": {
-                        "annotations": {
-                            "kubectl.kubernetes.io/restartedAt": datetime.now(
-                                timezone.utc
-                            ).isoformat()
-                        }
-                    }
-                }
-            }
-        }
-        if kind == "statefulset":
-            await self._patch_statefulset(name, body)
-        else:
-            await self._patch_deployment(name, body)
-        out: Dict[str, Any] = {
-            "method": "kubernetes",
-            "action": "restart",
-            "namespace": self._namespace,
-            "kind": kind,
-            "message": f"rollout restart {kind}/{name} in {self._namespace}",
-        }
-        out["deployment" if kind == "deployment" else "statefulset"] = name
-        return out
-
-    async def _systemctl_workload(
-        self,
-        action: str,
-        workload: str,
-        unit: str,
-    ) -> Dict[str, Any]:
-        spec_replicas, _ready, kind = await self._workload_ready_replicas(workload)
-        is_daemon = workload == _DAEMON_DEPLOYMENT
-
-        if action == "start":
-            if is_daemon:
-                self._assert_daemon_scale_allowed(action, scaling_up=(spec_replicas == 0))
-            if spec_replicas > 0:
-                result: Dict[str, Any] = {
-                    "method": "kubernetes",
-                    "action": "start",
-                    "unit": unit,
-                    "kind": kind,
-                    "message": f"{kind}/{workload} already has replicas={spec_replicas}",
-                }
-                result["deployment" if kind == "deployment" else "statefulset"] = workload
-            else:
-                result = await self._scale_workload(kind, workload, 1)
-                result["unit"] = unit
-            return result
-
-        if action == "stop":
-            result = await self._scale_workload(kind, workload, 0)
-            result["unit"] = unit
-            return result
-
-        if action == "restart":
-            if is_daemon:
-                self._assert_daemon_scale_allowed(action, scaling_up=(spec_replicas == 0))
-            if spec_replicas == 0:
-                result = await self._scale_workload(kind, workload, 1)
-            else:
-                result = await self._rollout_restart_workload(kind, workload)
-            result["unit"] = unit
-            return result
-
-        raise PermissionError(f"Action {action!r} is not supported")
 
     async def workload_status_snapshot(self) -> Dict[str, Dict[str, Any]]:
         out: Dict[str, Dict[str, Any]] = {}
@@ -284,27 +162,10 @@ class KubernetesExecutor:
         except Exception:  # noqa: BLE001
             return None, None
 
-    async def _systemctl(
-        self,
-        action: str,
-        unit: str,
-        timeout: int | None = None,
-    ) -> Dict[str, Any]:
-        del timeout
-        self._validate(action, unit)
-        workload = deployment_for_unit(unit)
-        if not workload:
-            raise PermissionError(
-                f"Unit {unit!r} has no workload mapping; kubernetes executor cannot control it."
-            )
-        return await self._systemctl_workload(action, workload, unit)
-
     async def systemctl_is_active(self, unit: str) -> str:
         if not self._k8s_reachable:
             return "unknown"
-        try:
-            self._validate("start", unit)
-        except PermissionError:
+        if not self._is_allowed(unit):
             return "unknown"
         workload = deployment_for_unit(unit)
         if not workload:

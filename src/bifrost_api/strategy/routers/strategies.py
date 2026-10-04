@@ -260,14 +260,6 @@ def patch_structure_endpoint(request: Request, strategy_structure_id: int, body:
     return strategy_structure_write_module.patch_structure(config, strategy_structure_id, body.patch_fields())
 
 
-@router.delete("/structures/{strategy_structure_id}")
-def delete_structure_endpoint(request: Request, strategy_structure_id: int) -> Dict[str, Any]:
-    """Soft delete (is_active = false); clears the daemon's active-structure setting if it
-    pointed here. Answers deleted "soft", was_active, cleared_daemon_setting."""
-    config = write_target(request, f"structure {strategy_structure_id}")
-    return deleted_body(strategy_structure_write_module.delete_structure_strict(config, strategy_structure_id))
-
-
 @router.get("/opportunities", response_model=OpportunityList, response_model_exclude_unset=True)
 def list_opportunities(
     request: Request,
@@ -353,15 +345,6 @@ def get_strategy_instance(request: Request, strategy_instance_id: int) -> Dict[s
 def create_strategy_instance_endpoint(request: Request, body: TradeCreate) -> Dict[str, Any]:
     """Replaced by POST /trades. `notes` is a 422 (TD-73): notes live in the Research journal."""
     return trades_module.create_trade(request, body)
-
-
-@router.get("/instances/{strategy_instance_id}/open-option-legs")
-def get_instance_open_option_legs(request: Request, strategy_instance_id: int) -> Dict[str, Any]:
-    """Return current open OPT positions linked to this trade (derived from executions intersected with positions).
-    Deprecated without a successor (TD-40)."""
-    reader = request.app.state.reader
-    legs = reader.get_instance_open_option_legs(strategy_instance_id)
-    return list_body(legs, strategy_instance_id=strategy_instance_id)
 
 
 @router.delete("/instances/{strategy_instance_id}")

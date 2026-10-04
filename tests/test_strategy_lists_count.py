@@ -21,7 +21,6 @@ LISTS = [
     ("/strategies/structures", "list_structures", _ANY_ROWS),
     ("/strategies/opportunities", "list_opportunities", strategy_rows.opportunities),
     ("/strategies/instances", "list_strategy_instances", strategy_rows.instances),
-    ("/strategies/instances/5/open-option-legs", "get_instance_open_option_legs", _ANY_ROWS),
     ("/strategies/allocations", "list_allocations", strategy_rows.allocations),
     ("/strategies/gate-safety", "list_gate_safety_sets", strategy_rows.gate_sets),
 ]
@@ -39,10 +38,3 @@ def test_list_has_items_and_count(path: str, method: str, answer: Callable[[], L
     rows = answer()
     getattr(reader, method).return_value = rows
     assert_list(_client(reader).get(path), expected=strategy_rows.as_sent_before(rows)["items"])
-
-
-def test_open_option_legs_keeps_the_instance_id() -> None:
-    reader = MagicMock()
-    reader.get_instance_open_option_legs.return_value = []
-    body = assert_list(_client(reader).get("/strategies/instances/5/open-option-legs"), expected=[])
-    assert body == {"items": [], "count": 0, "strategy_instance_id": 5}

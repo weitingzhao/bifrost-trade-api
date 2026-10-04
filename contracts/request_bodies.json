@@ -107,13 +107,6 @@
     "state",
     "state_json"
   ],
-  "StrategyAttributionBatchBody": [
-    "account_id",
-    "contract_key",
-    "execution_ids",
-    "strategy_instance_id",
-    "strategy_opportunity_id"
-  ],
   "StructureBody": [
     "is_active",
     "legs",
