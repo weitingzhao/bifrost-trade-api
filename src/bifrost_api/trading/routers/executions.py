@@ -608,7 +608,7 @@ def patch_execution_attribution(request: Request, account_executions_id: str, bo
     that has splits is 409 unless the same patch sends `fill_splits: []`. The
     trade must be on the execution's account (400). An opportunity without a trade is
     400; with one it must be the trade's (400). Written to this environment's
-    strategy_instance_execution by the fill (account_id, exec_id), so a TWS row and its
+    trade_execution by the fill (account_id, exec_id), so a TWS row and its
     Flex twin change together (core 0.37.0, TD-09). The id is signed by source (see the
     module docstring)."""
     eid = _parse_account_executions_path_id(account_executions_id)

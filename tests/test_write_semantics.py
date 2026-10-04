@@ -444,12 +444,12 @@ def test_a_missing_plan_is_404(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _instance_env(split: int = 0, exists: bool = True, direct: int = 0) -> _Conn:
-    # core 0.37.0 (TD-09): both counts come from this env's strategy_instance_execution.
+    # core 0.37.0 (TD-09): both counts come from this env's trade_execution (named so in core 0.45.0).
     return _Conn(
         [
-            ("SELECT 1 FROM strategy_instance WHERE strategy_instance_id = %s FOR UPDATE", {"one": (1,) if exists else None}),
-            ("FROM strategy_instance_execution WHERE strategy_instance_id", {"one": (direct, split)}),
-            ("DELETE FROM strategy_instance", {"rowcount": 1}),
+            ("SELECT 1 FROM trade WHERE trade_id = %s FOR UPDATE", {"one": (1,) if exists else None}),
+            ("FROM trade_execution WHERE trade_id", {"one": (direct, split)}),
+            ("DELETE FROM trade WHERE", {"rowcount": 1}),
         ]
     )
 
@@ -458,7 +458,7 @@ def test_an_instance_with_attributed_executions_is_409(monkeypatch: pytest.Monke
     env = _instance_env(direct=2)
     _connect(monkeypatch, env, _Conn([]))
     assert_error(_account().delete("/strategies/instances/7"), 409, "2 fills are attributed to this trade.")
-    assert not env.ran("DELETE FROM strategy_instance")
+    assert not env.ran("DELETE FROM trade WHERE")
 
 
 def test_an_instance_with_split_executions_is_409(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -471,7 +471,7 @@ def test_an_instance_nothing_points_at_is_deleted(monkeypatch: pytest.MonkeyPatc
     _connect(monkeypatch, env, _Conn([]))
     r = _account().delete("/strategies/instances/7")
     assert r.json() == {"deleted": "hard", "strategy_instance_id": 7, "trade_id": 7, "ok": True}
-    assert env.ran("DELETE FROM strategy_instance") and env.commits == 1
+    assert env.ran("DELETE FROM trade WHERE") and env.commits == 1
 
 
 def test_a_missing_instance_is_404(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -490,7 +490,7 @@ def test_the_instance_delete_does_not_need_the_golden_source(monkeypatch: pytest
 
     monkeypatch.setattr(write_support, "connect", _connect_or_refuse)
     assert _account().delete("/strategies/instances/7").json()["deleted"] == "hard"
-    assert env.ran("DELETE FROM strategy_instance")
+    assert env.ran("DELETE FROM trade WHERE")
 
 
 def test_a_template_in_use_is_409_naming_its_structures(monkeypatch: pytest.MonkeyPatch) -> None:

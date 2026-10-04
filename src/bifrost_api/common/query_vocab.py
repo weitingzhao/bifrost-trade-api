@@ -16,7 +16,7 @@ The canonical names, for every route that takes the idea:
 ``from_date``   ``YYYY-MM-DD``, inclusive lower bound
 ``to_date``     ``YYYY-MM-DD``, inclusive upper bound
 ``limit``       the most rows to return (a route's own default and cap are unchanged)
-``trade_id``    one Trade (the table is ``strategy_instance`` until naming R3)
+``trade_id``    one Trade (table ``trade``; ``strategy_instance`` before naming R3, core 0.45.0)
 ``trade_ids``   comma-separated Trade ids
 ==============  =====================================================================
 

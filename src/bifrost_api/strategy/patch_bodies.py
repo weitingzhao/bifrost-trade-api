@@ -153,7 +153,7 @@ class PlanPatch(PatchBody):
 
 class ReviewPatch(PatchBody):
     """``tags_added_json`` / ``tags_dropped_json`` are the names a review is read with from
-    api 0.7.0 (naming R1; the columns take them in R3); ``tags_added`` / ``tags_dropped``
+    api 0.7.0 (naming R1; the columns are named so since R3, core 0.45.0); ``tags_added`` / ``tags_dropped``
     still work until R4 and lose when both are sent."""
 
     tags_added: Optional[List[StrictStr]] = None

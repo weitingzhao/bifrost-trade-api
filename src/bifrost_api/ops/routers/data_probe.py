@@ -9,7 +9,7 @@ platform must not learn Trade concepts (D13), so Trade answers by role instead
       "generated_at": "2031-03-04T14:30:00Z",
       "activity": [{"source": "trades", "last_ts": "…Z" | null, "detail"?: "missing"}, …],
       "sample": {"label": "trades", "rows": 89},
-      "clone_groups": [{"name": "trades", "tables": ["strategy_instance", …], "note": "…"}, …],
+      "clone_groups": [{"name": "trades", "tables": ["trade", …], "note": "…"}, …],
       "watchlist": {"label": "optionable_stocks", "symbols": ["AAPL", …], "count": 42}
     }
 

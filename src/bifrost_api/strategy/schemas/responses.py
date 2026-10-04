@@ -159,7 +159,7 @@ GateSafetyDetail = GateSetDetail
 GateSafetyList = GateSetList
 
 
-# --- trades (table strategy_instance until R3) ------------------------------------------
+# --- trades (table trade since naming R3, core 0.45.0) -----------------------------------
 
 
 class TradeRow(ResponseRow):

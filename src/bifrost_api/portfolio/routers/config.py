@@ -127,7 +127,7 @@ def delete_position_category(request: Request, category_id: int) -> Any:
 @router.patch("/executions/strategy-attribution")
 def patch_execution_strategy_attribution(request: Request, body: StrategyAttributionBatchBody) -> Any:
     """Batch update strategy attribution on executions (this environment's
-    strategy_instance_execution, core 0.37.0).
+    trade_execution -- strategy_instance_execution before core 0.45.0 -- core 0.37.0).
     body: account_id (required), contract_key OR execution_ids[], strategy_opportunity_id, strategy_instance_id
     (null or absent clears; a non-integer is 422). An opportunity without a trade, or a trade
     on another account, writes nothing (404, as for no match)."""
