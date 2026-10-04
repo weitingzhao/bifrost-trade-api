@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 from starlette.testclient import TestClient
 
 from bifrost_api.account.app import create_account_app
+from bifrost_core.monitor.reader import write_support
 from bifrost_core.portfolio.reader import instrument_class as instrument_class_module
 from tests.contract.helpers import operator_server_config
 
@@ -28,27 +29,31 @@ def test_mounted_where_the_gateway_strips_to() -> None:
     assert {"/instrument-classes", "/instrument-classes/{contract_key}"} <= paths
 
 
-def test_list_and_set_pass_through() -> None:
+def test_list_and_set_pass_through(monkeypatch) -> None:
     reader = MagicMock()
     # Invented key (fixtures are never copied from DEV).
     reader.list_instrument_classes.return_value = [{"contract_key": "ZZFI", "instrument_class": "fixed_income"}]
-    reader.set_instrument_class.return_value = (True, None)
+    row = {"contract_key": "ZZFI", "instrument_class": "cash_like", "note": "T-bill fund"}
+    put = MagicMock(return_value=row)
+    monkeypatch.setattr(instrument_class_module, "set_instrument_class_strict", put)
     c = _client(reader, {"sink": "postgres"})
     listed = c.get("/instrument-classes").json()
     assert listed["count"] == 1 and listed["items"] == reader.list_instrument_classes.return_value
-    assert c.put("/instrument-classes/ZZFI", json={"instrument_class": "cash_like", "note": "T-bill fund"}).json() == {"ok": True}
-    # A full replace since api 0.6.0 (TD-15): the stored note is not kept.
-    reader.set_instrument_class.assert_called_once_with("ZZFI", "cash_like", note="T-bill fund", keep_note=False)
+    r = c.put("/instrument-classes/ZZFI", json={"instrument_class": "cash_like", "note": "T-bill fund"})
+    assert r.json() == {**row, "ok": True}
+    # Core's strict full replace (core 0.47.0, TD-80 C2): the stored note is not kept.
+    put.assert_called_once_with({"sink": "postgres"}, "ZZFI", "cash_like", note="T-bill fund")
 
 
-def test_a_refusal_says_why() -> None:
-    # A class core does not know is a 400 that names the three, before the writer is called.
-    reader = MagicMock()
-    r = _client(reader, {"sink": "postgres"}).put("/instrument-classes/ZZFI", json={"instrument_class": "bond"})
+def test_a_refusal_says_why(monkeypatch) -> None:
+    # A class core does not know is a 400 that names the three, before anything connects.
+    connect = MagicMock()
+    monkeypatch.setattr(write_support, "connect", connect)
+    r = _client(MagicMock(), {"sink": "postgres"}).put("/instrument-classes/ZZFI", json={"instrument_class": "bond"})
     assert r.status_code == 400
     body = r.json()
     assert "must be one of" in body["detail"] and set(body) == {"detail"}
-    reader.set_instrument_class.assert_not_called()
+    connect.assert_not_called()
 
 
 def test_without_postgres_nothing_is_written(monkeypatch) -> None:

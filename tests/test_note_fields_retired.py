@@ -30,7 +30,6 @@ CREATE = {"strategy_opportunity_id": 3, "account_id": "U0000001", "opened_at": "
 def _client() -> TestClient:
     reader = MagicMock()
     reader.config = operator_server_config()
-    reader.create_trade.return_value = 41
     app = create_account_app(reader=reader, control_via_db=PG, status_cfg_for_read=PG, merged_config=reader.config)
     return TestClient(app, raise_server_exceptions=False)
 
@@ -62,14 +61,15 @@ def test_review_patch_note_is_a_422_that_writes_nothing(monkeypatch: pytest.Monk
 
 
 @pytest.mark.parametrize("path", ["/trades"])
-def test_trade_create_notes_is_a_422_and_creates_nothing(path: str) -> None:
+def test_trade_create_notes_is_a_422_and_creates_nothing(monkeypatch: pytest.MonkeyPatch, path: str) -> None:
+    create = MagicMock(return_value={**strategy_rows.instance(), "trade_id": 41})
+    monkeypatch.setattr(strategy_instance, "create_instance_strict", create)
     c = _client()
     _retired(c.post(path, json={**CREATE, "notes": "zz"}), "notes")
-    c.app.state.reader.create_trade.assert_not_called()
+    create.assert_not_called()
     ok = c.post(path, json=CREATE)
     assert ok.status_code == 200 and ok.json() == {"trade_id": 41}
-    kwargs = c.app.state.reader.create_trade.call_args.kwargs
-    assert "notes" not in kwargs and kwargs["account_id"] == "U0000001"
+    assert "notes" not in create.call_args.kwargs and create.call_args.args[:3] == (PG, 3, "U0000001")
 
 
 def test_the_writes_without_the_fields_still_answer(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -26,6 +26,8 @@ from bifrost_core.monitor.reader import strategy_structure_write
 from bifrost_core.monitor.reader import template_config_write
 from bifrost_core.monitor.reader import watchlist
 from bifrost_core.monitor.schemas.gate_params import default_gates
+from bifrost_core.portfolio.reader import instrument_class
+from bifrost_core.portfolio.reader import position_categories
 from tests.contract.helpers import operator_server_config
 
 PG = {"sink": "postgres"}
@@ -113,15 +115,20 @@ ACCOUNT_CASES: List[Tuple[str, str, Dict[str, Any], Tuple[Any, str], Any]] = [
     ("POST", "/preferences/saved-searches", {"route": "/trade/plans", "label": "ZZQ only", "state": {"search": "ZZQ"}},
      (saved_search, "create_saved_search"), 3),  # TradePlansPage
     ("POST", "/position-categories", {"name": "Watching", "sort_order": 2},
-     (None, "create_position_category"), (7, None)),  # useEnsureWatchlistCategories
+     (position_categories, "create_position_category_strict"),
+     {"id": 7, "name": "Watching", "sort_order": 2}),  # useEnsureWatchlistCategories
     ("PUT", "/position-categories/tag", {"account_id": ACC, "contract_key": "ZZQ|STK|||", "category_id": 3},
-     (None, "set_position_category_tag"), True),  # SharesBand.retag
+     (position_categories, "set_position_category_tag_strict"),
+     {"account_id": ACC, "contract_key": "ZZQ|STK|||", "category_id": 3, "cleared": False}),  # SharesBand.retag
     ("PUT", "/position-categories/tag", {"account_id": ACC, "contract_key": "ZZQ|STK|||", "category_id": None},
-     (None, "set_position_category_tag"), True),  # SharesBand.retag to None
+     (position_categories, "set_position_category_tag_strict"),
+     {"account_id": ACC, "contract_key": "ZZQ|STK|||", "category_id": None, "cleared": True}),  # retag to None
     ("PUT", "/position-categories/symbol-order", {"category_name": "Watching", "symbols": ["ZZQ", "ZZR"]},
-     (None, "set_market_streams_symbol_order"), True),  # useMarketStreamsSymbolOrder
+     (position_categories, "set_market_streams_symbol_order_strict"),
+     {"category_name": "Watching", "symbols": ["ZZQ", "ZZR"]}),  # useMarketStreamsSymbolOrder
     ("PUT", "/instrument-classes/ZZFI%7CSTK%7C%7C%7C", {"instrument_class": "fixed_income"},
-     (None, "set_instrument_class"), (True, None)),  # SharesBand.register
+     (instrument_class, "set_instrument_class_strict"),
+     {"contract_key": "ZZFI|STK|||", "instrument_class": "fixed_income", "note": None}),  # SharesBand.register
     ("POST", "/executions", EXECUTION_CREATE, (ex, "insert_one_execution"), -101),
     ("POST", "/executions", QUICK_CLOSE, (ex, "insert_one_execution"), -1000000101),
     ("POST", "/executions", {k: v for k, v in EXECUTION_UPDATE.items() if k != "exec_time"} | {"time": 1930487400},
@@ -193,33 +200,43 @@ def test_the_frontends_watchlist_payloads_pass(monkeypatch: pytest.MonkeyPatch, 
 # --- the tag bug ---------------------------------------------------------------------------
 
 
+def _tag_writer(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    tag = MagicMock(return_value={"account_id": ACC, "contract_key": "ZZQ|STK|||", "category_id": None, "cleared": True})
+    monkeypatch.setattr(position_categories, "set_position_category_tag_strict", tag)
+    return tag
+
+
 @pytest.mark.parametrize("category_id", ["abc", "3", 3.5, True, [3], {"id": 3}])
-def test_a_malformed_category_id_is_422_and_never_clears_the_tag(category_id: Any) -> None:
-    c, reader = _account()
+def test_a_malformed_category_id_is_422_and_never_clears_the_tag(
+    monkeypatch: pytest.MonkeyPatch, category_id: Any
+) -> None:
+    tag = _tag_writer(monkeypatch)
+    c, _ = _account()
     r = c.put("/position-categories/tag", json={"account_id": ACC, "contract_key": "ZZQ|STK|||",
                                                 "category_id": category_id})
     assert r.status_code == 422, r.text
-    reader.set_position_category_tag.assert_not_called()
+    tag.assert_not_called()
 
 
-def test_null_clears_the_tag_and_an_id_sets_it() -> None:
-    c, reader = _account()
-    reader.set_position_category_tag.return_value = True
+def test_null_clears_the_tag_and_an_id_sets_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    tag = _tag_writer(monkeypatch)
+    c, _ = _account()
     assert c.put("/position-categories/tag", json={"account_id": ACC, "contract_key": "ZZQ|STK|||",
                                                    "category_id": None}).status_code == 200
     assert c.put("/position-categories/tag", json={"account_id": ACC, "contract_key": "ZZQ|STK|||",
                                                    "category_id": 3}).status_code == 200
-    assert [call.args for call in reader.set_position_category_tag.call_args_list] == [
-        (ACC, "ZZQ|STK|||", None),
-        (ACC, "ZZQ|STK|||", 3),
+    assert [call.args for call in tag.call_args_list] == [
+        (PG, ACC, "ZZQ|STK|||", None),
+        (PG, ACC, "ZZQ|STK|||", 3),
     ]
 
 
-def test_a_left_out_category_id_is_400_not_a_delete() -> None:
-    c, reader = _account()
+def test_a_left_out_category_id_is_400_not_a_delete(monkeypatch: pytest.MonkeyPatch) -> None:
+    tag = _tag_writer(monkeypatch)
+    c, _ = _account()
     r = c.put("/position-categories/tag", json={"account_id": ACC, "contract_key": "ZZQ|STK|||"})
     assert r.status_code == 400 and "category_id is required" in r.json()["detail"]
-    reader.set_position_category_tag.assert_not_called()
+    tag.assert_not_called()
 
 
 # --- other wrong types ---------------------------------------------------------------------
@@ -248,12 +265,14 @@ WRONG_TYPES = [
 def test_a_wrong_type_is_422_and_writes_nothing(
     monkeypatch: pytest.MonkeyPatch, method: str, path: str, body: Dict[str, Any]
 ) -> None:
-    writers = [MagicMock() for _ in range(9)]
+    writers = [MagicMock() for _ in range(11)]
     for w, (module, fn) in zip(writers, [
         (template_config_write, "create_template"), (template_config_write, "replace_template_legs"),
         (strategy_structure_write, "create_structure"), (gate_safety_write, "update_gate_safety"),
         (saved_search, "create_saved_search"), (ex, "insert_one_execution"), (ex, "update_one_execution"),
         (ex, "insert_option_stock_link"), (template_config_write, "update_template"),
+        (position_categories, "create_position_category_strict"),
+        (position_categories, "set_market_streams_symbol_order_strict"),
     ]):
         monkeypatch.setattr(module, fn, w)
     c, reader = _account()
@@ -261,9 +280,7 @@ def test_a_wrong_type_is_422_and_writes_nothing(
     assert r.status_code == 422, r.text
     for w in writers:
         w.assert_not_called()
-    for fn in ("create_position_category", "set_market_streams_symbol_order", "batch_update_execution_strategy",
-               "get_option_stock_links_bulk"):
-        getattr(reader, fn).assert_not_called()
+    reader.get_option_stock_links_bulk.assert_not_called()
 
 
 def test_a_wrong_watchlist_type_is_422(monkeypatch: pytest.MonkeyPatch) -> None:

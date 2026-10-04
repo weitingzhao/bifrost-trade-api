@@ -85,21 +85,21 @@ def get_trade(request: Request, trade_id: int) -> Dict[str, Any]:
 
 
 def create_trade(request: Request, body: TradeCreate) -> Dict[str, Any]:
-    reader = request.app.state.reader
-    write_config(request)  # 503 without Postgres; the reader does the write
+    """Core's strict create (core 0.47.0, TD-80 C2): an opportunity that does not exist, a blank
+    account or label is 400 and a failed statement 500 -- the answers PATCH /trades gives."""
+    config = write_config(request)  # 503 without Postgres
     try:
         opened_at_val = parse_opened_at_to_unix(body.opened_at)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    sid = reader.create_trade(
-        strategy_opportunity_id=body.strategy_opportunity_id,
-        account_id=body.account_id.strip(),
-        opened_at=opened_at_val,
-        label=body.label.strip() if body.label else None,
+    row = strategy_instance_module.create_instance_strict(
+        config,
+        body.strategy_opportunity_id,
+        body.account_id,
+        opened_at_val,
+        label=body.label,
     )
-    if sid is None:
-        raise HTTPException(status_code=500, detail="Failed to create trade")
-    return {"trade_id": sid}
+    return {"trade_id": row["trade_id"]}
 
 
 def patch_trade(request: Request, trade_id: int, body: TradePatch) -> Dict[str, Any]:

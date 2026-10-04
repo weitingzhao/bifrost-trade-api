@@ -48,7 +48,6 @@ def _reader() -> MagicMock:
     r.list_trades.return_value = rows.instances()
     r.get_trade_by_id.return_value = rows.instance()
     r.get_trade_win_rate.return_value = {"items": [], "totals_all": {}}
-    r.create_trade.return_value = 41
     r.get_executions_page.return_value = {"items": [], "next_cursor": None}
     r.get_performance_stats.return_value = {}
     return r
@@ -97,7 +96,9 @@ def test_the_new_routes_keep_their_order() -> None:
     assert _client().get("/trades/win-rate").status_code == 200
 
 
-def test_rows_carry_trade_id_only_and_create_answers_it() -> None:
+def test_rows_carry_trade_id_only_and_create_answers_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    row = rows.instance()
+    monkeypatch.setattr(strategy_instance_module, "create_instance_strict", lambda _cfg, *a, **k: {**row, "trade_id": 41})
     client = _client()
     items = client.get("/trades").json()["items"]
     assert items and all("trade_id" in i and "strategy_instance_id" not in i for i in items)

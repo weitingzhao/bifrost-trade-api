@@ -63,14 +63,12 @@ def test_category_rows_are_keyed_category_id_only() -> None:
      (WriteInvalid("'Uncategorized' is reserved for positions without a category; choose another name."), 400)],
 )
 def test_category_name_refusals_reach_the_client(monkeypatch: pytest.MonkeyPatch, error: Exception, status: int) -> None:
-    reader = MagicMock()
-    reader.create_position_category.side_effect = error
-
     def refuse(*_a: Any, **_k: Any) -> Any:
         raise error
 
+    monkeypatch.setattr(position_categories, "create_position_category_strict", refuse)
     monkeypatch.setattr(position_categories, "patch_position_category", refuse)
-    client = _client(reader)  # one app per test: the metrics registry is cleared between tests
+    client = _client(MagicMock())  # one app per test: the metrics registry is cleared between tests
     r = client.post("/position-categories", json={"name": "Income"})
     assert r.status_code == status and r.json()["detail"] == str(error.reason)
     r = client.patch("/position-categories/3", json={"name": "Income"})

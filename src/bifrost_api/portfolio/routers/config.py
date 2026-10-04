@@ -7,6 +7,10 @@ PATCH and DELETE (TD-15, batch 3b-2) call core's TD-15 writers, whose Write*
 outcomes are mapped once in ``bifrost_api.common.write_errors``: PATCH changes
 only the fields sent (null clears a nullable column) and answers the row; DELETE
 is strict (404 for a missing row) and answers ``{"deleted": "hard", ..., "ok": true}``.
+POST and PUT call core's strict twins too since api 0.9.0 (core 0.47.0, TD-80 C2):
+input core refuses is 400, a name in use 409, no Postgres 503, a failed statement
+500 -- the same answers PATCH / DELETE give -- and ``ok: true`` stays beside what
+was written.
 
 POST / PUT bodies (TD-24, batch 3c-1) are ``portfolio.schemas.requests`` models: a
 wrong type is 422 and writes nothing (a malformed ``category_id`` no longer clears a
@@ -29,7 +33,6 @@ from bifrost_api.portfolio.schemas.requests import (
 )
 from bifrost_core.portfolio.reader import instrument_class as instrument_class_module
 from bifrost_core.portfolio.reader import position_categories as position_categories_module
-from bifrost_core.portfolio.reader.instrument_class import INSTRUMENT_CLASSES, normalize_instrument_class
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +49,6 @@ class InstrumentClassPatch(PatchBody):
     instrument_class: Optional[StrictStr] = None
     note: Optional[StrictStr] = None
 
-POSTGRES_REQUIRED = "Postgres required."
-# The reader's answers when it had no connection (core monitor/reader/common.py,
-# portfolio/reader/position_categories.py, instrument_class.py); input was checked before the call.
-_NO_CONNECTION = frozenset(
-    {"Database connection failed.", "No database connection.", "Invalid name or no database connection."}
-)
-
 
 def _with_category_id(row: Any) -> Any:
     """A category row with its key as ``category_id`` (TD-57; ``id`` dropped in api 0.6.12, TD-56).
@@ -67,13 +63,6 @@ def _with_category_id(row: Any) -> Any:
     return row
 
 
-def _write_failed(err: Optional[str], fallback: str) -> Any:
-    """A writer's refusal after input was checked: 503 when it had no connection, else 500."""
-    if err in _NO_CONNECTION:
-        return error_response(503, err)
-    return error_response(500, err or fallback)
-
-
 @router.get("/position-categories")
 def get_position_categories(request: Request) -> Dict[str, Any]:
     """Return all position_categories rows (for dropdown and manage UI), keyed ``category_id``."""
@@ -86,22 +75,13 @@ def get_position_categories(request: Request) -> Dict[str, Any]:
 def post_position_category(request: Request, body: PositionCategoryBody) -> Any:
     """Create one position category. body: name (required), description, sort_order (an integer).
     A name already in use is 409; ``Uncategorized`` (any case) is reserved for positions without
-    a category, 400 (core 0.41.0, TD-56)."""
-    control_via_db = request.app.state.control_via_db
-    if not control_via_db:
-        return error_response(503, POSTGRES_REQUIRED)
-    reader = request.app.state.reader
-    name = (body.name or "").strip()
-    if not name:
-        return error_response(400, "name is required.")
-    gid, err = reader.create_position_category(
-        name=name,
-        description=body.description,
-        sort_order=body.sort_order,
+    a category, 400 (core 0.41.0, TD-56); a blank description is 400 (leave it out). Answers the
+    category row (keyed ``category_id``) plus ``ok: true``."""
+    config = write_target(request, "a position category")
+    row = position_categories_module.create_position_category_strict(
+        config, body.name, description=body.description, sort_order=body.sort_order
     )
-    if gid is not None:
-        return {"ok": True, "category_id": gid, "name": name}
-    return _write_failed(err, "Failed to create category.")
+    return {**_with_category_id(row), "ok": True}
 
 
 @router.patch("/position-categories/{category_id:int}")
@@ -127,22 +107,15 @@ def delete_position_category(request: Request, category_id: int) -> Any:
 def put_position_category_tag(request: Request, body: PositionTagBody) -> Any:
     """Tag a position with a category (STK). body: account_id, contract_key, category_id --
     an integer tags, an explicit null clears the tag; a non-integer is 422 and left out is 400,
-    so neither can clear a tag by accident."""
-    control_via_db = request.app.state.control_via_db
-    if not control_via_db:
-        return error_response(503, POSTGRES_REQUIRED)
-    reader = request.app.state.reader
-    account_id = (body.account_id or "").strip()
-    contract_key = (body.contract_key or "").strip()
-    if not account_id:
-        return error_response(400, "account_id is required.")
-    if not contract_key:
-        return error_response(400, "contract_key is required.")
+    so neither can clear a tag by accident. A category that does not exist is 400. Answers
+    ``{account_id, contract_key, category_id, cleared, ok: true}``."""
+    config = write_target(request, "a position category tag")
     if "category_id" not in body.model_fields_set:
         return error_response(400, "category_id is required: an id tags the position, null clears its tag.")
-    if reader.set_position_category_tag(account_id, contract_key, body.category_id):
-        return {"ok": True}
-    return error_response(500, "Failed to set tag.")
+    result = position_categories_module.set_position_category_tag_strict(
+        config, body.account_id, body.contract_key, body.category_id
+    )
+    return {**result, "ok": True}
 
 
 @router.get("/position-categories/symbol-order")
@@ -155,19 +128,14 @@ def get_market_streams_symbol_order(request: Request) -> Dict[str, Any]:
 
 @router.put("/position-categories/symbol-order")
 def put_market_streams_symbol_order(request: Request, body: SymbolOrderBody) -> Any:
-    """Save symbol order for one category. body: category_name (required), symbols (array of symbol strings)."""
-    control_via_db = request.app.state.control_via_db
-    if not control_via_db:
-        return error_response(503, POSTGRES_REQUIRED)
-    reader = request.app.state.reader
-    category_name = (body.category_name or "").strip()
-    if not category_name:
-        return error_response(400, "category_name is required.")
-    if body.symbols is None:
-        return error_response(400, "symbols must be an array.")
-    if reader.set_market_streams_symbol_order(category_name, list(body.symbols)):
-        return {"ok": True}
-    return error_response(500, "Failed to save symbol order.")
+    """Save symbol order for one category. body: category_name (required), symbols (array of symbol
+    strings, ``[]`` empties it). A blank or repeated symbol is 400 and nothing changes. Answers
+    ``{category_name, symbols, ok: true}``."""
+    config = write_target(request, "a symbol order")
+    result = position_categories_module.set_market_streams_symbol_order_strict(
+        config, body.category_name, body.symbols
+    )
+    return {**result, "ok": True}
 
 
 # --- Instrument class (core 0.27.0, trade design Rev .119) --------------------
@@ -188,20 +156,14 @@ def get_instrument_classes(request: Request) -> Dict[str, Any]:
 def put_instrument_class(request: Request, contract_key: str, body: InstrumentClassBody) -> Any:
     """Register or replace one instrument's class: a full replace since api 0.6.0 (TD-15),
     so the row becomes exactly what is sent and no ``note`` clears a stored one.
-    PATCH changes the fields sent and keeps the rest. body: instrument_class, note (optional)."""
-    if not request.app.state.control_via_db:
-        return error_response(503, POSTGRES_REQUIRED)
-    instrument_class = body.instrument_class or ""
-    # The same rule core's writer applies, checked first so a bad class is a 400
-    # and anything the writer still refuses is a write failure.
-    if normalize_instrument_class(instrument_class) is None:
-        return error_response(400, f"instrument_class must be one of {', '.join(INSTRUMENT_CLASSES)}.")
-    ok, err = request.app.state.reader.set_instrument_class(
-        contract_key, instrument_class, note=body.note, keep_note=False
+    PATCH changes the fields sent and keeps the rest. body: instrument_class, note (optional; blank
+    is 400). A class other than stock / fixed_income / cash_like is 400. Answers the row plus
+    ``ok: true``."""
+    config = write_target(request, f"the instrument class of {contract_key}")
+    row = instrument_class_module.set_instrument_class_strict(
+        config, contract_key, body.instrument_class, note=body.note
     )
-    if ok:
-        return {"ok": True}
-    return _write_failed(err, "Failed to save the instrument class.")
+    return {**row, "ok": True}
 
 
 @router.patch("/instrument-classes/{contract_key}")
