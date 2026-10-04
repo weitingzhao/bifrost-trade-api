@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from bifrost_core.config.profile import deployment_profile
 from bifrost_core.ib_operator.client import IbOperatorClient
-from bifrost_core.monitor.reader import StatusReader
+from bifrost_core.monitor.reader.common import StatusReader
 from bifrost_core.observability.prometheus import instrument_app
 from bifrost_api.common.service_endpoints import mount_auth_capabilities
 from bifrost_api.deprecations import install_deprecations

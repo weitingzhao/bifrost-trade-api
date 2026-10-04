@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 def daemon_log_redis_url() -> str:
     """Build Redis URL for daemon/server console stream from config/env. Falls back to local Redis."""
     try:
-        from bifrost_core.config.startup import read_config
+        from bifrost_core.config.yaml_config import read_config
         from bifrost_core.core.redis_url import effective_redis_dict, format_redis_url
 
         config, _ = read_config()

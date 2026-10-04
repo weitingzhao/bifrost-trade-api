@@ -9,8 +9,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from bifrost_core.config.profile import deployment_profile
-from bifrost_core.config.startup import normalize_server_config
-from bifrost_core.monitor.reader import StatusReader
+from bifrost_core.config.yaml_config import normalize_server_config
+from bifrost_core.monitor.reader.common import StatusReader
 from bifrost_core.observability.prometheus import instrument_app
 from bifrost_core.sse.queue_utils import put_nowait_drop_oldest
 from bifrost_api.common.build_info import core_build_info

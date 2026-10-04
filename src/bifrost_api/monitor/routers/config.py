@@ -12,11 +12,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from bifrost_api.common.envelopes import error_response
-from bifrost_core.monitor.reader import (
-    write_ib_config,
-)
 from bifrost_core.monitor.reader.ib_config_public import ib_client_for_api
-from bifrost_core.monitor.reader.settings import write_active_strategy_and_gates
+from bifrost_core.monitor.reader.settings import write_active_strategy_and_gates, write_ib_config
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,7 @@
 """IB YAML: the ib.host / ib.secondary shape (optional since TD-79)."""
 
 
-from bifrost_core.config.startup import get_effective_ib_config
+from bifrost_core.config.yaml_config import get_effective_ib_config
 
 
 def test_host_secondary_blocks():

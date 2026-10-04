@@ -406,7 +406,7 @@ def get_status(request: Request) -> Dict[str, Any]:
         quotes_redis_reader_ok = bool(rq and getattr(rq, "available", False))
         if not quotes_redis_reader_ok:
             try:
-                from bifrost_core.monitor.redis_url import redis_url_from_config
+                from bifrost_core.core.redis_url import redis_url_from_config
                 import redis as redis_mod
 
                 _quotes_url = redis_url_from_config(reader.config)
@@ -430,7 +430,7 @@ def get_status(request: Request) -> Dict[str, Any]:
         _ib_rurl: Optional[str] = None
         _ib_r: Any = None
         try:
-            from bifrost_core.config.startup import get_effective_ib_config
+            from bifrost_core.config.yaml_config import get_effective_ib_config
             from bifrost_core.monitor.integrations.ib_socket_status import build_ib_socket_status
             from bifrost_core.monitor.integrations.platform_ib_gateway import (
                 annotate_ib_socket_transport,
@@ -438,7 +438,7 @@ def get_status(request: Request) -> Dict[str, Any]:
                 detect_ib_transport,
                 is_platform_ib_gateway_health,
             )
-            from bifrost_core.monitor.redis_url import ib_redis_url_from_config, redis_url_from_config
+            from bifrost_core.core.redis_url import ib_redis_url_from_config, redis_url_from_config
             import redis as redis_mod
 
             _ib_eff_status = get_effective_ib_config(reader.config)
@@ -548,7 +548,7 @@ def get_status(request: Request) -> Dict[str, Any]:
         # The HASH may still hold ib_connected=False because the daemon no longer owns a direct TWS socket.
         if daemon_heartbeat is not None and _ib_r is not None:
             try:
-                from bifrost_core.config.startup import get_effective_ib_config
+                from bifrost_core.config.yaml_config import get_effective_ib_config
                 from bifrost_core.monitor.integrations.platform_ib_gateway import (
                     derive_daemon_ib_heartbeat_from_redis,
                 )

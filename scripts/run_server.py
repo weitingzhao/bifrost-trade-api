@@ -53,7 +53,7 @@ DOMAIN_RUNNERS: dict[str, Callable[[dict, str | None], None]] = {
 
 
 def main() -> None:
-    from bifrost_core.config.startup import get_effective_ib_config, read_config, resolve_startup_config_path
+    from bifrost_core.config.yaml_config import get_effective_ib_config, read_config, resolve_startup_config_path
 
     argv = sys.argv[1:]
     domain = "monitor"

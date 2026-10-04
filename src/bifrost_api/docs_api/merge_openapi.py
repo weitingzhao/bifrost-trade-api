@@ -144,7 +144,7 @@ def main_cli() -> None:
     main_url = args.main_url
     secondary_url = args.secondary_url
     if main_url is None or secondary_url is None:
-        from bifrost_core.config.startup import read_config
+        from bifrost_core.config.yaml_config import read_config
 
         cfg, _ = read_config()
         srv = cfg["server"]

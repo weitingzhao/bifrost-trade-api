@@ -15,7 +15,7 @@ from bifrost_api.research.iv_atm import (
     parse_contract_key,
     strikes_around_spot,
 )
-from bifrost_core.monitor.redis_url import redis_url_from_config
+from bifrost_core.core.redis_url import redis_url_from_config
 
 router = APIRouter(tags=["research"])
 

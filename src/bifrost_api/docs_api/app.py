@@ -16,7 +16,7 @@ from bifrost_api.common.build_info import core_build_info
 from bifrost_api.common.service_endpoints import mount_auth_capabilities
 from bifrost_api.docs_api.merge_openapi import fetch_openapi, merge_openapi_specs
 from bifrost_core.config.profile import deployment_profile
-from bifrost_core.config.startup import normalize_server_config
+from bifrost_core.config.yaml_config import normalize_server_config
 from bifrost_core.observability.prometheus import instrument_app
 
 logger = logging.getLogger(__name__)

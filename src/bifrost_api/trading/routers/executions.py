@@ -60,10 +60,10 @@ from bifrost_core.portfolio.reader.option_stock_link import (
     delete_option_stock_link_strict,
     insert_option_stock_link,
 )
-from bifrost_core.monitor.reader import (
-    write_account_executions_to_db,
+from bifrost_core.portfolio.reader.accounts import (
     insert_one_execution,
     update_one_execution,
+    write_account_executions_to_db,
 )
 
 logger = logging.getLogger(__name__)
@@ -647,7 +647,7 @@ async def post_executions_fetch(
     all_execs = primary_execs
     fetched_secondary = 0
     secondary_error: Optional[str] = None
-    from bifrost_core.config.startup import get_effective_ib_config
+    from bifrost_core.config.yaml_config import get_effective_ib_config
 
     try:
         ibc = get_effective_ib_config(reader.config)

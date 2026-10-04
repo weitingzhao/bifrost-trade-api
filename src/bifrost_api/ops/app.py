@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from bifrost_core.config.startup import (
+from bifrost_core.config.yaml_config import (
     config_profile_from_resolved_path,
     normalize_server_config,
 )

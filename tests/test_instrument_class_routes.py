@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 from starlette.testclient import TestClient
 
 from bifrost_api.account.app import create_account_app
+from bifrost_core.portfolio.reader import instrument_class as instrument_class_module
 from tests.contract.helpers import operator_server_config
 
 
@@ -50,9 +51,11 @@ def test_a_refusal_says_why() -> None:
     reader.set_instrument_class.assert_not_called()
 
 
-def test_without_postgres_nothing_is_written() -> None:
+def test_without_postgres_nothing_is_written(monkeypatch) -> None:
     # One app per test: a second app in the same test registers the metrics twice.
-    reader = MagicMock()
-    r = _client(reader).delete("/instrument-classes/ZZFI")
+    # DELETE goes to the strict module writer, not the reader (StatusReader.delete_instrument_class is dead, TD-80).
+    strict = MagicMock()
+    monkeypatch.setattr(instrument_class_module, "delete_instrument_class_strict", strict)
+    r = _client(MagicMock()).delete("/instrument-classes/ZZFI")
     assert r.status_code == 503 and set(r.json()) == {"detail"}
-    reader.delete_instrument_class.assert_not_called()
+    strict.assert_not_called()
