@@ -11,7 +11,7 @@ distributions go to Research too (0.157.0 endpoints; TD-49 step 3).
 
 This module holds no database connection. The feedback store, the research
 app's only Golden Source writer, owns its own (``feedback_store.get_conn``,
-role ``feedback_writer``, api 0.7.5); the analytics connection env and the
+role ``feedback_writer``, api 0.8.1); the analytics connection env and the
 shared ``analytics_writer`` role it named are no longer read anywhere here.
 
 Env:

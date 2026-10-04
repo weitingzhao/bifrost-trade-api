@@ -1,6 +1,6 @@
-"""The feedback store owns its Golden Source connection (TD-49 D4 / TD-77 E5, api 0.7.5).
+"""The feedback store owns its Golden Source connection (TD-49 D4 / TD-77 E5, api 0.8.1).
 
-Until 0.7.5 the store borrowed ``analytics_reader.get_conn`` and with it the
+Until 0.8.1 the store borrowed ``analytics_reader.get_conn`` and with it the
 shared ``analytics_writer`` role. Now it reads ``FEEDBACK_PG_*`` (role
 ``feedback_writer``), and nothing else in the research app holds a database
 pool aimed at Golden Source.

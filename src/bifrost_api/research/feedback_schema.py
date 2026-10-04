@@ -18,7 +18,7 @@ Rules for changing it:
   EXISTS`` checks schema privileges before existence, so these objects must be
   owned by ``bifrost`` (a one-time ``ALTER … OWNER TO bifrost``, Owner E2/B1).
 - **DDL and DML are two roles.** This DDL runs as ``bifrost`` (the owner) in
-  db-init; the service reads and writes as ``feedback_writer`` (api 0.7.5),
+  db-init; the service reads and writes as ``feedback_writer`` (api 0.8.1),
   which has SELECT / INSERT / UPDATE on these tables, no DELETE and no CREATE
   (Owner 2026-10-04): a report is closed by status, the service never deletes one.
   Its grants on tables a later step adds come from ``ALTER DEFAULT PRIVILEGES

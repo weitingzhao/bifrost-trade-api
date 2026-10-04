@@ -5,8 +5,8 @@ dev/stg/prod), living in Golden Source beside ops_jobs.* and owned by this
 side. Research never writes here.
 
 The store owns its connection (``get_conn`` below, TD-49 D4 / TD-77 E5, api
-0.7.5): its own ``FEEDBACK_PG_*`` env and its own role, ``feedback_writer``,
-which may read and write ``ops_feedback`` and nothing else. Until 0.7.5 it
+0.8.1): its own ``FEEDBACK_PG_*`` env and its own role, ``feedback_writer``,
+which may read and write ``ops_feedback`` and nothing else. Until 0.8.1 it
 borrowed ``analytics_reader.get_conn`` and with it ``analytics_writer``, a role
 that can also write ``dw_stock``, ``features``, ``raw_broker`` and ``journal``.
 
