@@ -19,7 +19,8 @@ Rules for changing it:
   owned by ``bifrost`` (a one-time ``ALTER … OWNER TO bifrost``, Owner E2/B1).
 - **DDL and DML are two roles.** This DDL runs as ``bifrost`` (the owner) in
   db-init; the service reads and writes as ``feedback_writer`` (api 0.7.5),
-  which has SELECT / INSERT / UPDATE / DELETE on these tables and no CREATE.
+  which has SELECT / INSERT / UPDATE on these tables, no DELETE and no CREATE
+  (Owner 2026-10-04): a report is closed by status, the service never deletes one.
   Its grants on tables a later step adds come from ``ALTER DEFAULT PRIVILEGES
   FOR ROLE bifrost IN SCHEMA ops_feedback`` (infra db-step
   ``2026-10-04-td49-feedback-writer-role``), so a new table needs no grant here;
