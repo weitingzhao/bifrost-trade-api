@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Dict, List
 
 from bifrost_core.core.redis_health_keys import (
-    BIFROST_HEALTH_DAEMON_TRADING_ENGINE,
+    BIFROST_HEALTH_DAEMON_STRATEGY_TRADING,
     LEGACY_BIFROST_HEALTH_DAEMON_TRADING_ENGINE,
     BIFROST_HEALTH_IB_ACCOUNT_AGENT,
     BIFROST_HEALTH_IB_INGESTOR,
@@ -87,7 +87,7 @@ DEFAULT_MARKET_INGEST_SERVICES: List[Dict[str, str]] = [
         "id": "trading_engine",
         "label": "Strategy Trading Daemon",
         "systemd_unit": "bifrost-engine.service",
-        "redis_meta_key": BIFROST_HEALTH_DAEMON_TRADING_ENGINE,
+        "redis_meta_key": BIFROST_HEALTH_DAEMON_STRATEGY_TRADING,
     },
 ]
 
@@ -124,11 +124,11 @@ def market_ingest_services_from_config(config: dict) -> List[Dict[str, str]]:
         elif sid == "ib_account_agent" and meta == LEGACY_BIFROST_IB_ACCOUNT_AGENT:
             meta = BIFROST_HEALTH_IB_ACCOUNT_AGENT
         elif sid == "trading_engine" and meta == LEGACY_BIFROST_OPS_TRADING_ENGINE_META:
-            meta = BIFROST_HEALTH_DAEMON_TRADING_ENGINE
+            meta = BIFROST_HEALTH_DAEMON_STRATEGY_TRADING
         elif sid == "trading_engine" and meta == LEGACY_BIFROST_HEALTH_DAEMON_TRADING_ENGINE:
-            meta = BIFROST_HEALTH_DAEMON_TRADING_ENGINE
+            meta = BIFROST_HEALTH_DAEMON_STRATEGY_TRADING
         if sid == "trading_engine" and not meta:
-            meta = BIFROST_HEALTH_DAEMON_TRADING_ENGINE
+            meta = BIFROST_HEALTH_DAEMON_STRATEGY_TRADING
         out.append({
             "id": sid,
             "label": label or sid,
