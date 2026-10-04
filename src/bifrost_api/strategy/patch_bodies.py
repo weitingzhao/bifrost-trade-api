@@ -91,14 +91,10 @@ class GateSetPatch(PatchBody):
 def journal_only(field: str) -> str:
     return (
         f"`{field}` was removed in api 0.7.1 (TD-73): a trade's notes live in the Research "
-        "journal (research-api POST /research/journal/notes, with a ref of type 'inst'). "
+        "journal (research-api POST /research/journal/notes, with a ref of type 'trade'). "
         "Nothing was written; send the request without it."
     )
 
-
-
-# The gate set's old class name (D6-A, naming R1); goes in R4.
-GateSafetyPatch = GateSetPatch
 
 
 class TradePatch(PatchBody):
@@ -109,12 +105,8 @@ class TradePatch(PatchBody):
     created_at: Optional[Timestamp] = None
 
 
-# The trade's old class name (naming R1); goes in R4.
-InstancePatch = TradePatch
-
-
 class TradeCreate(StrategyInstanceCreateBody, RetiredFields):
-    """POST /trades (and /strategies/instances until R4): core's create body, refusing ``notes``."""
+    """POST /trades: core's create body, refusing ``notes``."""
 
     RETIRED_FIELDS: ClassVar[Dict[str, str]] = {"notes": journal_only("notes")}
 
@@ -152,15 +144,12 @@ class PlanPatch(PatchBody):
 
 
 class ReviewPatch(PatchBody):
-    """``tags_added_json`` / ``tags_dropped_json`` are the names a review is read with from
-    api 0.7.0 (naming R1; the columns are named so since R3, core 0.45.0); ``tags_added`` / ``tags_dropped``
-    still work until R4 and lose when both are sent."""
+    """``tags_added_json`` / ``tags_dropped_json``: the names a review is read with (naming R1,
+    api 0.7.0; the columns since R3). ``tags_added`` / ``tags_dropped`` were read beside them
+    until naming R4 (api 0.9.0) and are unknown fields now (422)."""
 
-    tags_added: Optional[List[StrictStr]] = None
-    tags_dropped: Optional[List[StrictStr]] = None
     tags_added_json: Optional[List[StrictStr]] = None
     tags_dropped_json: Optional[List[StrictStr]] = None
     reviewed: Optional[StrictBool] = None
 
-    READ_NAMES: ClassVar[Dict[str, str]] = {"tags_added_json": "tags_added", "tags_dropped_json": "tags_dropped"}
     RETIRED_FIELDS: ClassVar[Dict[str, str]] = {"note": journal_only("note")}

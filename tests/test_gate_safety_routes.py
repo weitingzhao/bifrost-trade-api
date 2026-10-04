@@ -31,7 +31,7 @@ def _client(control_via_db: Any = None) -> TestClient:
 
 
 def test_defaults_are_cores_gates() -> None:
-    r = _client().get("/strategies/gate-safety/defaults")
+    r = _client().get("/gate-sets/defaults")
     assert r.status_code == 200
     body = r.json()
     assert body == {"gates": default_gates()}
@@ -39,15 +39,15 @@ def test_defaults_are_cores_gates() -> None:
 
 
 def test_defaults_carry_no_earnings_dates() -> None:
-    gates = _client().get("/strategies/gate-safety/defaults").json()["gates"]
+    gates = _client().get("/gate-sets/defaults").json()["gates"]
     assert "dates" not in (gates["strategy"].get("earnings") or {})
 
 
 def test_defaults_is_not_read_as_an_id() -> None:
-    """Declared before /gate-safety/{gate_safety_strategy_id}; else "defaults" would be a 422."""
+    """Declared before /gate-sets/{gate_safety_strategy_id:int}; else "defaults" would be a 422."""
     paths = route_paths(_client().app)
-    assert paths.index("/strategies/gate-safety/defaults") < paths.index(
-        "/strategies/gate-safety/{gate_safety_strategy_id}"
+    assert paths.index("/gate-sets/defaults") < paths.index(
+        "/gate-sets/{gate_safety_strategy_id:int}"
     )
 
 
@@ -55,10 +55,10 @@ def test_a_viewer_reads_the_defaults() -> None:
     reader = MagicMock()
     reader.config = {**operator_server_config(), "ops": {"auth": {"default_role": "viewer"}}}
     app = create_account_app(reader=reader, control_via_db=None, merged_config=reader.config)
-    assert TestClient(app).get("/strategies/gate-safety/defaults").status_code == 200
+    assert TestClient(app).get("/gate-sets/defaults").status_code == 200
 
 
-@pytest.mark.parametrize("method, path", [("POST", "/strategies/gate-safety"), ("PUT", "/strategies/gate-safety/5")])
+@pytest.mark.parametrize("method, path", [("POST", "/gate-sets"), ("PUT", "/gate-sets/5")])
 def test_nested_earnings_dates_are_400(method: str, path: str) -> None:
     gates = default_gates()
     gates["strategy"]["earnings"] = {**(gates["strategy"].get("earnings") or {}), "dates": ["2031-01-15"]}

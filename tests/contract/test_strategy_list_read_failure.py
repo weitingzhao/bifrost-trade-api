@@ -15,8 +15,8 @@ LISTS = [
     ("/strategies/structures", "list_structures"),
     ("/strategies/opportunities", "list_opportunities"),
     ("/strategies/allocations", "list_allocations"),
-    ("/strategies/gate-safety", "list_gate_safety_sets"),
-    ("/strategies/instances", "list_strategy_instances"),
+    ("/gate-sets", "list_gate_safety_sets"),
+    ("/trades", "list_trades"),
 ]
 
 

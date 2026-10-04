@@ -60,21 +60,20 @@ CANONICAL_NAMES: FrozenSet[str] = frozenset(
 )
 
 _TS_RANGE = {"since_ts": FROM_TS, "until_ts": TO_TS}
-# naming R1 (api 0.7.0): the Trade's id under its name; the instance names go in R4.
-_TRADE = {"strategy_instance_id": TRADE_ID}
-_TRADES_LIST = {"opened_at_from": FROM_TS, "opened_at_until": TO_TS, "strategy_instance_ids": TRADE_IDS}
+# naming R1 (api 0.7.0) read strategy_instance_id / strategy_instance_ids as trade_id /
+# trade_ids; naming R4 (api 0.9.0) dropped them with the /strategies/instances and
+# /strategies/win-rate routes.
+_TRADES_LIST = {"opened_at_from": FROM_TS, "opened_at_until": TO_TS}
 
 # (method, path as the app sees it) -> {old name: canonical name}. Paths are the ones
 # the app serves (Traefik strips ``/api/<domain>``). Removed next release, route by
 # route, once a release has gone by with no "deprecated query params" line for it.
 QUERY_ALIASES: Dict[Tuple[str, str], Dict[str, str]] = {
     # account app (trading + strategy routers)
-    ("GET", "/executions"): {**_TS_RANGE, **_TRADE},
-    ("GET", "/performance"): {**_TS_RANGE, **_TRADE},
+    ("GET", "/executions"): dict(_TS_RANGE),
+    ("GET", "/performance"): dict(_TS_RANGE),
     ("GET", "/transactions"): dict(_TS_RANGE),
-    ("GET", "/strategies/win-rate"): dict(_TS_RANGE),
     ("GET", "/trades/win-rate"): dict(_TS_RANGE),
-    ("GET", "/strategies/instances"): dict(_TRADES_LIST),
     ("GET", "/trades"): dict(_TRADES_LIST),
     ("GET", "/executions/stock-link-candidates"): {"trade_date_from": FROM_DATE, "trade_date_to": TO_DATE},
     # research app

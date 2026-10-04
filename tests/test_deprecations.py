@@ -161,7 +161,7 @@ def test_the_puts_left_carry_no_marker() -> None:
     reader.config = operator_server_config()
     app = create_account_app(reader=reader, control_via_db=None, merged_config=reader.config)
     client = TestClient(app, raise_server_exceptions=False)
-    for path, body in (("/instrument-classes/ZZFI", {"instrument_class": "etf"}), ("/executions/-7", {"strategy_instance_id": 3})):
+    for path, body in (("/instrument-classes/ZZFI", {"instrument_class": "etf"}), ("/executions/-7", {"trade_id": 3})):
         r = client.put(path, json=body)
         assert r.status_code == 503
         assert "deprecation" not in r.headers and "link" not in r.headers

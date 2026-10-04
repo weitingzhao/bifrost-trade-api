@@ -120,20 +120,20 @@ PATCH_CASES: List[Tuple[str, str, Any, str, Any, Dict[str, Any]]] = [
      {"is_active": False, "default_gate_safety_strategy_id": None}),
     ("account", "/strategies/allocations/7", strategy_allocation_write, "patch_allocation", 7,
      {"max_positions": 3, "gate_safety_strategy_id": None}),
-    ("account", "/strategies/gate-safety/7", gate_safety_write, "patch_gate_safety", 7,
+    ("account", "/gate-sets/7", gate_safety_write, "patch_gate_safety", 7,
      {"gates": {"strategy": {"min_dte": 21}}, "dim_risk": None}),
-    ("account", "/strategies/instances/7", strategy_instance, "patch_instance", 7,
+    ("account", "/trades/7", strategy_instance, "patch_instance", 7,
      {"opened_at": 1767225600, "label": None}),
     ("account", "/strategies/plans/7", strategy_plan, "patch_plan", 7,
      {"qty": 2, "rationale": None}),
-    ("account", "/strategies/reviews/7", trade_review, "patch_review", 7,
-     {"tags_added": ["early exit"], "reviewed": None}),
+    ("account", "/trade-reviews/7", trade_review, "patch_review", 7,
+     {"tags_added_json": ["early exit"], "reviewed": None}),
     ("account", "/position-categories/7", position_categories, "patch_position_category", 7,
      {"name": "Core", "description": None}),
     ("account", "/instrument-classes/ZZFI%7CSTK%7C%7C%7C", instrument_class, "patch_instrument_class", "ZZFI|STK|||",
      {"instrument_class": "fixed_income", "note": None}),
     ("account", "/executions/-42/attribution", accounts, "patch_execution", -42,
-     {"instance_allocations": [], "strategy_instance_id": None}),
+     {"fill_splits": [], "trade_id": None}),
     ("market", "/watchlist/ZZQ%7CSTK%7C%7C%7C", watchlist, "patch_watchlist_item", "ZZQ|STK|||",
      {"optionable": True, "category_id": None}),
 ]
@@ -146,8 +146,8 @@ KEEPS_OK = {"/position-categories/7"}
 MODEL_ROWS = {
     "/strategies/opportunities/7": strategy_rows.opportunity,
     "/strategies/allocations/7": strategy_rows.allocation,
-    "/strategies/gate-safety/7": strategy_rows.gate_set,
-    "/strategies/instances/7": strategy_rows.instance,
+    "/gate-sets/7": strategy_rows.gate_set,
+    "/trades/7": strategy_rows.instance,
     "/strategies/plans/7": strategy_rows.plan,
 }
 
@@ -244,8 +244,8 @@ def test_patch_is_a_write_the_guard_refuses_a_viewer() -> None:
         (patch_bodies.StructurePatch, strategy_structure_write.STRUCTURE_PATCHABLE),
         (patch_bodies.OpportunityPatch, strategy_opportunity_write.OPPORTUNITY_PATCHABLE),
         (patch_bodies.AllocationPatch, strategy_allocation_write.ALLOCATION_PATCHABLE),
-        (patch_bodies.GateSafetyPatch, gate_safety_write.GATE_SAFETY_PATCHABLE),
-        (patch_bodies.InstancePatch, strategy_instance.INSTANCE_PATCHABLE),
+        (patch_bodies.GateSetPatch, gate_safety_write.GATE_SAFETY_PATCHABLE),
+        (patch_bodies.TradePatch, strategy_instance.INSTANCE_PATCHABLE),
         (patch_bodies.PlanPatch, strategy_plan.PLAN_PATCHABLE),
         (patch_bodies.ReviewPatch, trade_review.REVIEW_PATCHABLE),
         (PositionCategoryPatch, position_categories.POSITION_CATEGORY_PATCHABLE),
@@ -271,13 +271,13 @@ DELETE_CASES: List[Tuple[str, str, Any, str, Dict[str, Any]]] = [
      {"deleted": "hard", "strategy_opportunity_id": 7}),
     ("account", "/strategies/allocations/7", strategy_rules_delete, "delete_allocation_strict",
      {"deleted": "hard", "strategy_allocation_id": 7}),
-    ("account", "/strategies/gate-safety/7", strategy_rules_delete, "delete_gate_safety_strict",
+    ("account", "/gate-sets/7", strategy_rules_delete, "delete_gate_safety_strict",
      {"deleted": "hard", "gate_safety_strategy_id": 7}),
-    ("account", "/strategies/instances/7", strategy_instance, "delete_instance_strict",
-     {"deleted": "hard", "strategy_instance_id": 7}),
+    ("account", "/trades/7", strategy_instance, "delete_instance_strict",
+     {"deleted": "hard", "trade_id": 7}),
     ("account", "/strategies/plans/7", strategy_plan, "delete_plan_strict",
      {"deleted": "hard", "strategy_plan_id": 7}),
-    ("account", "/strategies/saved-searches/7", saved_search, "delete_saved_search_strict",
+    ("account", "/preferences/saved-searches/7", saved_search, "delete_saved_search_strict",
      {"deleted": "hard", "preference_saved_search_id": 7}),
     ("account", "/position-categories/7", position_categories, "delete_position_category_strict",
      {"deleted": "hard", "id": 7, "tags_removed": 2, "watchlist_uncategorized": 1}),
@@ -455,26 +455,26 @@ def _instance_env(split: int = 0, exists: bool = True, direct: int = 0) -> _Conn
 def test_an_instance_with_attributed_executions_is_409(monkeypatch: pytest.MonkeyPatch) -> None:
     env = _instance_env(direct=2)
     _connect(monkeypatch, env, _Conn([]))
-    assert_error(_account().delete("/strategies/instances/7"), 409, "2 fills are attributed to this trade.")
+    assert_error(_account().delete("/trades/7"), 409, "2 fills are attributed to this trade.")
     assert not env.ran("DELETE FROM trade WHERE")
 
 
 def test_an_instance_with_split_executions_is_409(monkeypatch: pytest.MonkeyPatch) -> None:
     _connect(monkeypatch, _instance_env(split=1), _Conn([]))
-    assert_error(_account().delete("/strategies/instances/7"), 409, "split to this trade")
+    assert_error(_account().delete("/trades/7"), 409, "split to this trade")
 
 
 def test_an_instance_nothing_points_at_is_deleted(monkeypatch: pytest.MonkeyPatch) -> None:
     env = _instance_env()
     _connect(monkeypatch, env, _Conn([]))
-    r = _account().delete("/strategies/instances/7")
-    assert r.json() == {"deleted": "hard", "strategy_instance_id": 7, "trade_id": 7, "ok": True}
+    r = _account().delete("/trades/7")
+    assert r.json() == {"deleted": "hard", "trade_id": 7, "ok": True}
     assert env.ran("DELETE FROM trade WHERE") and env.commits == 1
 
 
 def test_a_missing_instance_is_404(monkeypatch: pytest.MonkeyPatch) -> None:
     _connect(monkeypatch, _instance_env(exists=False), _Conn([]))
-    assert_error(_account().delete("/strategies/instances/404"), 404, "No trade 404.")
+    assert_error(_account().delete("/trades/404"), 404, "No trade 404.")
 
 
 def test_the_instance_delete_does_not_need_the_golden_source(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -487,7 +487,7 @@ def test_the_instance_delete_does_not_need_the_golden_source(monkeypatch: pytest
         return env
 
     monkeypatch.setattr(write_support, "connect", _connect_or_refuse)
-    assert _account().delete("/strategies/instances/7").json()["deleted"] == "hard"
+    assert _account().delete("/trades/7").json()["deleted"] == "hard"
     assert env.ran("DELETE FROM trade WHERE")
 
 

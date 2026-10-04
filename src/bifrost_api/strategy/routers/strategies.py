@@ -1,26 +1,20 @@
 """Phase A: Strategy structures API for management and monitoring."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from bifrost_api.common.envelopes import list_body
-from bifrost_api.common.query_vocab import from_ts_query, to_ts_query, trade_ids_query
 from bifrost_api.common.write_errors import deleted_body, write_target
 from bifrost_api.strategy.deps import write_config
 from bifrost_api.strategy.patch_bodies import (
     AllocationPatch,
-    GateSetPatch,
     OpportunityPatch,
     StructurePatch,
     TemplatePatch,
-    TradeCreate,
-    TradePatch,
 )
-from bifrost_api.strategy.routers import trades as trades_module
 from bifrost_api.strategy.schemas.requests import (
-    GateSetBody,
     StructureBody,
     TemplateBody,
     TemplateCharacteristicsBody,
@@ -30,21 +24,15 @@ from bifrost_api.strategy.schemas.requests import (
 from bifrost_api.strategy.schemas.responses import (
     AllocationList,
     AllocationRow,
-    GateSetDetail,
-    GateSetList,
     OpportunityDetail,
     OpportunityList,
-    TradeList,
-    TradeRow,
 )
-from bifrost_core.monitor.reader import gate_safety_write as gate_safety_write_module
 from bifrost_core.monitor.reader.errors import WriteError
 from bifrost_core.monitor.reader import strategy_allocation_write as strategy_allocation_write_module
 from bifrost_core.monitor.reader import strategy_opportunity_write as strategy_opportunity_write_module
 from bifrost_core.monitor.reader import strategy_structure_write as strategy_structure_write_module
 from bifrost_core.monitor.reader import strategy_rules_delete as strategy_rules_delete_module
 from bifrost_core.monitor.reader import template_config_write as template_config_write_module
-from bifrost_core.monitor.schemas.gate_params import default_gates
 from bifrost_core.monitor.schemas.strategies import (
     AllocationBody,
     OpportunityBody,
@@ -65,8 +53,12 @@ router = APIRouter(prefix="/strategies", tags=["strategies"])
 # <id>, ..., "ok": true}. Their failures are core's Write* outcomes, mapped once
 # in bifrost_api.common.write_errors (404 / 409 / 400 / 503 / 500). The merge-style
 # PUTs on templates, opportunities and allocations went in api 0.6.0 (TD-15); the
-# PUTs left (structures, gate-safety, template legs / params / characteristics)
-# replace on purpose.
+# PUTs left (structures, template legs / params / characteristics; gate sets in
+# routers.gate_sets) replace on purpose.
+#
+# Naming R4 (api 0.9.0): the trades, their win rate, reviews, gate sets and saved
+# searches left /strategies in R1 (api 0.7.0) and their old routes here are gone --
+# /trades, /trade-reviews, /gate-sets, /preferences/saved-searches.
 
 
 @router.get("/dims")
@@ -308,57 +300,6 @@ def patch_opportunity_endpoint(request: Request, strategy_opportunity_id: int, b
     return strategy_opportunity_write_module.patch_opportunity(config, strategy_opportunity_id, body.patch_fields())
 
 
-@router.get("/win-rate")
-def get_strategy_win_rate(
-    request: Request,
-    from_ts: Optional[float] = from_ts_query("the time of the fills counted toward each trade"),
-    to_ts: Optional[float] = to_ts_query("the time of the fills counted toward each trade"),
-) -> Dict[str, Any]:
-    """Replaced by GET /trades/win-rate (naming R1); the same answer until R4."""
-    return trades_module.trade_win_rate(request, from_ts, to_ts)
-
-
-# --- trades under their old path: replaced by /trades (naming R1, api 0.7.0) ---------------
-# Same functions as bifrost_api.strategy.routers.trades; marked in REPLACED_ROUTES, gone in R4.
-
-
-@router.get("/instances", response_model=TradeList, response_model_exclude_unset=True)
-def list_strategy_instances(
-    request: Request,
-    account_id: Optional[str] = Query(None, description="Filter by account ID"),
-    strategy_opportunity_id: Optional[int] = Query(None, description="Filter by strategy opportunity ID"),
-    trade_ids: Optional[str] = trade_ids_query(note="strategy_instance_ids is read the same until R4."),
-    from_ts: Optional[float] = from_ts_query("the trade's opened_at"),
-    to_ts: Optional[float] = to_ts_query("the trade's opened_at"),
-) -> Dict[str, Any]:
-    """Replaced by GET /trades."""
-    return trades_module.list_trades(request, account_id, strategy_opportunity_id, trade_ids, from_ts, to_ts)
-
-
-@router.get("/instances/{strategy_instance_id}", response_model=TradeRow, response_model_exclude_unset=True)
-def get_strategy_instance(request: Request, strategy_instance_id: int) -> Dict[str, Any]:
-    """Replaced by GET /trades/{trade_id}."""
-    return trades_module.get_trade(request, strategy_instance_id)
-
-
-@router.post("/instances")
-def create_strategy_instance_endpoint(request: Request, body: TradeCreate) -> Dict[str, Any]:
-    """Replaced by POST /trades. `notes` is a 422 (TD-73): notes live in the Research journal."""
-    return trades_module.create_trade(request, body)
-
-
-@router.delete("/instances/{strategy_instance_id}")
-def delete_strategy_instance_endpoint(request: Request, strategy_instance_id: int) -> Dict[str, Any]:
-    """Replaced by DELETE /trades/{trade_id}."""
-    return trades_module.delete_trade(request, strategy_instance_id)
-
-
-@router.patch("/instances/{strategy_instance_id}", response_model=TradeRow, response_model_exclude_unset=True)
-def update_strategy_instance_endpoint(request: Request, strategy_instance_id: int, body: TradePatch) -> Dict[str, Any]:
-    """Replaced by PATCH /trades/{trade_id}. `notes` is a 422 (TD-73)."""
-    return trades_module.patch_trade(request, strategy_instance_id, body)
-
-
 @router.get("/allocations", response_model=AllocationList, response_model_exclude_unset=True)
 def list_allocations(
     request: Request,
@@ -404,72 +345,6 @@ def patch_allocation_endpoint(request: Request, strategy_allocation_id: int, bod
     return strategy_allocation_write_module.patch_allocation(config, strategy_allocation_id, body.patch_fields())
 
 
-@router.get("/gate-safety", response_model=GateSetList, response_model_exclude_unset=True)
-def list_gate_safety(request: Request) -> Dict[str, Any]:
-    """Return list of gate_safety_strategy rows for management dropdown."""
-    reader = request.app.state.reader
-    items = reader.list_gate_safety_sets()
-    return list_body(items)
-
-
-@router.get("/gate-safety/defaults")
-def get_gate_safety_defaults() -> Dict[str, Any]:
-    """Core's default gates -- what a new gate set starts from (TD-72), so the UI
-    keeps no copy of them. Same shape as a gate set's `gates`, without earnings dates.
-    Declared before `/gate-safety/{gate_safety_strategy_id}` so "defaults" is not read as an id."""
-    return {"gates": default_gates()}
-
-
-@router.get("/gate-safety/{gate_safety_strategy_id}", response_model=GateSetDetail, response_model_exclude_unset=True)
-def get_gate_safety_by_id(request: Request, gate_safety_strategy_id: int) -> Dict[str, Any]:
-    """Return full gate set for UI edit: metadata + gates + earnings_dates. 404 if not found."""
-    reader = request.app.state.reader
-    full = reader.get_gate_safety_full_by_id(gate_safety_strategy_id)
-    if full is None:
-        raise HTTPException(status_code=404, detail="Gate safety set not found")
-    return full
-
-
-@router.post("/gate-safety")
-def create_gate_safety_endpoint(request: Request, body: GateSetBody) -> Dict[str, Any]:
-    """Create a new gate safety set. Body: name, optional version / six dims / is_active, gates, optional earnings_dates."""
-    control_via_db = write_config(request)
-    if not (body.name or "").strip():
-        raise HTTPException(status_code=400, detail="name is required")
-    try:
-        gid = gate_safety_write_module.create_gate_safety(control_via_db, body.declared(exclude_unset=True))
-    except (ValueError, TypeError) as e:
-        raise HTTPException(status_code=400, detail=f"Invalid payload: {e}") from e
-    if gid is None:
-        raise HTTPException(status_code=500, detail="Failed to create gate safety set")
-    return {"gate_safety_strategy_id": gid}
-
-
-@router.put("/gate-safety/{gate_safety_strategy_id}")
-def update_gate_safety_endpoint(request: Request, gate_safety_strategy_id: int, body: GateSetBody) -> Dict[str, Any]:
-    """Update an existing gate safety set. Body same as POST."""
-    control_via_db = write_config(request)
-    if not (body.name or "").strip():
-        raise HTTPException(status_code=400, detail="name is required")
-    try:
-        ok = gate_safety_write_module.update_gate_safety(
-            control_via_db, gate_safety_strategy_id, body.declared(exclude_unset=True)
-        )
-    except (ValueError, TypeError) as e:
-        raise HTTPException(status_code=400, detail=f"Invalid payload: {e}") from e
-    if not ok:
-        raise HTTPException(status_code=404, detail="Gate safety set not found or update failed")
-    return {"ok": True}
-
-
-@router.patch("/gate-safety/{gate_safety_strategy_id}", response_model=GateSetDetail, response_model_exclude_unset=True)
-def patch_gate_safety_endpoint(request: Request, gate_safety_strategy_id: int, body: GateSetPatch) -> Dict[str, Any]:
-    """Change the fields sent; answer the set as GET /gate-safety/{id} does. `gates` is a
-    partial object deep-merged into the stored gates; `earnings_dates` replaces the list."""
-    config = write_target(request, f"gate safety set {gate_safety_strategy_id}")
-    return gate_safety_write_module.patch_gate_safety(config, gate_safety_strategy_id, body.patch_fields())
-
-
 @router.delete("/opportunities/{strategy_opportunity_id}")
 def delete_opportunity_endpoint(request: Request, strategy_opportunity_id: int) -> Dict[str, Any]:
     """Hard delete; its allocation memberships go with it. 409 while it has trades.
@@ -483,10 +358,3 @@ def delete_allocation_endpoint(request: Request, strategy_allocation_id: int) ->
     """Hard delete. 409 while the daemon runs it."""
     config = write_target(request, f"allocation {strategy_allocation_id}")
     return deleted_body(strategy_rules_delete_module.delete_allocation_strict(config, strategy_allocation_id))
-
-
-@router.delete("/gate-safety/{gate_safety_strategy_id}")
-def delete_gate_safety_endpoint(request: Request, gate_safety_strategy_id: int) -> Dict[str, Any]:
-    """Hard delete. 409 while an opportunity, an allocation or the daemon's settings use it."""
-    config = write_target(request, f"gate safety set {gate_safety_strategy_id}")
-    return deleted_body(strategy_rules_delete_module.delete_gate_safety_strict(config, gate_safety_strategy_id))

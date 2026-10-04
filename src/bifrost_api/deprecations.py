@@ -52,34 +52,12 @@ DEPRECATED_ROUTES: FrozenSet[Tuple[str, str]] = frozenset()
 # The TD-15 merge PUTs went in api 0.6.0. PUT /executions/{account_executions_id} is not
 # here: ExecutionFormModal edits the fill columns through it and those have no PATCH yet.
 #
-# Naming program R1 (api 0.7.0, decision pack 2026-10-03 D4/D5): the Trade, its reviews,
-# gate sets and saved searches move out of /strategies. The old routes answer the same
-# through the same functions until R4, which deletes them once Loki has shown no
-# "replaced route hit" for 4 days after a PROD release cycle (D4-A).
-_TRADE = "/trades/{trade_id:int}"
-_GATE_SET = "/gate-sets/{gate_safety_strategy_id:int}"
-REPLACED_ROUTES: Dict[Tuple[str, str], str] = {
-    ("GET", "/strategies/instances"): "GET /trades",
-    ("POST", "/strategies/instances"): "POST /trades",
-    ("GET", "/strategies/instances/{strategy_instance_id}"): f"GET {_TRADE}",
-    ("PATCH", "/strategies/instances/{strategy_instance_id}"): f"PATCH {_TRADE}",
-    ("DELETE", "/strategies/instances/{strategy_instance_id}"): f"DELETE {_TRADE}",
-    ("GET", "/strategies/win-rate"): "GET /trades/win-rate",
-    ("GET", "/strategies/reviews"): "GET /trade-reviews",
-    ("PATCH", "/strategies/reviews/{strategy_instance_id}"): "PATCH /trade-reviews/{trade_id:int}",
-    ("GET", "/strategies/gate-safety"): "GET /gate-sets",
-    ("POST", "/strategies/gate-safety"): "POST /gate-sets",
-    ("GET", "/strategies/gate-safety/defaults"): "GET /gate-sets/defaults",
-    ("GET", "/strategies/gate-safety/{gate_safety_strategy_id}"): f"GET {_GATE_SET}",
-    ("PUT", "/strategies/gate-safety/{gate_safety_strategy_id}"): f"PUT {_GATE_SET}",
-    ("PATCH", "/strategies/gate-safety/{gate_safety_strategy_id}"): f"PATCH {_GATE_SET}",
-    ("DELETE", "/strategies/gate-safety/{gate_safety_strategy_id}"): f"DELETE {_GATE_SET}",
-    ("GET", "/strategies/saved-searches"): "GET /preferences/saved-searches",
-    ("POST", "/strategies/saved-searches"): "POST /preferences/saved-searches",
-    ("DELETE", "/strategies/saved-searches/{preference_saved_search_id}"): (
-        "DELETE /preferences/saved-searches/{preference_saved_search_id:int}"
-    ),
-}
+# Naming program R1 (api 0.7.0, decision pack 2026-10-03 D4/D5) moved the Trade, its reviews,
+# gate sets and saved searches out of /strategies and listed the 18 old routes here; naming
+# R4 (api 0.9.0, D4-A) deleted them once a PROD release cycle had gone by and Loki showed no
+# "replaced route hit" for 4 days (bifrost-trade-infra scripts/release/naming_r4_gate.py).
+# The list is empty until the next route gets a successor; the mechanism stays.
+REPLACED_ROUTES: Dict[Tuple[str, str], str] = {}
 
 
 def _compile(template: str) -> Pattern[str]:

@@ -30,7 +30,7 @@ CREATE = {"strategy_opportunity_id": 3, "account_id": "U0000001", "opened_at": "
 def _client() -> TestClient:
     reader = MagicMock()
     reader.config = operator_server_config()
-    reader.create_strategy_instance.return_value = 41
+    reader.create_trade.return_value = 41
     app = create_account_app(reader=reader, control_via_db=PG, status_cfg_for_read=PG, merged_config=reader.config)
     return TestClient(app, raise_server_exceptions=False)
 
@@ -44,7 +44,7 @@ def _retired(r: Any, field: str) -> None:
 
 
 @pytest.mark.parametrize("value", ["Rolled early.", None])
-@pytest.mark.parametrize("path", ["/trades/7", "/strategies/instances/7"])
+@pytest.mark.parametrize("path", ["/trades/7", "/trades/7"])
 def test_trade_patch_notes_is_a_422_that_writes_nothing(monkeypatch: pytest.MonkeyPatch, path: str, value: Any) -> None:
     writer = MagicMock()
     monkeypatch.setattr(strategy_instance, "patch_instance", writer)
@@ -53,7 +53,7 @@ def test_trade_patch_notes_is_a_422_that_writes_nothing(monkeypatch: pytest.Monk
 
 
 @pytest.mark.parametrize("value", ["Held too long.", None])
-@pytest.mark.parametrize("path", ["/trade-reviews/7", "/strategies/reviews/7"])
+@pytest.mark.parametrize("path", ["/trade-reviews/7"])
 def test_review_patch_note_is_a_422_that_writes_nothing(monkeypatch: pytest.MonkeyPatch, path: str, value: Any) -> None:
     writer = MagicMock()
     monkeypatch.setattr(trade_review, "patch_review", writer)
@@ -61,20 +61,20 @@ def test_review_patch_note_is_a_422_that_writes_nothing(monkeypatch: pytest.Monk
     writer.assert_not_called()
 
 
-@pytest.mark.parametrize("path", ["/trades", "/strategies/instances"])
+@pytest.mark.parametrize("path", ["/trades"])
 def test_trade_create_notes_is_a_422_and_creates_nothing(path: str) -> None:
     c = _client()
     _retired(c.post(path, json={**CREATE, "notes": "zz"}), "notes")
-    c.app.state.reader.create_strategy_instance.assert_not_called()
+    c.app.state.reader.create_trade.assert_not_called()
     ok = c.post(path, json=CREATE)
-    assert ok.status_code == 200 and ok.json() == {"trade_id": 41, "strategy_instance_id": 41}
-    kwargs = c.app.state.reader.create_strategy_instance.call_args.kwargs
+    assert ok.status_code == 200 and ok.json() == {"trade_id": 41}
+    kwargs = c.app.state.reader.create_trade.call_args.kwargs
     assert "notes" not in kwargs and kwargs["account_id"] == "U0000001"
 
 
 def test_the_writes_without_the_fields_still_answer(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(strategy_instance, "patch_instance", lambda _c, _i, f: strategy_rows.instance())
-    monkeypatch.setattr(trade_review, "patch_review", lambda _c, _i, f: {"strategy_instance_id": 7, "reviewed": True})
+    monkeypatch.setattr(trade_review, "patch_review", lambda _c, _i, f: {"trade_id": 7, "reviewed": True})
     c = _client()
     r = c.patch("/trades/7", json={"label": "ZZ trade"})
     assert r.status_code == 200 and "notes" not in r.json()

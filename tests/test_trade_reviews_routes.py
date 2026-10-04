@@ -31,17 +31,17 @@ def _client(control_via_db: Any = None) -> TestClient:
 
 def test_the_review_routes_are_mounted_on_the_account_app() -> None:
     paths = set(_client().app.openapi()["paths"])
-    assert {"/strategies/reviews", "/strategies/reviews/{strategy_instance_id}"} <= paths
+    assert {"/trade-reviews", "/trade-reviews/{trade_id}"} <= paths
 
 
 def test_list_passes_rows_through(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         trade_review_module,
         "list_reviews",
-        lambda _cfg: [{"strategy_instance_id": 7, "tags_added": [], "tags_dropped": [], "reviewed": True}],
+        lambda _cfg: [{"trade_id": 7, "tags_added": [], "tags_dropped": [], "reviewed": True}],
     )
-    body = _client({"sink": "postgres"}).get("/strategies/reviews").json()
-    assert body["count"] == 1 and body["items"][0]["strategy_instance_id"] == 7
+    body = _client({"sink": "postgres"}).get("/trade-reviews").json()
+    assert body["count"] == 1 and body["items"][0]["trade_id"] == 7
 
 
 def test_a_failed_read_is_a_500_not_an_empty_book(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -49,11 +49,11 @@ def test_a_failed_read_is_a_500_not_an_empty_book(monkeypatch: pytest.MonkeyPatc
         raise RuntimeError("relation does not exist")
 
     monkeypatch.setattr(trade_review_module, "list_reviews", boom)
-    assert _client({"sink": "postgres"}).get("/strategies/reviews").status_code == 500
+    assert _client({"sink": "postgres"}).get("/trade-reviews").status_code == 500
 
 
 def test_the_merge_put_is_gone() -> None:
-    """TD-15 (api 0.6.0): PATCH /strategies/reviews/{id} is the upsert; PUT went after a release with no caller."""
-    assert _client({"sink": "postgres"}).put("/strategies/reviews/7", json={"reviewed": True}).status_code == 405
+    """TD-15 (api 0.6.0): PATCH /trade-reviews/{id} is the upsert; PUT went after a release with no caller."""
+    assert _client({"sink": "postgres"}).put("/trade-reviews/7", json={"reviewed": True}).status_code == 405
 
 

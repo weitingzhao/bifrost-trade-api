@@ -49,7 +49,7 @@ def list_body(
 ) -> Dict[str, Any]:
     """The list shape: ``items``, ``count``, ``total`` when known, then the route's own fields.
 
-    ``extra`` keeps a route's other fields (``strategy_instance_id``, ``slippage_total`` …);
+    ``extra`` keeps a route's other fields (``trade_id``, ``slippage_total`` …);
     none of them can override ``items`` / ``count`` / ``total``.
     """
     rows = list(items or [])

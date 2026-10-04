@@ -60,7 +60,7 @@ def test_executions_with_opt_pairs_keeps_its_pairs() -> None:
 @pytest.mark.parametrize(
     "path,reader_method,legacy_key",
     [
-        ("/executions/position-attribution", "get_position_instance_attribution", "attributions"),
+        ("/executions/position-attribution", "get_position_trade_attribution", "attributions"),
         ("/executions/freshness", "get_executions_freshness", None),
         ("/transactions", "get_transactions_page", "transactions"),
     ],
@@ -121,9 +121,9 @@ def test_post_execution_splits_not_a_list_is_422(monkeypatch: pytest.MonkeyPatch
     insert = MagicMock()
     monkeypatch.setattr(ex, "insert_one_execution", insert)
     r = _client().post(
-        "/executions", json={"account_id": ACC, "symbol": "ZZQ", "quantity": 1, "price": 2, "instance_allocations": {}}
+        "/executions", json={"account_id": ACC, "symbol": "ZZQ", "quantity": 1, "price": 2, "fill_splits": {}}
     )
-    assert r.status_code == 422 and "instance_allocations" in r.text
+    assert r.status_code == 422 and "fill_splits" in r.text
     insert.assert_not_called()
 
 
@@ -134,7 +134,7 @@ def test_post_execution_rejected_splits_is_400(monkeypatch: pytest.MonkeyPatch) 
         "symbol": "ZZQ",
         "quantity": 1,
         "price": 2,
-        "instance_allocations": [{"strategy_instance_id": 3, "allocated_quantity": 5}],
+        "fill_splits": [{"trade_id": 3, "quantity": 5}],
     }
     assert_error(_client().post("/executions", json=body), 400, "fill_splits rejected", {"account_executions_id": None})
 

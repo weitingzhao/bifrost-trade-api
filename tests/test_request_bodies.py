@@ -74,19 +74,19 @@ EXECUTION_CREATE = {  # ExecutionFormModal (create), splits variant below
     "account_id": ACC, "time": 1930487400, "symbol": "ZZQ", "sec_type": "OPT", "side": "SELL",
     "quantity": -2, "price": 1.15, "source": "manual", "expiry": "20310417", "strike": 40,
     "option_right": "P", "contract_key": "ZZQ|OPT|20310417|40|P", "commission": 1.3, "currency": "USD",
-    "strategy_opportunity_id": 5, "strategy_instance_id": 41,
+    "strategy_opportunity_id": 5, "trade_id": 41,
 }
 QUICK_CLOSE = {  # quickCloseBody (QuickCloseModal)
     "account_id": ACC, "time": 1930487400, "symbol": "ZZQ", "sec_type": "OPT", "side": "BUY", "quantity": 2,
     "price": 0.4, "source": "journal_closed", "expiry": "20310417", "strike": 40.0, "option_right": "P",
     "contract_key": "ZZQ|OPT|20310417|40.0|P", "commission": 1.1, "currency": "USD",
-    "strategy_instance_id": 41, "strategy_opportunity_id": 5,
+    "trade_id": 41, "strategy_opportunity_id": 5,
 }
 EXECUTION_UPDATE = {  # ExecutionFormModal (edit)
     "account_id": ACC, "exec_time": 1930487400.5, "symbol": "ZZQ", "sec_type": "OPT", "side": "SELL",
     "quantity": -2, "price": 1.15, "strike": 40, "option_right": "P", "contract_key": "ZZQ|OPT|20310417|40|P",
-    "instance_allocations": [{"strategy_instance_id": 41, "allocated_quantity": -1.5},
-                             {"strategy_instance_id": 42, "allocated_quantity": -0.5}],
+    "fill_splits": [{"trade_id": 41, "quantity": -1.5},
+                             {"trade_id": 42, "quantity": -0.5}],
     "expiry": "20310417",
 }
 
@@ -107,9 +107,9 @@ ACCOUNT_CASES: List[Tuple[str, str, Dict[str, Any], Tuple[Any, str], Any]] = [
      (template_config_write, "replace_template_characteristics"), None),
     ("POST", "/strategies/structures", STRUCTURE, (strategy_structure_write, "create_structure"), 11),
     ("PUT", "/strategies/structures/11", STRUCTURE, (strategy_structure_write, "update_structure"), True),
-    ("POST", "/strategies/gate-safety", GATE, (gate_safety_write, "create_gate_safety"), 2),
-    ("PUT", "/strategies/gate-safety/2", GATE, (gate_safety_write, "update_gate_safety"), True),
-    ("POST", "/strategies/saved-searches", {"route": "/trade/plans", "label": "ZZQ only", "state": {"search": "ZZQ"}},
+    ("POST", "/gate-sets", GATE, (gate_safety_write, "create_gate_safety"), 2),
+    ("PUT", "/gate-sets/2", GATE, (gate_safety_write, "update_gate_safety"), True),
+    ("POST", "/preferences/saved-searches", {"route": "/trade/plans", "label": "ZZQ only", "state": {"search": "ZZQ"}},
      (saved_search, "create_saved_search"), 3),  # TradePlansPage
     ("POST", "/position-categories", {"name": "Watching", "sort_order": 2},
      (None, "create_position_category"), (7, None)),  # useEnsureWatchlistCategories
@@ -227,12 +227,12 @@ WRONG_TYPES = [
     ("POST", "/strategies/templates", {"template_code": "zz_put", "sort_order": "100"}),
     ("PUT", "/strategies/templates/9/legs", {"legs": [{"role": "put", "quantity_default": 1.5}]}),
     ("POST", "/strategies/structures", {**STRUCTURE, "strategy_template_id": "4"}),
-    ("PUT", "/strategies/gate-safety/2", {**GATE, "version": "2"}),
-    ("PUT", "/strategies/gate-safety/2", {**GATE, "is_active": 1}),
-    ("POST", "/strategies/saved-searches", {"route": "/trade/plans", "label": "x", "state": "ZZQ"}),
+    ("PUT", "/gate-sets/2", {**GATE, "version": "2"}),
+    ("PUT", "/gate-sets/2", {**GATE, "is_active": 1}),
+    ("POST", "/preferences/saved-searches", {"route": "/trade/plans", "label": "x", "state": "ZZQ"}),
     ("POST", "/position-categories", {"name": "Watching", "sort_order": "2"}),
     ("PUT", "/position-categories/symbol-order", {"category_name": "Core", "symbols": "ZZQ"}),
-    ("POST", "/executions", {**EXECUTION_CREATE, "strategy_instance_id": "x"}),
+    ("POST", "/executions", {**EXECUTION_CREATE, "trade_id": "x"}),
     ("POST", "/executions", {**EXECUTION_CREATE, "price": "1.15"}),
     ("PUT", "/executions/-101", {"strategy_opportunity_id": "abc"}),
     ("PUT", "/executions/-101", {"time": "yesterday"}),
@@ -284,11 +284,11 @@ def test_unknown_fields_are_ignored_and_logged_by_name_only(
     monkeypatch.setattr(gate_safety_write, "create_gate_safety", create)
     c, _ = _account()
     with caplog.at_level(logging.WARNING, logger="bifrost_api.common.request_bodies"):
-        r = c.post("/strategies/gate-safety", json={**GATE, "structure_type": "SECRET-VALUE", "colour": "teal"})
+        r = c.post("/gate-sets", json={**GATE, "structure_type": "SECRET-VALUE", "colour": "teal"})
     assert r.status_code == 200, r.text
     assert create.call_args.args[1] == GATE  # neither unknown field reaches core
     lines = [rec.getMessage() for rec in caplog.records if "unknown request fields" in rec.getMessage()]
-    assert lines == ["unknown request fields: POST /strategies/gate-safety ignored ['colour', 'structure_type']"]
+    assert lines == ["unknown request fields: POST /gate-sets ignored ['colour', 'structure_type']"]
     assert "SECRET-VALUE" not in caplog.text and "teal" not in caplog.text
 
 
@@ -312,7 +312,7 @@ def test_a_body_without_unknown_fields_logs_nothing(
     monkeypatch.setattr(gate_safety_write, "create_gate_safety", MagicMock(return_value=2))
     c, _ = _account()
     with caplog.at_level(logging.WARNING, logger="bifrost_api.common.request_bodies"):
-        assert c.post("/strategies/gate-safety", json=GATE).status_code == 200
+        assert c.post("/gate-sets", json=GATE).status_code == 200
     assert "unknown request fields" not in caplog.text
 
 

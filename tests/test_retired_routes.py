@@ -96,6 +96,29 @@ RETIRED: Dict[str, Set[Tuple[str, str]]] = {
         ("POST", "/ops/market-ingest/clear-conflict-leases"),
     },
 }
+# Naming R4 (api 0.9.0): the 18 routes R1 replaced (decision pack 2026-10-03, D4-A), gone after
+# a PROD release cycle with no "replaced route hit" in Loki for 4 days. Their successors stay.
+NAMING_R4_RETIRED: Set[Tuple[str, str]] = {
+    ("GET", "/strategies/instances"),
+    ("POST", "/strategies/instances"),
+    ("GET", "/strategies/instances/{strategy_instance_id}"),
+    ("PATCH", "/strategies/instances/{strategy_instance_id}"),
+    ("DELETE", "/strategies/instances/{strategy_instance_id}"),
+    ("GET", "/strategies/win-rate"),
+    ("GET", "/strategies/reviews"),
+    ("PATCH", "/strategies/reviews/{strategy_instance_id}"),
+    ("GET", "/strategies/gate-safety"),
+    ("POST", "/strategies/gate-safety"),
+    ("GET", "/strategies/gate-safety/defaults"),
+    ("GET", "/strategies/gate-safety/{gate_safety_strategy_id}"),
+    ("PUT", "/strategies/gate-safety/{gate_safety_strategy_id}"),
+    ("PATCH", "/strategies/gate-safety/{gate_safety_strategy_id}"),
+    ("DELETE", "/strategies/gate-safety/{gate_safety_strategy_id}"),
+    ("GET", "/strategies/saved-searches"),
+    ("POST", "/strategies/saved-searches"),
+    ("DELETE", "/strategies/saved-searches/{preference_saved_search_id}"),
+}
+RETIRED["account"] = RETIRED.get("account", set()) | NAMING_R4_RETIRED
 
 KEPT: Dict[str, Set[Tuple[str, str]]] = {
     "research": {
@@ -117,7 +140,24 @@ KEPT: Dict[str, Set[Tuple[str, str]]] = {
     },
     "account": {
         ("GET", "/strategies/dims"),
-        ("GET", "/strategies/gate-safety/defaults"),
+        ("GET", "/gate-sets/defaults"),
+        ("GET", "/trades"),
+        ("POST", "/trades"),
+        ("GET", "/trades/{trade_id:int}"),
+        ("PATCH", "/trades/{trade_id:int}"),
+        ("DELETE", "/trades/{trade_id:int}"),
+        ("GET", "/trades/win-rate"),
+        ("GET", "/trade-reviews"),
+        ("PATCH", "/trade-reviews/{trade_id:int}"),
+        ("GET", "/gate-sets"),
+        ("POST", "/gate-sets"),
+        ("GET", "/gate-sets/{gate_safety_strategy_id:int}"),
+        ("PUT", "/gate-sets/{gate_safety_strategy_id:int}"),
+        ("PATCH", "/gate-sets/{gate_safety_strategy_id:int}"),
+        ("DELETE", "/gate-sets/{gate_safety_strategy_id:int}"),
+        ("GET", "/preferences/saved-searches"),
+        ("POST", "/preferences/saved-searches"),
+        ("DELETE", "/preferences/saved-searches/{preference_saved_search_id:int}"),
         ("GET", "/strategies/structures/{strategy_structure_id}"),
         ("PUT", "/strategies/structures/{strategy_structure_id}"),
         ("PATCH", "/strategies/structures/{strategy_structure_id}"),

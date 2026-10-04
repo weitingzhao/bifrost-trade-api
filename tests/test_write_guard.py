@@ -79,7 +79,7 @@ def _write_routes(app: Any) -> Iterator[tuple]:
         ("HEAD", "/status", None),
         ("OPTIONS", "/strategies/allocations", None),
         ("POST", "/strategies/allocations", "operator"),
-        ("DELETE", "/strategies/gate-safety/5", "operator"),
+        ("DELETE", "/gate-sets/5", "operator"),
         ("POST", "/control/flatten", "operator"),
         ("POST", "/research/screener", None),
         ("POST", "/research/screener/", None),
@@ -105,25 +105,25 @@ def test_every_named_exception_is_a_real_write_route() -> None:
 
 def test_anonymous_viewer_cannot_write_but_can_read() -> None:
     c = _client("account", "viewer")
-    r = c.post("/strategies/saved-searches", json={"name": "x", "query": {}})
+    r = c.post("/preferences/saved-searches", json={"name": "x", "query": {}})
     assert r.status_code == 403
     body = r.json()
     assert body["required_role"] == "operator" and body["current_role"] == "viewer"
     # TD-16 (api 0.5.0): the reason is ``detail`` like every other failure.
     assert "operator role required" in body["detail"] and not {"ok", "error"} & set(body)
-    assert c.get("/strategies/saved-searches").status_code != 403
+    assert c.get("/preferences/saved-searches").status_code != 403
 
 
 def test_an_operator_token_writes() -> None:
     r = _client("account", "viewer").post(
-        "/strategies/saved-searches", json={"name": "x", "query": {}}, headers=_bearer(OPERATOR)
+        "/preferences/saved-searches", json={"name": "x", "query": {}}, headers=_bearer(OPERATOR)
     )
     assert r.status_code != 403
 
 
 def test_an_unknown_token_is_a_viewer() -> None:
     r = _client("account", "operator").post(
-        "/strategies/saved-searches", json={"name": "x", "query": {}}, headers=_bearer("not-a-token")
+        "/preferences/saved-searches", json={"name": "x", "query": {}}, headers=_bearer("not-a-token")
     )
     assert r.status_code == 403
     assert r.json()["current_role"] == "viewer"
@@ -131,7 +131,7 @@ def test_an_unknown_token_is_a_viewer() -> None:
 
 def test_a_token_in_the_query_string_is_ignored() -> None:
     r = _client("account", "viewer").post(
-        f"/strategies/saved-searches?token={OPERATOR}", json={"name": "x", "query": {}}
+        f"/preferences/saved-searches?token={OPERATOR}", json={"name": "x", "query": {}}
     )
     assert r.status_code == 403
 
@@ -164,5 +164,5 @@ def test_no_route_needs_admin() -> None:
 
 def test_default_role_operator_keeps_todays_behaviour() -> None:
     """STG and PROD run default_role operator until each env lowers it."""
-    r = _client("account", "operator").post("/strategies/saved-searches", json={"name": "x", "query": {}})
+    r = _client("account", "operator").post("/preferences/saved-searches", json={"name": "x", "query": {}})
     assert r.status_code != 403

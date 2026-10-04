@@ -24,7 +24,7 @@ from tests.contract.helpers import operator_server_config
 RULE_ROUTES = [
     ("/strategies/opportunities/5", "delete_opportunity_strict"),
     ("/strategies/allocations/5", "delete_allocation_strict"),
-    ("/strategies/gate-safety/5", "delete_gate_safety_strict"),
+    ("/gate-sets/5", "delete_gate_safety_strict"),
 ]
 
 

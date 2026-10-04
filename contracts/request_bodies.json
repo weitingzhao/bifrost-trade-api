@@ -9,7 +9,6 @@
     "exec_id",
     "expiry",
     "fill_splits",
-    "instance_allocations",
     "option_right",
     "order_id",
     "price",
@@ -19,7 +18,6 @@
     "sec_type",
     "side",
     "source",
-    "strategy_instance_id",
     "strategy_opportunity_id",
     "strike",
     "symbol",
@@ -36,7 +34,6 @@
     "exec_time",
     "expiry",
     "fill_splits",
-    "instance_allocations",
     "option_right",
     "order_id",
     "price",
@@ -45,7 +42,6 @@
     "sec_type",
     "side",
     "source",
-    "strategy_instance_id",
     "strategy_opportunity_id",
     "strike",
     "symbol",
@@ -68,10 +64,6 @@
     "is_active",
     "name",
     "version"
-  ],
-  "InstanceAllocationItem": [
-    "allocated_quantity",
-    "strategy_instance_id"
   ],
   "InstrumentClassBody": [
     "instrument_class",

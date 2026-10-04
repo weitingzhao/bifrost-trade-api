@@ -40,10 +40,10 @@ READS: List[Tuple[str, str, Callable[[], Any], Any]] = [
     ("/strategies/allocations/3", "get_allocation_by_id", rows.allocation, models.AllocationRow),
     ("/strategies/opportunities", "list_opportunities", rows.opportunities, models.OpportunityList),
     ("/strategies/opportunities/5", "get_opportunity_by_id", rows.opportunity, models.OpportunityDetail),
-    ("/strategies/gate-safety", "list_gate_safety_sets", rows.gate_sets, models.GateSafetyList),
-    ("/strategies/gate-safety/2", "get_gate_safety_full_by_id", rows.gate_set, models.GateSafetyDetail),
-    ("/strategies/instances", "list_strategy_instances", rows.instances, models.InstanceList),
-    ("/strategies/instances/41", "get_strategy_instance_by_id", rows.instance, models.InstanceRow),
+    ("/gate-sets", "list_gate_safety_sets", rows.gate_sets, models.GateSetList),
+    ("/gate-sets/2", "get_gate_safety_full_by_id", rows.gate_set, models.GateSetDetail),
+    ("/trades", "list_trades", rows.instances, models.TradeList),
+    ("/trades/41", "get_trade_by_id", rows.instance, models.TradeRow),
 ]
 
 
@@ -68,8 +68,8 @@ PATCHES: List[Tuple[str, Any, str, Callable[[], Dict[str, Any]], Dict[str, Any]]
     ("/strategies/allocations/3", strategy_allocation_write, "patch_allocation", rows.allocation, {"max_positions": 5}),
     ("/strategies/opportunities/5", strategy_opportunity_write, "patch_opportunity", rows.opportunity,
      {"is_active": False}),
-    ("/strategies/gate-safety/2", gate_safety_write, "patch_gate_safety", rows.gate_set, {"name": "Calmer tape"}),
-    ("/strategies/instances/41", strategy_instance, "patch_instance", rows.instance, {"label": None}),
+    ("/gate-sets/2", gate_safety_write, "patch_gate_safety", rows.gate_set, {"name": "Calmer tape"}),
+    ("/trades/41", strategy_instance, "patch_instance", rows.instance, {"label": None}),
     ("/strategies/plans/12", strategy_plan, "patch_plan", rows.plan, {"rationale": "Rolled."}),
 ]
 
@@ -119,8 +119,8 @@ def test_the_wire_formats_are_the_ones_the_ui_already_reads(monkeypatch: pytest.
 
 def test_a_field_the_reader_did_not_send_is_not_added() -> None:
     reader = MagicMock()
-    reader.get_strategy_instance_by_id.return_value = rows.instance()
-    body = _client(reader).get("/strategies/instances/41").json()
+    reader.get_trade_by_id.return_value = rows.instance()
+    body = _client(reader).get("/trades/41").json()
     assert "executions_count" not in body  # list-only
     assert body["opened_at_epoch"] == rows.T0.timestamp()
 
@@ -147,12 +147,12 @@ DOCUMENTED = [
     ("get", "/strategies/opportunities", models.OpportunityList),
     ("get", "/strategies/opportunities/{strategy_opportunity_id}", models.OpportunityDetail),
     ("patch", "/strategies/opportunities/{strategy_opportunity_id}", models.OpportunityDetail),
-    ("get", "/strategies/gate-safety", models.GateSafetyList),
-    ("get", "/strategies/gate-safety/{gate_safety_strategy_id}", models.GateSafetyDetail),
-    ("patch", "/strategies/gate-safety/{gate_safety_strategy_id}", models.GateSafetyDetail),
-    ("get", "/strategies/instances", models.InstanceList),
-    ("get", "/strategies/instances/{strategy_instance_id}", models.InstanceRow),
-    ("patch", "/strategies/instances/{strategy_instance_id}", models.InstanceRow),
+    ("get", "/gate-sets", models.GateSetList),
+    ("get", "/gate-sets/{gate_safety_strategy_id}", models.GateSetDetail),
+    ("patch", "/gate-sets/{gate_safety_strategy_id}", models.GateSetDetail),
+    ("get", "/trades", models.TradeList),
+    ("get", "/trades/{trade_id}", models.TradeRow),
+    ("patch", "/trades/{trade_id}", models.TradeRow),
     ("get", "/strategies/plans", models.PlanList),
     ("get", "/strategies/plans/{strategy_plan_id}", models.PlanRow),
     ("patch", "/strategies/plans/{strategy_plan_id}", models.PlanRow),
@@ -177,10 +177,10 @@ def test_openapi_documents_the_fields(method: str, path: str, model: Any) -> Non
         (models.AllocationRow, rows.allocation),
         (models.OpportunityRow, lambda: rows.opportunities()[0]),
         (models.OpportunityDetail, rows.opportunity),
-        (models.GateSafetyRow, lambda: rows.gate_sets()[0]),
-        (models.GateSafetyDetail, rows.gate_set),
-        (models.InstanceRow, lambda: rows.instances()[0]),
-        (models.InstanceRow, rows.instance),
+        (models.GateSetRow, lambda: rows.gate_sets()[0]),
+        (models.GateSetDetail, rows.gate_set),
+        (models.TradeRow, lambda: rows.instances()[0]),
+        (models.TradeRow, rows.instance),
         (models.PlanRow, rows.plan),
     ],
 )

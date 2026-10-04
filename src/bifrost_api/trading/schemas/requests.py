@@ -18,13 +18,6 @@ from pydantic import StrictFloat, StrictInt, StrictStr
 from bifrost_api.common.request_bodies import LenientBody, LenientItem
 
 
-class InstanceAllocationItem(LenientItem):
-    """One split of a fill across trades, old names (until R4); see :class:`FillSplitItem`."""
-
-    strategy_instance_id: Optional[StrictInt] = None
-    allocated_quantity: Optional[StrictFloat] = None
-
-
 class FillSplitItem(LenientItem):
     """One split of a fill across trades; the splits must sum to the fill's quantity (core, 400)."""
 
@@ -52,18 +45,16 @@ class _ExecutionFields(LenientBody):
     commission: Optional[StrictFloat] = None
     realized_pnl: Optional[StrictFloat] = None
     currency: Optional[StrictStr] = None
-    # Direct attribution (trade_id), or fill_splits -- not both. strategy_instance_id /
-    # instance_allocations are the old names (until R4); the new name wins when both are sent
-    # (core 0.42.0 reads either).
+    # Direct attribution (trade_id), or fill_splits -- not both. The old names
+    # strategy_instance_id / instance_allocations went in naming R4 (api 0.9.0): sent now they
+    # are unknown fields (ignored and logged this release, like any other).
     strategy_opportunity_id: Optional[StrictInt] = None
     trade_id: Optional[StrictInt] = None
     fill_splits: Optional[List[FillSplitItem]] = None
-    strategy_instance_id: Optional[StrictInt] = None
-    instance_allocations: Optional[List[InstanceAllocationItem]] = None
 
     def sends_splits(self) -> bool:
-        """Whether non-empty splits were sent, under either name."""
-        return bool(self.fill_splits or self.instance_allocations)
+        """Whether non-empty splits were sent."""
+        return bool(self.fill_splits)
 
 
 class ExecutionCreateBody(_ExecutionFields):

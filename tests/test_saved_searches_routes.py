@@ -30,13 +30,13 @@ def _client(control_via_db: Any = None) -> TestClient:
 
 def test_mounted_on_the_account_app() -> None:
     paths = set(_client().app.openapi()["paths"])
-    assert {"/strategies/saved-searches", "/strategies/saved-searches/{preference_saved_search_id}"} <= paths
+    assert {"/preferences/saved-searches", "/preferences/saved-searches/{preference_saved_search_id}"} <= paths
 
 
 def test_writes_without_postgres_are_503() -> None:
     client = _client()
-    assert client.post("/strategies/saved-searches", json={"route": "/trade/plans", "label": "x", "state": {}}).status_code == 503
-    assert client.delete("/strategies/saved-searches/1").status_code == 503
+    assert client.post("/preferences/saved-searches", json={"route": "/trade/plans", "label": "x", "state": {}}).status_code == 503
+    assert client.delete("/preferences/saved-searches/1").status_code == 503
 
 
 def test_lists_and_saves(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -49,8 +49,8 @@ def test_lists_and_saves(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(saved_search_module, "create_saved_search", _create)
     client = _client({"sink": "postgres"})
-    assert client.get("/strategies/saved-searches").json() == {"items": [{"preference_saved_search_id": 1}], "count": 1}
-    r = client.post("/strategies/saved-searches", json={"route": "/trade/plans", "label": "AMD · all", "state": {"q": "sym:AMD"}})
+    assert client.get("/preferences/saved-searches").json() == {"items": [{"preference_saved_search_id": 1}], "count": 1}
+    r = client.post("/preferences/saved-searches", json={"route": "/trade/plans", "label": "AMD · all", "state": {"q": "sym:AMD"}})
     assert r.json() == {"preference_saved_search_id": 7}
     assert seen == {"route": "/trade/plans", "label": "AMD · all", "state": {"q": "sym:AMD"}}
 
@@ -60,7 +60,7 @@ def test_a_refusal_is_400_with_the_reason(monkeypatch: pytest.MonkeyPatch) -> No
         raise SavedSearchError("route must be an app path, like /trade/plans.")
 
     monkeypatch.setattr(saved_search_module, "create_saved_search", _refuse)
-    r = _client({"sink": "postgres"}).post("/strategies/saved-searches", json={"route": "x", "label": "y", "state": {}})
+    r = _client({"sink": "postgres"}).post("/preferences/saved-searches", json={"route": "x", "label": "y", "state": {}})
     assert r.status_code == 400
     assert r.json()["detail"] == "route must be an app path, like /trade/plans."
 
@@ -70,7 +70,7 @@ def test_delete_missing_is_404(monkeypatch: pytest.MonkeyPatch) -> None:
         raise WriteNotFound("No saved search 404.")
 
     monkeypatch.setattr(saved_search_module, "delete_saved_search_strict", _missing)
-    r = _client({"sink": "postgres"}).delete("/strategies/saved-searches/404")
+    r = _client({"sink": "postgres"}).delete("/preferences/saved-searches/404")
     assert r.status_code == 404 and r.json()["detail"] == "No saved search 404."
 
 
@@ -80,5 +80,5 @@ def test_delete_answers_deleted(monkeypatch: pytest.MonkeyPatch) -> None:
         "delete_saved_search_strict",
         lambda _cfg, sid, **_kw: {"deleted": "hard", "preference_saved_search_id": sid},
     )
-    r = _client({"sink": "postgres"}).delete("/strategies/saved-searches/9")
+    r = _client({"sink": "postgres"}).delete("/preferences/saved-searches/9")
     assert r.json() == {"deleted": "hard", "preference_saved_search_id": 9, "ok": True}

@@ -153,22 +153,15 @@ class GateSetList(ResponseRow):
     count: int
 
 
-# The old class names (naming R1); they go in R4.
-GateSafetyRow = GateSetRow
-GateSafetyDetail = GateSetDetail
-GateSafetyList = GateSetList
-
 
 # --- trades (table trade since naming R3, core 0.45.0) -----------------------------------
 
 
 class TradeRow(ResponseRow):
-    """GET /trades item, GET / PATCH /trades/{trade_id} (and /strategies/instances… until R4)."""
+    """GET /trades item, GET / PATCH /trades/{trade_id}."""
 
-    # The trade's id under its name (core 0.42.0); strategy_instance_id is the same value
-    # until R4.
+    # strategy_instance_id (the same value) went in naming R4 (api 0.9.0, core 0.47.0).
     trade_id: int
-    strategy_instance_id: int
     strategy_opportunity_id: int
     strategy_opportunity_name: Optional[str]
     strategy_structure_id: Optional[int]
@@ -194,11 +187,6 @@ class TradeRow(ResponseRow):
 class TradeList(ResponseRow):
     items: List[TradeRow]
     count: int
-
-
-# The old class names (naming R1); they go in R4.
-InstanceRow = TradeRow
-InstanceList = TradeList
 
 
 # --- plans ------------------------------------------------------------------------------
@@ -248,9 +236,8 @@ class PlanRow(ResponseRow):
     intended_at: Optional[Timestamp]
     filled_at: Optional[Timestamp]
     cancelled_at: Optional[Timestamp]
-    strategy_instance_id: Optional[int]
-    # The same id under the trade's name (core 0.42.0, naming R1).
-    trade_id: Optional[int] = None
+    # The trade the plan turned into (strategy_instance_id beside it until api 0.9.0).
+    trade_id: Optional[int]
     parent_strategy_plan_id: Optional[int]
     created_at: Timestamp
     updated_at: Timestamp

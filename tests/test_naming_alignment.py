@@ -38,8 +38,7 @@ PATH_IDS = {
     "strategy_opportunity_id",
     "strategy_allocation_id",
     "gate_safety_strategy_id",
-    "strategy_instance_id",
-    "trade_id",  # naming R1: /trades/{trade_id}; strategy_instance_id goes with the old routes in R4
+    "trade_id",  # naming R1: /trades/{trade_id}; strategy_instance_id went with the old routes in R4
     "strategy_plan_id",
     "preference_saved_search_id",
     "account_executions_id",
@@ -140,7 +139,7 @@ def test_saved_search_takes_state_json(monkeypatch: pytest.MonkeyPatch, sent: Di
         return 7
 
     monkeypatch.setattr(saved_search_module, "create_saved_search", _create)
-    r = _client().post("/strategies/saved-searches", json={"route": "/trade/plans", "label": "ZZQ", **sent})
+    r = _client().post("/preferences/saved-searches", json={"route": "/trade/plans", "label": "ZZQ", **sent})
     assert r.status_code == 200, r.text
     assert seen["state"] == state
 

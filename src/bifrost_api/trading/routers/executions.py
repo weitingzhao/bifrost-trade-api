@@ -33,7 +33,7 @@ attribution); unknown fields are ignored and logged this release.
 
 import asyncio
 import logging
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import StrictInt
@@ -77,19 +77,14 @@ class ExecutionAttributionPatch(PatchBody):
     """Strategy attribution of one execution: a trade, or quantity splits -- not both. The
     opportunity is the trade's (core 0.37.0): sent alone it is 400, sent with a trade it must match.
 
-    ``trade_id`` / ``fill_splits`` are the names from api 0.7.0 (naming R1);
-    ``strategy_instance_id`` / ``instance_allocations`` still work until R4 and lose when
-    both are sent. The answer carries both."""
+    ``trade_id`` / ``fill_splits`` (naming R1, api 0.7.0). The old names
+    ``strategy_instance_id`` / ``instance_allocations`` were read beside them until naming R4
+    (api 0.9.0, core 0.47.0) and are unknown fields now (422)."""
 
     strategy_opportunity_id: Optional[StrictInt] = None
     trade_id: Optional[StrictInt] = None
     # [{trade_id, quantity}], replaced whole; [] removes the splits.
     fill_splits: Optional[List[Dict[str, Any]]] = None
-    strategy_instance_id: Optional[StrictInt] = None
-    # [{strategy_instance_id, allocated_quantity}]: the old name of fill_splits.
-    instance_allocations: Optional[List[Dict[str, Any]]] = None
-
-    READ_NAMES: ClassVar[Dict[str, str]] = {"trade_id": "strategy_instance_id", "fill_splits": "instance_allocations"}
 
 # What core's option-stock link readers and writers answer, by status. Core returns a
 # message rather than a reason code, so the route sorts by the message
@@ -209,7 +204,7 @@ def get_executions(
     limit: int = Query(200, ge=0, le=10000, description="Max rows to return; 0 = no limit"),
     include_opt_pairs: bool = Query(False, description="Include C<>P pairing"),
     strategy_opportunity_id: Optional[int] = Query(None, description="Filter by strategy opportunity ID"),
-    strategy_instance_id: Optional[int] = trade_id_query(),
+    trade_id: Optional[int] = trade_id_query(),
     source_scope: Optional[str] = Query(
         None,
         description=(
@@ -261,7 +256,7 @@ def get_executions(
                 account_id=account_id,
                 limit=cap,
                 strategy_opportunity_id=strategy_opportunity_id,
-                strategy_instance_id=strategy_instance_id,
+                trade_id=trade_id,
                 source_scope=source_scope,
             )
             or {}
@@ -276,7 +271,7 @@ def get_executions(
                 account_id=account_id,
                 limit=effective_limit,
                 strategy_opportunity_id=strategy_opportunity_id,
-                strategy_instance_id=strategy_instance_id,
+                trade_id=trade_id,
                 source_scope=source_scope,
                 cursor=cursor,
             )
@@ -297,7 +292,7 @@ def get_position_attribution(
 ) -> Dict[str, Any]:
     """Position x Instance attribution (net-estimated). Returns one row per (position, instance)."""
     reader = request.app.state.reader
-    items = reader.get_position_instance_attribution(
+    items = reader.get_position_trade_attribution(
         account_id=account_id,
         sec_type_filter=sec_type,
     )
@@ -443,7 +438,7 @@ def get_performance(
     account_id: Optional[str] = Query(None),
     granularity: str = Query("day", description="day | week | month"),
     strategy_opportunity_id: Optional[int] = Query(None, description="Filter by strategy opportunity ID"),
-    strategy_instance_id: Optional[int] = trade_id_query(),
+    trade_id: Optional[int] = trade_id_query(),
     source_scope: str = Query(
         "performance_book",
         description="performance_book (default, account_executions_final) | on_the_fly (account_executions_fly)",
@@ -456,15 +451,15 @@ def get_performance(
     """Performance stats and calendar PnL. Default source_scope=performance_book reads account_executions_final (flex+journal only)."""
     reader = request.app.state.reader
     if summary_only:
-        if strategy_instance_id is None:
+        if trade_id is None:
             raise HTTPException(status_code=400, detail="summary_only requires trade_id")
         if (account_id is not None and str(account_id).strip()) or strategy_opportunity_id is not None:
             raise HTTPException(
                 status_code=400,
                 detail="summary_only allows only trade_id (no account_id / opportunity filter)",
             )
-        out = reader.get_performance_instance_summary(
-            strategy_instance_id=strategy_instance_id,
+        out = reader.get_performance_trade_summary(
+            trade_id=trade_id,
             since_ts=from_ts,
             until_ts=to_ts,
         )
@@ -475,7 +470,7 @@ def get_performance(
         account_id=account_id,
         granularity=granularity,
         strategy_opportunity_id=strategy_opportunity_id,
-        strategy_instance_id=strategy_instance_id,
+        trade_id=trade_id,
         source_scope=source_scope,
     )
     return out
@@ -569,8 +564,7 @@ def put_execution(request: Request, account_executions_id: str, body: ExecutionU
 @router.patch("/executions/{account_executions_id}/attribution")
 def patch_execution_attribution(request: Request, account_executions_id: str, body: ExecutionAttributionPatch) -> Any:
     """Change one execution's strategy attribution; answer its attribution fields
-    (account_executions_id, account_id, the opportunity, trade_id and fill_splits -- with
-    strategy_instance_id and instance_allocations beside them until R4).
+    (account_executions_id, account_id, the opportunity, trade_id and fill_splits).
 
     `trade_id: null` clears the whole-fill attribution. A trade on an execution
     that has splits is 409 unless the same patch sends `fill_splits: []`. The

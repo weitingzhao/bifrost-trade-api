@@ -1,11 +1,14 @@
-"""`/strategies/saved-searches` — a page's scope kept under a name.
-
-Replaced by ``/preferences/saved-searches`` (naming R1, D5-A; same functions,
-``bifrost_api.strategy.routers.preferences``); these routes go in R4.
+"""`/preferences/saved-searches` -- a page's scope kept under a name.
 
 Trade design Rev .139: Plans' Save as list writes one, the sidebar lists them
 on every page. Stored server-side for the one operator (Owner 2026-10-01); the
-rules and the table are core's (`saved_search`, core 0.28.0).
+rules and the table are core's (`saved_search`, core 0.28.0). The rows are a
+preference, not part of the rule chain: naming R1 (api 0.7.0, D5-A) moved them
+out of ``/strategies/saved-searches``, whose routes went in naming R4 (api 0.9.0).
+
+    GET    /preferences/saved-searches                               every saved search
+    POST   /preferences/saved-searches                               {route, label, state_json}
+    DELETE /preferences/saved-searches/{preference_saved_search_id}  forget one
 
     400  a route, label or state the table would refuse (with the reason)
     404  no such saved search
@@ -27,7 +30,7 @@ from bifrost_core.monitor.reader.saved_search import SavedSearchError
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/strategies", tags=["saved-searches"])
+router = APIRouter(prefix="/preferences", tags=["saved-searches"])
 
 
 @router.get("/saved-searches")
@@ -59,7 +62,7 @@ def create_saved_search_endpoint(request: Request, body: SavedSearchBody) -> Dic
     return {"preference_saved_search_id": new_id}
 
 
-@router.delete("/saved-searches/{preference_saved_search_id}")
+@router.delete("/saved-searches/{preference_saved_search_id:int}")
 def delete_saved_search_endpoint(request: Request, preference_saved_search_id: int) -> Dict[str, Any]:
     """Forget one saved search (hard delete). Failures are core's Write* outcomes
     (``bifrost_api.common.write_errors``): 404 missing, 503 Postgres unavailable."""

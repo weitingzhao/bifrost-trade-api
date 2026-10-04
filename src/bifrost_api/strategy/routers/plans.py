@@ -155,12 +155,12 @@ def intend_plan_endpoint(request: Request, strategy_plan_id: int) -> Dict[str, A
 def link_fill_endpoint(
     request: Request, strategy_plan_id: int, body: PlanLinkFillBody
 ) -> Dict[str, Any]:
-    """Say which trade the plan turned into: body ``{trade_id}`` (``strategy_instance_id`` is
-    read the same until R4). The fill itself happened in TWS."""
+    """Say which trade the plan turned into: body ``{trade_id}`` (``strategy_instance_id`` was
+    read the same until naming R4, api 0.9.0). The fill itself happened in TWS."""
     config = write_config(request)
     try:
         linked = strategy_plan_module.link_fill(
-            config, strategy_plan_id, body.strategy_instance_id
+            config, strategy_plan_id, body.trade_id
         )
     except PlanRuleError as e:
         raise HTTPException(status_code=409, detail=e.reason) from e
@@ -173,7 +173,6 @@ def link_fill_endpoint(
         "ok": True,
         "strategy_plan_id": strategy_plan_id,
         "trade_id": body.trade_id,
-        "strategy_instance_id": body.strategy_instance_id,
         "status": "filled",
     }
 

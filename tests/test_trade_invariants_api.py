@@ -28,8 +28,7 @@ def _client(reader: Any = None) -> TestClient:
 def test_the_instance_list_sends_state_and_closed_on() -> None:
     reader = MagicMock()
     row = {
-        "trade_id": 41,  # core's add_trade_names (naming R1)
-        "strategy_instance_id": 41,
+        "trade_id": 41,
         "strategy_opportunity_id": 5,
         "strategy_opportunity_name": "Wheel",
         "strategy_structure_id": 2,
@@ -43,12 +42,12 @@ def test_the_instance_list_sends_state_and_closed_on() -> None:
         "state": "expired",
         "closed_on": "2026-09-18",
     }
-    reader.list_strategy_instances.return_value = [row]
-    body = _client(reader).get("/strategies/instances").json()
+    reader.list_trades.return_value = [row]
+    body = _client(reader).get("/trades").json()
     assert body["items"][0]["state"] == "expired" and body["items"][0]["closed_on"] == "2026-09-18"
-    assert {"state", "closed_on"} <= set(models.InstanceRow.model_fields)
+    assert {"state", "closed_on"} <= set(models.TradeRow.model_fields)
     with pytest.raises(ValueError):
-        models.InstanceRow.model_validate({**row, "state": "active"})
+        models.TradeRow.model_validate({**row, "state": "active"})
 
 
 def test_category_rows_are_keyed_category_id_only() -> None:

@@ -111,7 +111,7 @@ def test_a_rule_refusal_becomes_409_with_the_reason(monkeypatch: pytest.MonkeyPa
     for response in (
         client.post("/strategies/plans/1/intend"),
         client.post("/strategies/plans/1/cancel"),
-        client.post("/strategies/plans/1/link-fill", json={"strategy_instance_id": 7}),
+        client.post("/strategies/plans/1/link-fill", json={"trade_id": 7}),
     ):
         assert response.status_code == 409
         assert response.json()["detail"] == reason

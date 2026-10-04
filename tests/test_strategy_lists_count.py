@@ -20,9 +20,9 @@ LISTS = [
     ("/strategies/templates", "list_templates", _ANY_ROWS),
     ("/strategies/structures", "list_structures", _ANY_ROWS),
     ("/strategies/opportunities", "list_opportunities", strategy_rows.opportunities),
-    ("/strategies/instances", "list_strategy_instances", strategy_rows.instances),
+    ("/trades", "list_trades", strategy_rows.instances),
     ("/strategies/allocations", "list_allocations", strategy_rows.allocations),
-    ("/strategies/gate-safety", "list_gate_safety_sets", strategy_rows.gate_sets),
+    ("/gate-sets", "list_gate_safety_sets", strategy_rows.gate_sets),
 ]
 
 

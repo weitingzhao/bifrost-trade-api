@@ -125,7 +125,7 @@ GATE_DETAIL_SQL = {
 
 INSTANCE_LIST_SQL = [
     {
-        "strategy_instance_id": 41, "strategy_opportunity_id": 5, "account_id": "U0000001",
+        "trade_id": 41, "strategy_opportunity_id": 5, "account_id": "U0000001",
         "opened_at": T0, "label": "ZZQ Apr 40P", "created_at": T0, "updated_at": T1,
         "strategy_opportunity_name": "ZZQ puts", "strategy_structure_id": 9,
         "strategy_structure_name": "Short put 30d", "executions_count": 3,
@@ -149,7 +149,7 @@ PLAN_SQL = {
     "exit_by": date(2031, 4, 10), "rationale": "IV rank high into a quiet tape.",
     "source_kind": "symbol", "source_ref": "ZZQ", "source_json": [{"kind": "symbol", "ref": "ZZQ"}],
     "status": "intended", "expires_at": T1, "intended_at": T0, "filled_at": None, "cancelled_at": None,
-    "strategy_instance_id": None, "parent_strategy_plan_id": None, "created_at": T0, "updated_at": T1,
+    "trade_id": None, "parent_strategy_plan_id": None, "created_at": T0, "updated_at": T1,
 }
 
 

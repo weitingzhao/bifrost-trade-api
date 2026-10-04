@@ -100,8 +100,6 @@ def create_account_app(
     from bifrost_api.strategy.routers import (
         gate_sets_router,
         plans_router,
-        preferences_router,
-        reviews_router,
         saved_searches_router,
         strategies_router,
         trades_router,
@@ -119,13 +117,11 @@ def create_account_app(
     # Phase B Wave B3: strategy CRUD absorbed into account-service
     app.include_router(strategies_router)
     app.include_router(plans_router)
-    app.include_router(saved_searches_router)
-    app.include_router(reviews_router)
     # naming R1 (api 0.7.0, D5-A): the trade, its reviews, gate sets and saved searches under
-    # their own names; the /strategies/... routes above answer the same until R4.
+    # their own names; their /strategies/... routes went in naming R4 (api 0.9.0).
     app.include_router(trades_router)
     app.include_router(gate_sets_router)
-    app.include_router(preferences_router)
+    app.include_router(saved_searches_router)
 
     @app.get("/health")
     def account_health() -> Any:

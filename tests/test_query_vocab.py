@@ -136,9 +136,9 @@ def test_old_and_new_time_names_reach_the_reader_the_same(caplog: pytest.LogCapt
     [
         ("/executions", "get_executions_page", "since_ts=7", "from_ts=7", ("since_ts", 7.0)),
         ("/performance", "get_performance_stats", "until_ts=7", "to_ts=7", ("until_ts", 7.0)),
-        ("/strategies/win-rate", "get_strategy_win_rate", "since_ts=7", "from_ts=7", ("since_ts", 7.0)),
-        ("/strategies/instances", "list_strategy_instances", "opened_at_from=7", "from_ts=7", ("opened_at_from", 7.0)),
-        ("/strategies/instances", "list_strategy_instances", "opened_at_until=7", "to_ts=7", ("opened_at_until", 7.0)),
+        ("/trades/win-rate", "get_trade_win_rate", "since_ts=7", "from_ts=7", ("since_ts", 7.0)),
+        ("/trades", "list_trades", "opened_at_from=7", "from_ts=7", ("opened_at_from", 7.0)),
+        ("/trades", "list_trades", "opened_at_until=7", "to_ts=7", ("opened_at_until", 7.0)),
     ],
 )
 def test_each_old_time_name_still_filters(
