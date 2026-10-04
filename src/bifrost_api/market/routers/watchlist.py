@@ -6,8 +6,8 @@ answers ``{"items", "count"}`` (``bifrost_api.common.envelopes``, TD-16/17).
 Writes (TD-15, batch 3b-2) call core's TD-15 writers; their Write* outcomes are
 mapped once in ``bifrost_api.common.write_errors`` (400 bad input, 404 not on the
 list, 503 Postgres unavailable, 500 write failed). The POST body is
-``market.schemas.requests.WatchlistBody`` (TD-24: strict types, unknown fields
-ignored and logged this release):
+``market.schemas.requests.WatchlistBody`` (TD-24: strict types, an unknown field is
+a 422 since api 0.9.0):
 
     POST   /watchlist                      add, or change the fields sent on a watched contract
     PATCH  /watchlist/{contract_key}       change the fields sent; 404 when not on the list

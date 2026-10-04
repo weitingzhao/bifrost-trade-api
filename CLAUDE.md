@@ -99,12 +99,12 @@ Research **不写** `strategy_opportunity`。表结构与列见 `bifrost-trade-c
 
 ### 请求与响应模型（TD-24，0.3.1，决策 B 先加后收）
 
-- **POST / PUT body 一律是模型**，不再收 `Dict[str, Any]`：继承 `common/request_bodies.LenientBody`（嵌套对象用
-  `LenientItem`），放在各域 `*/schemas/requests.py`。类型 strict（`"5"` 不是数、`1` 不是 `true`）→ 类型错是 422、什么都不写；
+- **POST / PUT body 一律是模型**，不再收 `Dict[str, Any]`：继承 `common/request_bodies.StrictBody`（嵌套对象用
+  `StrictItem`），放在各域 `*/schemas/requests.py`。类型 strict（`"5"` 不是数、`1` 不是 `true`）→ 类型错是 422、什么都不写；
   字段在模型里都可选，「必填」仍由路由 / core 答 400（消息不变）。路由只读声明过的字段：交给 core 用
-  `body.declared(exclude_unset=True)`。**未知字段这一版接受并忽略**，每个请求记一行
-  `unknown request fields: <METHOD> <route template> ignored [<names>]`（只有字段名，不记值；嵌套写 `legs[].x`），
-  靠 `install_request_field_log`（account、market 两个 app）拿到路由模板。**下一版改 `extra="forbid"`**，与 PATCH 一致。
+  `body.declared(exclude_unset=True)`。**未知字段是 422**（`extra="forbid"`，与 PATCH 一致；api 0.9.0 起，TD-24），
+  错误项 `type=extra_forbidden`、`loc` 带路径（嵌套如 `["body","legs",1,"leg_uid"]`），什么都不写。
+  0.3.1–0.8.x 是「接受并忽略 + 记 `unknown request fields` 一行」，那行日志与 `install_request_field_log` 已删。
   core 自带的 body（opportunity / allocation / instance / plan / review）与 PATCH 的 `PatchBody` 不在此列。
 - **响应模型**：allocations、opportunities、gate-safety、instances、plans 的列表 / 单个 GET / PATCH 用
   `strategy/schemas/responses.py`（`response_model=…`，`response_model_exclude_unset=True`）。`ResponseRow` 先跑

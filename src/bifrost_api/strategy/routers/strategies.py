@@ -44,8 +44,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
 # Bodies and answers (TD-24, batch 3c-1): POST / PUT bodies are typed
-# (bifrost_api.strategy.schemas.requests -- strict types, unknown fields ignored and
-# logged this release); allocations, opportunities, gate sets and trades
+# (bifrost_api.strategy.schemas.requests -- strict types, an unknown field is a 422
+# since api 0.9.0); allocations, opportunities, gate sets and trades
 # answer through the response models in bifrost_api.strategy.schemas.responses.
 #
 # Writes (TD-15, batch 3b-2): PATCH changes only the fields sent and answers the

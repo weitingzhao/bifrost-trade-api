@@ -1,9 +1,8 @@
 """POST body for the watchlist router (TD-24, batch 3c-1).
 
-Strict types (it took lax ones: ``"450"`` was a strike), unknown fields ignored and
-logged this release, ``extra="forbid"`` next
-(:class:`~bifrost_api.common.request_bodies.LenientBody`). The PATCH body stays in
-the router (TD-15).
+Strict types (it took lax ones: ``"450"`` was a strike) and no unknown fields
+(:class:`~bifrost_api.common.request_bodies.StrictBody`, ``extra="forbid"`` since api
+0.9.0: an undeclared field is a 422). The PATCH body stays in the router (TD-15).
 """
 
 from __future__ import annotations
@@ -12,10 +11,10 @@ from typing import Optional
 
 from pydantic import StrictBool, StrictFloat, StrictInt, StrictStr
 
-from bifrost_api.common.request_bodies import LenientBody
+from bifrost_api.common.request_bodies import StrictBody
 
 
-class WatchlistBody(LenientBody):
+class WatchlistBody(StrictBody):
     """POST /watchlist: add a contract, or change the fields sent on one already watched.
 
     An explicit null clears (``category_id: null`` is the None list); ``optionable:

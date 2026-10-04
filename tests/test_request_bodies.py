@@ -3,21 +3,22 @@
 Each write route replays the payload the frontend sends today (the shape of the
 call site named beside it; values invented) and must pass, handing core exactly the
 declared fields. Then: wrong types are 422 and write nothing -- the tag bug first --
-and unknown fields are ignored and logged by name, never by value.
+and so are unknown fields (``extra="forbid"`` since api 0.9.0; they were ignored and
+logged by name from 0.3.1 until a week of logs showed no caller sending one).
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import BaseModel
 from starlette.testclient import TestClient
 
 import bifrost_api.trading.routers.executions as ex
 from bifrost_api.account.app import create_account_app
-from bifrost_api.common.request_bodies import LenientBody, LenientItem, unknown_field_names
+from bifrost_api.common.request_bodies import StrictBody, StrictItem
 from bifrost_api.market.app import create_market_app
 from bifrost_core.monitor.reader import gate_safety_write
 from bifrost_core.monitor.reader import saved_search
@@ -277,73 +278,109 @@ def test_a_wrong_watchlist_type_is_422(monkeypatch: pytest.MonkeyPatch) -> None:
 # --- unknown fields ------------------------------------------------------------------------
 
 
-def test_unknown_fields_are_ignored_and_logged_by_name_only(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+@pytest.mark.parametrize(
+    "method,path,body,extra",
+    [
+        ("POST", "/gate-sets", {**GATE, "colour": "teal"}, "colour"),
+        ("POST", "/strategies/structures", {**STRUCTURE, "subtype": "x"}, "subtype"),
+        ("POST", "/strategies/templates", {"template_code": "zz_put", "colour": "teal"}, "colour"),
+        ("POST", "/preferences/saved-searches", {"route": "/trade/plans", "label": "x", "owner": "y"}, "owner"),
+        ("POST", "/position-categories", {"name": "Watching", "color": "teal"}, "color"),
+        ("PUT", "/position-categories/tag", {"account_id": ACC, "contract_key": "ZZQ|STK|||", "category_id": 3,
+                                             "category_name": "Core"}, "category_name"),
+        ("PUT", "/position-categories/symbol-order", {"category_name": "Core", "symbols": ["ZZQ"], "x": 1}, "x"),
+        ("PUT", "/instrument-classes/ZZFI%7CSTK%7C%7C%7C", {"instrument_class": "fixed_income", "x": 1}, "x"),
+        ("POST", "/executions", {**EXECUTION_CREATE, "exec_time": 1930487400}, "exec_time"),
+        ("PUT", "/executions/-101", {**EXECUTION_UPDATE, "account_executions_id": -101}, "account_executions_id"),
+        ("POST", "/executions/option-stock-links", {"account_id": ACC, "option_account_executions_id": 31,
+                                                    "stock_account_executions_id": 32, "x": 1}, "x"),
+        ("POST", "/executions/option-stock-links/query", {"batches": [], "x": 1}, "x"),
+    ],
+    ids=lambda v: v if isinstance(v, str) and v.startswith("/") else None,
+)
+def test_an_unknown_field_is_422_named_and_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, method: str, path: str, body: Dict[str, Any], extra: str
 ) -> None:
-    create = MagicMock(return_value=2)
-    monkeypatch.setattr(gate_safety_write, "create_gate_safety", create)
-    c, _ = _account()
-    with caplog.at_level(logging.WARNING, logger="bifrost_api.common.request_bodies"):
-        r = c.post("/gate-sets", json={**GATE, "structure_type": "SECRET-VALUE", "colour": "teal"})
-    assert r.status_code == 200, r.text
-    assert create.call_args.args[1] == GATE  # neither unknown field reaches core
-    lines = [rec.getMessage() for rec in caplog.records if "unknown request fields" in rec.getMessage()]
-    assert lines == ["unknown request fields: POST /gate-sets ignored ['colour', 'structure_type']"]
-    assert "SECRET-VALUE" not in caplog.text and "teal" not in caplog.text
+    writers = [MagicMock() for _ in range(6)]
+    for w, (module, fn) in zip(writers, [
+        (gate_safety_write, "create_gate_safety"), (strategy_structure_write, "create_structure"),
+        (template_config_write, "create_template"), (saved_search, "create_saved_search"),
+        (ex, "insert_one_execution"), (ex, "update_one_execution"),
+    ]):
+        monkeypatch.setattr(module, fn, w)
+    monkeypatch.setattr(ex, "insert_option_stock_link", MagicMock())
+    c, reader = _account()
+    r = c.request(method, path, json=body)
+    assert r.status_code == 422, r.text
+    errors = r.json()["detail"]
+    assert [e["type"] for e in errors] == ["extra_forbidden"]
+    assert errors[0]["loc"] == ["body", extra]
+    for w in writers:
+        w.assert_not_called()
+    ex.insert_option_stock_link.assert_not_called()
+    for fn in ("create_position_category", "set_position_category_tag", "set_market_streams_symbol_order",
+               "set_instrument_class", "get_option_stock_links_bulk"):
+        getattr(reader, fn).assert_not_called()
 
 
-def test_nested_unknown_fields_are_named_with_their_path(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_a_nested_unknown_field_is_422_with_its_path(monkeypatch: pytest.MonkeyPatch) -> None:
     replace = MagicMock()
     monkeypatch.setattr(template_config_write, "replace_template_legs", replace)
     c, _ = _account()
-    legs = [{"role": "put", "direction": "sell", "option_right": "P", "quantity_default": 1, "leg_uid": "a"},
+    legs = [{"role": "put", "direction": "sell", "option_right": "P", "quantity_default": 1},
             {"role": "call", "direction": "sell", "option_right": "C", "quantity_default": 1, "leg_uid": "b"}]
-    with caplog.at_level(logging.WARNING, logger="bifrost_api.common.request_bodies"):
-        assert c.put("/strategies/templates/9/legs", json={"legs": legs}).status_code == 200
-    assert replace.call_args.args[2] == [{k: v for k, v in leg.items() if k != "leg_uid"} for leg in legs]
-    assert "PUT /strategies/templates/{strategy_template_id}/legs ignored ['legs[].leg_uid']" in caplog.text
+    r = c.put("/strategies/templates/9/legs", json={"legs": legs})
+    assert r.status_code == 422, r.text
+    assert [(e["type"], e["loc"]) for e in r.json()["detail"]] == [
+        ("extra_forbidden", ["body", "legs", 1, "leg_uid"])
+    ]
+    replace.assert_not_called()
 
 
-def test_a_body_without_unknown_fields_logs_nothing(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    monkeypatch.setattr(gate_safety_write, "create_gate_safety", MagicMock(return_value=2))
-    c, _ = _account()
-    with caplog.at_level(logging.WARNING, logger="bifrost_api.common.request_bodies"):
-        assert c.post("/gate-sets", json=GATE).status_code == 200
-    assert "unknown request fields" not in caplog.text
+def test_an_unknown_watchlist_field_is_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    upsert = MagicMock()
+    monkeypatch.setattr(watchlist, "upsert_watchlist", upsert)
+    r = _market().post("/watchlist", json={**WATCHLIST_PAYLOADS[0], "colour": "teal"})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"][0]["loc"] == ["body", "colour"]
+    upsert.assert_not_called()
 
 
-class _Item(LenientItem):
+class _Item(StrictItem):
     a: Optional[int] = None
 
 
-class _Body(LenientBody):
+class _Body(StrictBody):
     x: Optional[int] = None
     items: Optional[List[_Item]] = None
 
 
-def test_declared_drops_unknown_fields_at_every_level() -> None:
-    body = _Body.model_validate({"x": 1, "y": 2, "items": [{"a": 1, "b": 2}, {"c": 3}]})
-    assert unknown_field_names(body) == ["items[].b", "items[].c", "y"]
+def test_declared_is_the_body_as_plain_data() -> None:
+    body = _Body.model_validate({"x": 1, "items": [{"a": 1}, {}]})
     assert body.declared() == {"x": 1, "items": [{"a": 1}, {"a": None}]}
     assert body.declared(exclude_unset=True) == {"x": 1, "items": [{"a": 1}, {}]}
 
 
-def test_outside_a_request_the_log_still_names_the_fields(caplog: pytest.LogCaptureFixture) -> None:
-    with caplog.at_level(logging.WARNING, logger="bifrost_api.common.request_bodies"):
-        _Body.model_validate({"z": 1})
-    assert "unknown request fields: ? ? ignored ['z']" in caplog.text
+@pytest.mark.parametrize("data", [{"y": 2}, {"items": [{"a": 1, "b": 2}]}])
+def test_every_body_and_item_refuses_undeclared_keys(data: Dict[str, Any]) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as e:
+        _Body.model_validate(data)
+    assert [err["type"] for err in e.value.errors()] == ["extra_forbidden"]
 
 
-@pytest.mark.parametrize(
-    "factory",
-    [lambda: _account()[0].app, lambda: _market().app],
-    ids=["account", "market"],
-)
-def test_the_apps_with_typed_bodies_install_the_field_log(factory: Any) -> None:
-    from bifrost_api.common.request_bodies import _RequestScope
+def test_every_request_model_forbids_extra() -> None:
+    """Every POST / PUT body and item in the four schema modules, aliases included."""
+    from bifrost_api.market.schemas import requests as market
+    from bifrost_api.portfolio.schemas import requests as portfolio
+    from bifrost_api.strategy.schemas import requests as strategy
+    from bifrost_api.trading.schemas import requests as trading
 
-    assert any(m.cls is _RequestScope for m in factory().user_middleware)
+    seen = 0
+    for module in (market, portfolio, strategy, trading):
+        for obj in vars(module).values():
+            if isinstance(obj, type) and issubclass(obj, BaseModel) and obj.__module__ == module.__name__:
+                assert obj.model_config.get("extra") == "forbid", obj.__name__
+                seen += 1
+    assert seen >= 20

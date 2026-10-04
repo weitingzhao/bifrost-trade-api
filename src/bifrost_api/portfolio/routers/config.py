@@ -10,7 +10,7 @@ is strict (404 for a missing row) and answers ``{"deleted": "hard", ..., "ok": t
 
 POST / PUT bodies (TD-24, batch 3c-1) are ``portfolio.schemas.requests`` models: a
 wrong type is 422 and writes nothing (a malformed ``category_id`` no longer clears a
-tag); unknown fields are ignored and logged this release.
+tag); an unknown field is a 422 too (api 0.9.0).
 """
 
 import logging

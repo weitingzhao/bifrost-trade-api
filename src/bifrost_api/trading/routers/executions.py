@@ -28,7 +28,7 @@ change): ``{account_executions_id}``, ``{account_execution_option_stock_link_id}
 
 TD-24 (batch 3c-1): the POST / PUT bodies are ``trading.schemas.requests`` models --
 a wrong type is 422 and writes nothing (a malformed strategy id no longer clears the
-attribution); unknown fields are ignored and logged this release.
+attribution); an unknown field is a 422 too (api 0.9.0).
 """
 
 import asyncio

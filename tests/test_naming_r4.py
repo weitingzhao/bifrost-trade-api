@@ -9,7 +9,7 @@ PROD release cycle with no old-name hit in Loki for 4 days (infra scripts/releas
 - The old routes are not served (404); ``REPLACED_ROUTES`` is empty.
 - Rows carry ``trade_id`` only (core 0.47.0); POST /trades answers ``{trade_id}``.
 - The old query names are not read as ``trade_id(s)`` (and not logged as deprecated).
-- Old body names: a PATCH body refuses them (422), a POST / PUT body ignores and logs them.
+- Old body names: every body refuses them (422; POST / PUT bodies forbid unknown fields since TD-24).
 - ``GET /data-probe`` (and ``/ops/data-probe``) on the monitor app (D8-A, from R1).
 
 Nothing reaches a database: readers are mocks and core's writers are replaced. Fixtures are invented.
@@ -198,18 +198,17 @@ def test_the_attribution_patch_hands_core_the_new_names(monkeypatch: pytest.Monk
     assert seen == [(77, {"trade_id": 41, "fill_splits": []})]
 
 
-def test_post_execution_ignores_and_logs_the_old_names(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_post_execution_refuses_the_old_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TD-24 (api 0.9.0): an undeclared body field is a 422, so the R1 names are too."""
     seen: List[Dict[str, Any]] = []
     monkeypatch.setattr(executions_router, "insert_one_execution", lambda _cfg, body: seen.append(body) or 5)
     body = {"account_id": ACC, "symbol": "ZZQ", "quantity": 2, "price": 1, "strategy_instance_id": 41,
             "instance_allocations": [{"strategy_instance_id": 41, "allocated_quantity": 2}]}
-    with caplog.at_level(logging.WARNING):
-        assert _client().post("/executions", json=body).status_code == 200
-    assert "strategy_instance_id" not in seen[0] and "instance_allocations" not in seen[0]
-    line = next(r.getMessage() for r in caplog.records if "unknown request fields" in r.getMessage())
-    assert "instance_allocations" in line and "strategy_instance_id" in line
+    r = _client().post("/executions", json=body)
+    assert r.status_code == 422, r.text
+    assert sorted(e["loc"][-1] for e in r.json()["detail"]) == ["instance_allocations", "strategy_instance_id"]
+    assert {e["type"] for e in r.json()["detail"]} == {"extra_forbidden"}
+    assert seen == []
 
 
 def test_link_fill_takes_trade_id_only(monkeypatch: pytest.MonkeyPatch) -> None:

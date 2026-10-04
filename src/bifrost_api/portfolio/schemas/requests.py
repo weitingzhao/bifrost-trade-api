@@ -1,7 +1,7 @@
 """POST / PUT bodies for the portfolio config router (TD-24, batch 3c-1).
 
-Strict types, unknown fields ignored and logged this release, ``extra="forbid"``
-next (:class:`~bifrost_api.common.request_bodies.LenientBody`). Fields are optional
+Strict types and no unknown fields (:class:`~bifrost_api.common.request_bodies.StrictBody`,
+``extra="forbid"`` since api 0.9.0: an undeclared field is a 422). Fields are optional
 at the model so the route's own 400s (``account_id is required.`` …) keep their
 messages; a wrong type is 422. The PATCH bodies stay in the router (TD-15).
 """
@@ -12,10 +12,10 @@ from typing import List, Optional
 
 from pydantic import StrictInt, StrictStr
 
-from bifrost_api.common.request_bodies import LenientBody
+from bifrost_api.common.request_bodies import StrictBody
 
 
-class PositionCategoryBody(LenientBody):
+class PositionCategoryBody(StrictBody):
     """POST /position-categories. ``name`` is required (400)."""
 
     name: Optional[StrictStr] = None
@@ -23,7 +23,7 @@ class PositionCategoryBody(LenientBody):
     sort_order: Optional[StrictInt] = None
 
 
-class PositionTagBody(LenientBody):
+class PositionTagBody(StrictBody):
     """PUT /position-categories/tag.
 
     ``category_id`` must be sent: an integer tags the position, ``null`` clears its tag
@@ -35,14 +35,14 @@ class PositionTagBody(LenientBody):
     category_id: Optional[StrictInt] = None
 
 
-class SymbolOrderBody(LenientBody):
+class SymbolOrderBody(StrictBody):
     """PUT /position-categories/symbol-order: replaces one category's order."""
 
     category_name: Optional[StrictStr] = None
     symbols: Optional[List[StrictStr]] = None
 
 
-class InstrumentClassBody(LenientBody):
+class InstrumentClassBody(StrictBody):
     """PUT /instrument-classes/{contract_key}. ``instrument_class`` is checked by the
     route (400 naming the classes)."""
 

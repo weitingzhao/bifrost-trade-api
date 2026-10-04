@@ -1,7 +1,7 @@
 """POST / PUT bodies for the strategy routers (TD-24, batch 3c-1).
 
-Strict types, unknown fields ignored and logged this release, ``extra="forbid"``
-next (:class:`~bifrost_api.common.request_bodies.LenientBody`). Every field is
+Strict types and no unknown fields (:class:`~bifrost_api.common.request_bodies.StrictBody`,
+``extra="forbid"`` since api 0.9.0: an undeclared field is a 422). Every field is
 optional at the model: the presence rules (``name is required`` …) and the domain
 rules (catalog codes, leg roles, gate ranges) stay where they were -- the route's
 400 or core's -- with the same messages. The routes hand core
@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from pydantic import StrictBool, StrictFloat, StrictInt, StrictStr
 
-from bifrost_api.common.request_bodies import LenientBody, LenientItem
+from bifrost_api.common.request_bodies import StrictBody, StrictItem
 
 # Core stores these values as sent (jsonb), so a row written before the types were
 # checked may hold a number; the UI sends such a value back unchanged on save.
@@ -26,7 +26,7 @@ MetaText = Union[StrictStr, StrictInt, StrictFloat]
 Number = Union[StrictInt, StrictFloat]
 
 
-class TemplateBody(LenientBody):
+class TemplateBody(StrictBody):
     """POST /strategies/templates and the replaced PUT /strategies/templates/{id}
     (the PUT changes the fields sent). POST needs ``template_code`` (core, 400)."""
 
@@ -46,7 +46,7 @@ class TemplateBody(LenientBody):
     is_active: Optional[StrictBool] = None
 
 
-class TemplateLegItem(LenientItem):
+class TemplateLegItem(StrictItem):
     role: Optional[StrictStr] = None
     direction: Optional[StrictStr] = None
     # The UI sends "" for a leg without a right (the stock leg).
@@ -58,13 +58,13 @@ class TemplateLegItem(LenientItem):
     sort_order: Optional[StrictInt] = None
 
 
-class TemplateLegsBody(LenientBody):
+class TemplateLegsBody(StrictBody):
     """PUT /strategies/templates/{id}/legs: replaces the legs. 400 without ``legs``."""
 
     legs: Optional[List[TemplateLegItem]] = None
 
 
-class TemplateParamItem(LenientItem):
+class TemplateParamItem(StrictItem):
     meta_key: Optional[StrictStr] = None
     display_label: Optional[StrictStr] = None
     default_value_text: Optional[MetaText] = None
@@ -72,19 +72,19 @@ class TemplateParamItem(LenientItem):
     sort_order: Optional[StrictInt] = None
 
 
-class TemplateParamsBody(LenientBody):
+class TemplateParamsBody(StrictBody):
     """PUT /strategies/templates/{id}/params: replaces the parameters. 400 without ``items``."""
 
     items: Optional[List[TemplateParamItem]] = None
 
 
-class TemplateCharacteristicsBody(LenientBody):
+class TemplateCharacteristicsBody(StrictBody):
     """PUT /strategies/templates/{id}/characteristics: replaces the lines; null or absent clears."""
 
     items: Optional[List[StrictStr]] = None
 
 
-class StructureLegItem(LenientItem):
+class StructureLegItem(StrictItem):
     """A leg as the UI holds it. Core takes a structure's legs from its template, so
     these are checked for type and not stored."""
 
@@ -96,12 +96,12 @@ class StructureLegItem(LenientItem):
     expiration: Optional[StrictStr] = None
 
 
-class StructureMetaItem(LenientItem):
+class StructureMetaItem(StrictItem):
     meta_key: Optional[StrictStr] = None
     meta_value_text: Optional[MetaText] = None
 
 
-class StructureBody(LenientBody):
+class StructureBody(StrictBody):
     """POST /strategies/structures and PUT /strategies/structures/{id} (a full replace).
 
     ``name`` and ``legs`` are required (core, 400); the template comes from
@@ -117,7 +117,7 @@ class StructureBody(LenientBody):
     meta: Optional[List[StructureMetaItem]] = None
 
 
-class GateSetBody(LenientBody):
+class GateSetBody(StrictBody):
     """POST /gate-sets and PUT /gate-sets/{id} (a full replace; /strategies/gate-safety… until R4).
 
     ``name`` is required (the route, 400). ``gates`` is the nested gates object, checked
@@ -137,7 +137,7 @@ class GateSetBody(LenientBody):
     earnings_dates: Optional[List[StrictStr]] = None
 
 
-class SavedSearchBody(LenientBody):
+class SavedSearchBody(StrictBody):
     """POST /preferences/saved-searches. Core's rules: ``route`` an app path, ``label``
     non-blank, ``state`` an object (400 with the reason).
 

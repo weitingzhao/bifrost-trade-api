@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 from typing import Dict, List
 
-from bifrost_api.common.request_bodies import LenientItem
+from bifrost_api.common.request_bodies import StrictItem
 from bifrost_api.market.schemas import requests as market
 from bifrost_api.portfolio.schemas import requests as portfolio
 from bifrost_api.strategy.schemas import requests as strategy
@@ -28,7 +28,7 @@ def current() -> Dict[str, List[str]]:
     out: Dict[str, List[str]] = {}
     for module in (market, portfolio, strategy, trading):
         for name, cls in inspect.getmembers(module, inspect.isclass):
-            if name.startswith("_") or cls.__module__ != module.__name__ or not issubclass(cls, LenientItem):
+            if name.startswith("_") or cls.__module__ != module.__name__ or not issubclass(cls, StrictItem):
                 continue
             if cls.__name__ != name:
                 continue  # an old name kept as an alias (GateSafetyBody = GateSetBody, naming R1)

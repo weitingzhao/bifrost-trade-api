@@ -1,7 +1,7 @@
 """POST / PUT bodies for the executions router (TD-24, batch 3c-1).
 
-Strict types, unknown fields ignored and logged this release, ``extra="forbid"``
-next (:class:`~bifrost_api.common.request_bodies.LenientBody`). Fields are optional
+Strict types and no unknown fields (:class:`~bifrost_api.common.request_bodies.StrictBody`,
+``extra="forbid"`` since api 0.9.0: an undeclared field is a 422). Fields are optional
 at the model so the route's and core's own 400s keep their messages; a wrong type is
 422 and nothing is written -- before 0.3.1 a strategy id that was not a number was
 stored as null, clearing the fill's attribution. Prices, quantities and amounts are
@@ -15,17 +15,17 @@ from typing import Any, List, Optional
 
 from pydantic import StrictFloat, StrictInt, StrictStr
 
-from bifrost_api.common.request_bodies import LenientBody, LenientItem
+from bifrost_api.common.request_bodies import StrictBody, StrictItem
 
 
-class FillSplitItem(LenientItem):
+class FillSplitItem(StrictItem):
     """One split of a fill across trades; the splits must sum to the fill's quantity (core, 400)."""
 
     trade_id: Optional[StrictInt] = None
     quantity: Optional[StrictFloat] = None
 
 
-class _ExecutionFields(LenientBody):
+class _ExecutionFields(StrictBody):
     account_id: Optional[StrictStr] = None
     symbol: Optional[StrictStr] = None
     sec_type: Optional[StrictStr] = None
@@ -47,7 +47,7 @@ class _ExecutionFields(LenientBody):
     currency: Optional[StrictStr] = None
     # Direct attribution (trade_id), or fill_splits -- not both. The old names
     # strategy_instance_id / instance_allocations went in naming R4 (api 0.9.0): sent now they
-    # are unknown fields (ignored and logged this release, like any other).
+    # are unknown fields, a 422 like any other (TD-24).
     strategy_opportunity_id: Optional[StrictInt] = None
     trade_id: Optional[StrictInt] = None
     fill_splits: Optional[List[FillSplitItem]] = None
@@ -76,7 +76,7 @@ class ExecutionUpdateBody(_ExecutionFields):
     time: Optional[StrictFloat] = None
 
 
-class OptionStockLinkBody(LenientBody):
+class OptionStockLinkBody(StrictBody):
     """POST /executions/option-stock-links. ``account_id`` and both ids are required (core, 400)."""
 
     account_id: Optional[StrictStr] = None
@@ -87,12 +87,12 @@ class OptionStockLinkBody(LenientBody):
     note: Optional[StrictStr] = None
 
 
-class OptionStockLinkBatch(LenientItem):
+class OptionStockLinkBatch(StrictItem):
     account_id: Optional[StrictStr] = None
     option_account_executions_ids: Optional[List[StrictInt]] = None
 
 
-class OptionStockLinksQueryBody(LenientBody):
+class OptionStockLinksQueryBody(StrictBody):
     """POST /executions/option-stock-links/query. ``batches`` is required (400); a batch
     without an account or ids is skipped."""
 
