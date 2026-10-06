@@ -1,8 +1,10 @@
-"""One query vocabulary, old names accepted for one release (debt TD-51, api 0.6.6).
+"""One query vocabulary (debt TD-51): canonical names since api 0.6.6, old ones refused since 0.10.0.
 
 The canonical names are ``expiry`` (YYYY-MM-DD), ``option_right``, ``from_ts`` / ``to_ts``
-(Unix seconds) and ``from_date`` / ``to_date`` (YYYY-MM-DD). The old spellings are renamed
-before routing by ``QueryAliasRewriter``; every route keeps its defaults. ``/executions``
+(Unix seconds) and ``from_date`` / ``to_date`` (YYYY-MM-DD). The old spellings were renamed
+before routing in api 0.6.6 .. 0.9.0; since 0.10.0 ``RetiredQueryNames`` answers them with a
+422 that names the successor, so a caller's filter is never dropped silently. Every route
+keeps its defaults. ``/executions``
 and ``/transactions`` answer ``total`` only when the limit did not cut the list.
 Fixtures are invented.
 """
@@ -19,11 +21,11 @@ from starlette.testclient import TestClient
 from bifrost_api.account.app import create_account_app
 from bifrost_api.common.query_vocab import (
     CANONICAL_NAMES,
-    QUERY_ALIASES,
-    QueryAliasRewriter,
-    aliases_for,
+    RETIRED_QUERY_NAMES,
+    RetiredQueryNames,
     normalize_expiry,
-    rewrite_query,
+    retired_for,
+    retired_sent,
 )
 from bifrost_api.market.app import create_market_app
 from bifrost_api.research.app import create_research_app
@@ -42,26 +44,35 @@ def _query_params(app: Any, method: str, path: str) -> Set[str]:
 # --- the table ---------------------------------------------------------------------
 
 
-def test_every_aliased_route_is_served_by_some_app() -> None:
+def test_every_route_with_retired_names_is_served_by_some_app() -> None:
     served = set().union(*(served_routes(app) for app in _apps().values()))
-    assert not sorted(set(QUERY_ALIASES) - served)
+    assert not sorted(set(RETIRED_QUERY_NAMES) - served)
 
 
-def test_every_alias_points_at_a_canonical_name_the_route_declares() -> None:
-    """A rename onto a name the route does not read would drop the caller's filter silently."""
+def test_every_retired_name_points_at_a_canonical_name_the_route_declares() -> None:
+    """The 422 names a successor; it must be one the route reads, and the old name must not be declared."""
     apps = _apps()
-    for (method, path), aliases in QUERY_ALIASES.items():
+    for (method, path), retired in RETIRED_QUERY_NAMES.items():
         app = next(a for a in apps.values() if (method, path) in served_routes(a))
         declared = _query_params(app, method, path)
-        for old, new in aliases.items():
+        for old, new in retired.items():
             assert new in CANONICAL_NAMES, (path, new)
             assert new in declared, (path, new, declared)
             assert old not in declared, (path, old, declared)
 
 
-def test_every_app_runs_the_rewriter() -> None:
+TD51_OLD_NAMES = {"since_ts", "until_ts", "opened_at_from", "opened_at_until", "trade_date_from", "trade_date_to",
+                  "expiration", "right"}
+
+
+def test_the_retired_names_are_exactly_the_td51_spellings() -> None:
+    old = set().union(*(set(r) for r in RETIRED_QUERY_NAMES.values()))
+    assert old == TD51_OLD_NAMES
+
+
+def test_every_app_refuses_the_retired_names() -> None:
     for name, app in _apps().items():
-        assert any(m.cls is QueryAliasRewriter for m in app.user_middleware), name
+        assert any(m.cls is RetiredQueryNames for m in app.user_middleware), name
 
 
 # --- the pieces ---------------------------------------------------------------------
@@ -83,27 +94,22 @@ def test_normalize_expiry(raw: Optional[str], want: Optional[str]) -> None:
     assert normalize_expiry(raw) == want
 
 
-def test_rewrite_renames_an_old_name() -> None:
-    q, used = rewrite_query("since_ts=5&account_id=U0000001", {"since_ts": "from_ts"})
-    assert q == "from_ts=5&account_id=U0000001"
-    assert used == ["since_ts->from_ts"]
+def test_retired_sent_names_each_old_name_once_with_its_successor() -> None:
+    errors = retired_sent("since_ts=5&account_id=U0000001&since_ts=6&until_ts=", {"since_ts": "from_ts", "until_ts": "to_ts"})
+    assert [(e["type"], e["loc"], e["input"]) for e in errors] == [
+        ("retired_query_param", ["query", "since_ts"], "5"),
+        ("retired_query_param", ["query", "until_ts"], ""),
+    ]
+    assert "use from_ts" in errors[0]["msg"]
 
 
-def test_rewrite_lets_the_canonical_name_win() -> None:
-    q, used = rewrite_query("since_ts=5&from_ts=9", {"since_ts": "from_ts"})
-    assert q == "from_ts=9"
-    assert used == ["since_ts->from_ts (ignored)"]
+def test_retired_sent_ignores_the_canonical_names() -> None:
+    assert retired_sent("from_ts=5&to_ts=9&expiry=20261016", {"since_ts": "from_ts"}) == []
 
 
-def test_rewrite_keeps_encoding_and_blank_values() -> None:
-    q, used = rewrite_query("expiration=20261016&symbol=Z%26Q&strikes=", {"expiration": "expiry"})
-    assert q == "expiry=20261016&symbol=Z%26Q&strikes="
-    assert used == ["expiration->expiry"]
-
-
-def test_aliases_for_matches_the_path_with_or_without_slash() -> None:
-    assert aliases_for("get", "/transactions/") == {"since_ts": "from_ts", "until_ts": "to_ts"}
-    assert aliases_for("POST", "/transactions") is None
+def test_retired_for_matches_the_path_with_or_without_slash() -> None:
+    assert retired_for("get", "/transactions/") == {"since_ts": "from_ts", "until_ts": "to_ts"}
+    assert retired_for("POST", "/transactions") is None
 
 
 # --- through the apps -------------------------------------------------------------------
@@ -115,20 +121,26 @@ def _account(reader: MagicMock) -> TestClient:
     return TestClient(app)
 
 
-def test_old_and_new_time_names_reach_the_reader_the_same(caplog: pytest.LogCaptureFixture) -> None:
+def test_an_old_time_name_is_422_and_reaches_no_reader(caplog: pytest.LogCaptureFixture) -> None:
     reader = MagicMock()
     reader.get_transactions_page.return_value = {"items": [], "next_cursor": None}
     client = _account(reader)
     with caplog.at_level(logging.WARNING, logger="bifrost_api.common.query_vocab"):
-        assert client.get("/transactions?since_ts=100&until_ts=200").status_code == 200
-    old = reader.get_transactions_page.call_args.kwargs
-    assert "deprecated query params: GET /transactions since_ts->from_ts until_ts->to_ts" in caplog.text
+        resp = client.get("/transactions?since_ts=100&until_ts=200", headers={"user-agent": "probe/1"})
+    assert resp.status_code == 422, resp.text
+    assert [(e["type"], e["loc"]) for e in resp.json()["detail"]] == [
+        ("retired_query_param", ["query", "since_ts"]),
+        ("retired_query_param", ["query", "until_ts"]),
+    ]
+    reader.get_transactions_page.assert_not_called()
+    assert "retired query params: GET /transactions since_ts (use from_ts) until_ts (use to_ts)" in caplog.text
+    assert "user_agent=probe/1" in caplog.text
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="bifrost_api.common.query_vocab"):
         assert client.get("/transactions?from_ts=100&to_ts=200").status_code == 200
-    assert reader.get_transactions_page.call_args.kwargs == old
-    assert old["since_ts"] == 100.0 and old["until_ts"] == 200.0
-    assert "deprecated query params" not in caplog.text
+    kw = reader.get_transactions_page.call_args.kwargs
+    assert kw["since_ts"] == 100.0 and kw["until_ts"] == 200.0
+    assert "retired query params" not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -141,30 +153,35 @@ def test_old_and_new_time_names_reach_the_reader_the_same(caplog: pytest.LogCapt
         ("/trades", "list_trades", "opened_at_until=7", "to_ts=7", ("opened_at_until", 7.0)),
     ],
 )
-def test_each_old_time_name_still_filters(
+def test_each_new_time_name_filters_and_its_old_name_is_422(
     path: str, reader_method: str, old: str, new: str, kwarg: tuple
 ) -> None:
     reader = MagicMock()
-    getattr(reader, reader_method).return_value = [] if "instances" in path or path == "/executions" else {}
+    getattr(reader, reader_method).return_value = [] if path == "/executions" else {}
     client = _account(reader)  # one app per test: the metrics registry is per test
-    for query in (old, new):
-        getattr(reader, reader_method).reset_mock()
-        assert client.get(f"{path}?{query}").status_code == 200, (path, query)
-        name, value = kwarg
-        assert getattr(reader, reader_method).call_args.kwargs[name] == value, (path, query)
+    name, value = kwarg
+    assert client.get(f"{path}?{new}").status_code == 200, (path, new)
+    assert getattr(reader, reader_method).call_args.kwargs[name] == value, (path, new)
+    getattr(reader, reader_method).reset_mock()
+    resp = client.get(f"{path}?{old}")
+    assert resp.status_code == 422, (path, old, resp.text)
+    assert resp.json()["detail"][0]["type"] == "retired_query_param"
+    getattr(reader, reader_method).assert_not_called()
 
 
-def test_stock_link_candidates_take_from_date_and_the_old_names() -> None:
+def test_stock_link_candidates_take_from_date_and_refuse_the_old_names() -> None:
     reader = MagicMock()
     reader.get_stock_link_candidates.return_value = {"executions": []}
     client = _account(reader)
-    for query in ("trade_date_from=2026-01-02&trade_date_to=2026-01-09", "from_date=2026-01-02&to_date=2026-01-09"):
-        resp = client.get(
-            f"/executions/stock-link-candidates?account_id={ACC}&option_account_executions_id=4&{query}"
-        )
-        assert resp.status_code == 200, resp.text
-        kw = reader.get_stock_link_candidates.call_args.kwargs
-        assert (kw["trade_date_from"], kw["trade_date_to"]) == ("2026-01-02", "2026-01-09"), query
+    base = f"/executions/stock-link-candidates?account_id={ACC}&option_account_executions_id=4"
+    resp = client.get(f"{base}&from_date=2026-01-02&to_date=2026-01-09")
+    assert resp.status_code == 200, resp.text
+    kw = reader.get_stock_link_candidates.call_args.kwargs
+    assert (kw["trade_date_from"], kw["trade_date_to"]) == ("2026-01-02", "2026-01-09")
+    reader.get_stock_link_candidates.reset_mock()
+    resp = client.get(f"{base}&trade_date_from=2026-01-02&trade_date_to=2026-01-09")
+    assert resp.status_code == 422, resp.text
+    reader.get_stock_link_candidates.assert_not_called()
 
 
 def _research() -> TestClient:
@@ -177,28 +194,35 @@ def _research() -> TestClient:
 @pytest.mark.parametrize(
     "path", ["/research/option-contract/liquidity-summary", "/research/option-contract/relative-value"]
 )
-def test_option_contract_reads_take_expiry_option_right_and_the_old_names(
+def test_option_contract_reads_take_expiry_and_option_right_only(
     path: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Without a database the route answers 503 -- after the query validated. A missing
-    required name is FastAPI's 422, so 503 proves the names reached the route."""
+    required name is FastAPI's 422, so 503 proves the names reached the route; an old
+    spelling is a retired_query_param 422 before the route."""
     import bifrost_api.research.routers.option_discovery as od
 
     monkeypatch.setattr(od, "db_config", lambda request: None)
     client = _research()
-    for query in ("expiry=2026-10-16&option_right=C", "expiration=20261016&right=C"):
-        resp = client.get(f"{path}?symbol=ZZQ&strike=10&{query}")
-        assert resp.status_code == 503, (query, resp.text)
+    resp = client.get(f"{path}?symbol=ZZQ&strike=10&expiry=2026-10-16&option_right=C")
+    assert resp.status_code == 503, resp.text
     assert client.get(f"{path}?symbol=ZZQ&strike=10&expiry=2026-10-16").status_code == 422
+    for query in ("expiration=20261016&right=C", "expiry=2026-10-16&right=C", "expiration=20261016&option_right=C"):
+        resp = client.get(f"{path}?symbol=ZZQ&strike=10&{query}")
+        assert resp.status_code == 422, query
+        assert {e["type"] for e in resp.json()["detail"]} == {"retired_query_param"}, query
 
 
-def test_option_snapshots_take_expiry_and_expiration(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_option_snapshots_take_expiry_not_expiration(monkeypatch: pytest.MonkeyPatch) -> None:
     import bifrost_api.research.routers.option_discovery as od
 
     monkeypatch.setattr(od, "db_config", lambda request: None)
     client = _research()
-    for query in ("expiry=2026-10-16", "expiration=20261016"):
+    for query in ("expiry=2026-10-16", "expiry=20261016"):
         assert client.get(f"/research/option-snapshots?symbol=ZZQ&{query}").status_code == 503, query
+    resp = client.get("/research/option-snapshots?symbol=ZZQ&expiration=20261016")
+    assert resp.status_code == 422
+    assert resp.json()["detail"][0]["loc"] == ["query", "expiration"]
 
 
 def test_greeks_takes_option_right_and_reads_a_compact_expiry_as_iso(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -213,11 +237,13 @@ def test_greeks_takes_option_right_and_reads_a_compact_expiry_as_iso(monkeypatch
     monkeypatch.setattr(gk, "db_config", lambda request: {"host": "x"})
     monkeypatch.setattr(gk, "_fetch_greeks_rows", fake_rows)
     client = _research()
-    for query in ("expiry=20261016&option_right=P", "expiry=2026-10-16&right=P"):
-        seen.clear()
-        resp = client.get(f"/research/greeks?symbol=ZZQ&trade_date=2026-10-01&{query}")
-        assert resp.status_code == 200, resp.text
-        assert seen == {"expiry": "2026-10-16", "right": "P"}, query
+    resp = client.get("/research/greeks?symbol=ZZQ&trade_date=2026-10-01&expiry=20261016&option_right=P")
+    assert resp.status_code == 200, resp.text
+    assert seen == {"expiry": "2026-10-16", "right": "P"}
+    seen.clear()
+    resp = client.get("/research/greeks?symbol=ZZQ&trade_date=2026-10-01&expiry=2026-10-16&right=P")
+    assert resp.status_code == 422, resp.text
+    assert seen == {}
 
 
 def test_option_bars_take_an_iso_expiry() -> None:

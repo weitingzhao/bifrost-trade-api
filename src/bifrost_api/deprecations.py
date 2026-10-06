@@ -30,7 +30,7 @@ from urllib.parse import quote
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from bifrost_api.common.query_vocab import install_query_aliases
+from bifrost_api.common.query_vocab import install_retired_query_names
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +194,7 @@ class DeprecationMarker:
 
 
 def install_deprecations(app: Any) -> None:
-    """Mark the deprecated and the replaced routes on ``app``, and accept the old query
-    names (``common.query_vocab``, TD-51) for one more release."""
+    """Mark the deprecated and the replaced routes on ``app``, and refuse the retired query
+    names (``common.query_vocab``, TD-51, api 0.10.0)."""
     app.add_middleware(DeprecationMarker)
-    install_query_aliases(app)
+    install_retired_query_names(app)

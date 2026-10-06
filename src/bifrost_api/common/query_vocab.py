@@ -23,14 +23,19 @@ The canonical names, for every route that takes the idea:
 The unit is in the name: ``_ts`` is always Unix seconds and ``_date`` always a
 calendar date, so ``from`` and ``to`` never need a description to be read.
 
-**Old names keep working for one release** (Owner decision, additive first, as for
-TD-16/TD-19). :data:`QUERY_ALIASES` lists them per route; :class:`QueryAliasRewriter`
-renames an old name to its canonical one before routing, so a route declares only
-the canonical names (and OpenAPI shows only them). When a request sends both, the
-canonical one wins and the old one is dropped. Each request that used an old name is
-logged once as ``deprecated query params: <METHOD> <path> <old>-><new> ...`` with who
-sent it, like a deprecated route (behind Traefik read ``forwarded_for``). After a
-release with no such line for a route its old names come off the table.
+**The old names are refused** (api 0.10.0, TD-51). api 0.6.6 renamed them before
+routing for one release and logged every caller; Research moved to ``from_ts`` in 0.161.0,
+the frontend has sent only the canonical names since 0.6.6, and Loki showed no caller
+from 2026-10-05 13:30 UTC through the 10-05 nightly batch to 2026-10-06 16:10 UTC
+(infra ``scripts/release/loki_gate.py td51-query-aliases``). The rename went with them.
+
+A route ignores a query name it does not declare, so an old name would now drop the
+caller's filter without a word: ``/executions?since_ts=…`` would answer every
+execution. :data:`RETIRED_QUERY_NAMES` keeps, per route that used to take them, the old
+names and their successors; :class:`RetiredQueryNames` answers a request that sends one
+with a 422 of type ``retired_query_param`` naming the successor (FastAPI's validation
+shape, as a retired body field is, ``common.write_errors.RetiredFields``) and logs it
+as ``retired query params: <METHOD> <path> <old> (use <new>) ...`` with who sent it.
 """
 
 from __future__ import annotations
@@ -38,9 +43,10 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
-from urllib.parse import parse_qsl, urlencode
+from urllib.parse import parse_qsl
 
 from fastapi import Query
+from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
@@ -60,15 +66,13 @@ CANONICAL_NAMES: FrozenSet[str] = frozenset(
 )
 
 _TS_RANGE = {"since_ts": FROM_TS, "until_ts": TO_TS}
-# naming R1 (api 0.7.0) read strategy_instance_id / strategy_instance_ids as trade_id /
-# trade_ids; naming R4 (api 0.9.0) dropped them with the /strategies/instances and
-# /strategies/win-rate routes.
 _TRADES_LIST = {"opened_at_from": FROM_TS, "opened_at_until": TO_TS}
 
-# (method, path as the app sees it) -> {old name: canonical name}. Paths are the ones
-# the app serves (Traefik strips ``/api/<domain>``). Removed next release, route by
-# route, once a release has gone by with no "deprecated query params" line for it.
-QUERY_ALIASES: Dict[Tuple[str, str], Dict[str, str]] = {
+# (method, path as the app sees it) -> {old name: canonical name}: the TD-51 spellings,
+# renamed before routing in api 0.6.6 .. 0.9.0 and refused since 0.10.0. Paths are the
+# ones the app serves (Traefik strips ``/api/<domain>``). The naming-R1 Trade ids
+# (strategy_instance_id(s)) went in api 0.9.0 with their routes and are not here.
+RETIRED_QUERY_NAMES: Dict[Tuple[str, str], Dict[str, str]] = {
     # account app (trading + strategy routers)
     ("GET", "/executions"): dict(_TS_RANGE),
     ("GET", "/performance"): dict(_TS_RANGE),
@@ -151,7 +155,7 @@ def normalize_expiry(value: Optional[str]) -> Optional[str]:
     return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
 
 
-# --- Old names -> canonical, before routing ------------------------------------
+# --- Old names: refused --------------------------------------------------------------
 
 
 def _header(scope: Scope, name: bytes) -> str:
@@ -161,58 +165,57 @@ def _header(scope: Scope, name: bytes) -> str:
     return ""
 
 
-def aliases_for(method: str, path: str) -> Optional[Dict[str, str]]:
-    """The old -> canonical names a route still accepts, or None."""
+def retired_for(method: str, path: str) -> Optional[Dict[str, str]]:
+    """The retired old -> canonical names of a route, or None."""
     p = path.rstrip("/") or "/"
-    return QUERY_ALIASES.get((method.upper(), p))
+    return RETIRED_QUERY_NAMES.get((method.upper(), p))
 
 
-def rewrite_query(query: str, aliases: Dict[str, str]) -> Tuple[str, List[str]]:
-    """``query`` with old names renamed; and what was renamed (``old->new``) or dropped
-    (``old->new (ignored)``, when the canonical name was sent too)."""
-    pairs = parse_qsl(query, keep_blank_values=True)
-    sent = {k for k, _ in pairs}
-    out: List[Tuple[str, str]] = []
-    used: List[str] = []
-    for key, value in pairs:
-        new = aliases.get(key)
-        if new is None:
-            out.append((key, value))
-        elif new in sent:
-            used.append(f"{key}->{new} (ignored)")
-        else:
-            out.append((new, value))
-            used.append(f"{key}->{new}")
-    return urlencode(out, doseq=True), sorted(set(used))
+def retired_sent(query: str, retired: Dict[str, str]) -> List[Dict[str, Any]]:
+    """One FastAPI-shaped 422 error per retired name in ``query`` (first value of each)."""
+    errors: List[Dict[str, Any]] = []
+    seen: set = set()
+    for key, value in parse_qsl(query, keep_blank_values=True):
+        new = retired.get(key)
+        if new is None or key in seen:
+            continue
+        seen.add(key)
+        errors.append({
+            "type": "retired_query_param",
+            "loc": ["query", key],
+            "msg": f"Query parameter {key} was retired in api 0.10.0 (TD-51); use {new}.",
+            "input": value,
+        })
+    return errors
 
 
-class QueryAliasRewriter:
-    """Rename the old query names in :data:`QUERY_ALIASES` to the canonical ones, and log who sent them."""
+class RetiredQueryNames:
+    """Answer 422 to a request that sends an old query name in :data:`RETIRED_QUERY_NAMES`, and log who sent it."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and scope.get("query_string"):
-            aliases = aliases_for(scope["method"], scope["path"])
-            if aliases:
-                query = scope["query_string"].decode("latin-1")
-                rewritten, used = rewrite_query(query, aliases)
-                if used:
+            retired = retired_for(scope["method"], scope["path"])
+            if retired:
+                errors = retired_sent(scope["query_string"].decode("latin-1"), retired)
+                if errors:
                     client = scope.get("client")
                     logger.warning(
-                        "deprecated query params: %s %s %s client=%s forwarded_for=%s user_agent=%s",
+                        "retired query params: %s %s %s client=%s forwarded_for=%s user_agent=%s",
                         scope["method"],
                         scope["path"],
-                        " ".join(used),
+                        " ".join(f"{e['loc'][1]} (use {retired[e['loc'][1]]})" for e in errors),
                         client[0] if client else "-",
                         _header(scope, b"x-forwarded-for") or "-",
                         _header(scope, b"user-agent") or "-",
                     )
-                    scope = {**scope, "query_string": rewritten.encode("latin-1")}
+                    await JSONResponse({"detail": errors}, status_code=422)(scope, receive, send)
+                    return
         await self.app(scope, receive, send)
 
 
-def install_query_aliases(app: Any) -> None:
-    """Accept the old query names on ``app`` for one more release."""
-    app.add_middleware(QueryAliasRewriter)
+def install_retired_query_names(app: Any) -> None:
+    """Refuse the retired query names on ``app`` (422, never a silently dropped filter)."""
+    app.add_middleware(RetiredQueryNames)
