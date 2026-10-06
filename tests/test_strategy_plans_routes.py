@@ -194,3 +194,125 @@ def test_no_route_here_places_an_order() -> None:
     source = inspect.getsource(plans_module)
     for forbidden in ("order_intent", "place_order", "ib:operator"):
         assert forbidden not in source, forbidden
+
+
+# ── TD-178 (api 0.11.0, core 0.53.0): filter by provenance ────────────────
+
+
+def _plan_row(plan_id: int, source_kind: str, source_ref: Any = None, status: str = "filled") -> dict:
+    return {
+        "strategy_plan_id": plan_id,
+        "account_id": "U1",
+        "symbol": "NVDA",
+        "structure_label": "Short put",
+        "strategy_structure_id": None,
+        "strategy_opportunity_id": None,
+        "legs_json": [],
+        "qty": 1,
+        "price_effect": None,
+        "limit_price": None,
+        "target_kind": None,
+        "target_value": None,
+        "stop_kind": None,
+        "stop_value": None,
+        "exit_by": None,
+        "rationale": None,
+        "source_kind": source_kind,
+        "source_ref": source_ref,
+        "source_json": [],
+        "status": status,
+        "expires_at": None,
+        "intended_at": None,
+        "filled_at": None,
+        "cancelled_at": None,
+        "trade_id": plan_id if status == "filled" else None,
+        "parent_strategy_plan_id": None,
+        "created_at": "2026-10-06T00:00:00+00:00",
+        "updated_at": "2026-10-06T00:00:00+00:00",
+    }
+
+
+class _PlanTable:
+    """A stand-in for Postgres that runs core's WHERE / LIMIT on rows in memory.
+
+    It reads the ``p.<column> = %s`` conditions core writes, in order, so the route,
+    core's SQL and its parameters are all exercised -- only the database is fake."""
+
+    def __init__(self, rows: list) -> None:
+        self.rows = rows
+        self.executed: list = []
+
+    def cursor(self, **_kw: Any) -> "_PlanTable":
+        return self
+
+    def __enter__(self) -> "_PlanTable":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        return None
+
+    def execute(self, sql: str, params: Any = None) -> None:
+        import re
+
+        self.executed.append((sql, list(params or [])))
+        where = sql.split(" WHERE ", 1)[1] if " WHERE " in sql else ""
+        columns = re.findall(r"p\.(\w+) = %s", where.split("ORDER BY", 1)[0])
+        values = list(params or [])
+        limit = values.pop()
+        assert len(columns) == len(values), (columns, values)
+        out = [r for r in self.rows if all(r[c] == v for c, v in zip(columns, values))]
+        out.sort(key=lambda r: -r["strategy_plan_id"])
+        self._result = out[:limit]
+
+    def fetchall(self) -> list:
+        return self._result
+
+    def close(self) -> None:
+        return None
+
+
+def _plans_client(monkeypatch: pytest.MonkeyPatch, rows: list) -> tuple:
+    table = _PlanTable(rows)
+    monkeypatch.setattr(strategy_plan_module, "_conn_from_config", lambda _cfg: table)
+    return _account_client(control_via_db={"sink": "postgres"}), table
+
+
+def test_source_kind_hypothesis_returns_only_those_plans(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [_plan_row(i, "manual") for i in range(1000, 1600)]  # 600 newer manual fills
+    rows += [_plan_row(i, "hypothesis", f"h-{i}") for i in range(1, 4)]
+    rows += [_plan_row(9, "hypothesis", "h-9", status="cancelled")]
+    client, table = _plans_client(monkeypatch, rows)
+
+    r = client.get("/strategies/plans", params={"status": "filled", "source_kind": "hypothesis", "limit": 500})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["count"] == 3
+    assert {p["strategy_plan_id"] for p in body["items"]} == {1, 2, 3}
+    assert {p["source_kind"] for p in body["items"]} == {"hypothesis"}
+    # The 500 cap is per filter: 600 newer manual fills do not push the hypothesis plans out.
+    sql, params = table.executed[-1]
+    assert "p.source_kind = %s" in sql and params == ["filled", "hypothesis", 500]
+
+    one = client.get("/strategies/plans", params={"source_kind": "hypothesis", "source_ref": "h-2"}).json()
+    assert [p["strategy_plan_id"] for p in one["items"]] == [2]
+
+    # Without the filter the newest 500 of every kind come back -- the TD-178 failure mode.
+    unfiltered = client.get("/strategies/plans", params={"status": "filled", "limit": 500}).json()
+    assert unfiltered["count"] == 500
+    assert not any(p["source_kind"] == "hypothesis" for p in unfiltered["items"])
+
+
+def test_an_unknown_source_kind_is_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, table = _plans_client(monkeypatch, [_plan_row(1, "hypothesis", "h-1")])
+    r = client.get("/strategies/plans", params={"source_kind": "Hypothesis"})
+    assert r.status_code == 422
+    assert r.json()["detail"][0]["loc"] == ["query", "source_kind"]
+    assert table.executed == []
+
+
+def test_the_source_filters_are_not_retired_names() -> None:
+    from bifrost_api.common.query_vocab import RETIRED_QUERY_NAMES
+
+    retired = {old for names in RETIRED_QUERY_NAMES.values() for old in names}
+    assert not {"source_kind", "source_ref"} & retired
+    assert ("GET", "/strategies/plans") not in RETIRED_QUERY_NAMES

@@ -39,6 +39,7 @@ from bifrost_core.monitor.schemas.strategy_plans import (
     PlanCreateBody,
     PlanLeg,
     PlanLinkFillBody,
+    SourceKind,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,9 +74,19 @@ def list_plans_endpoint(
     symbol: Optional[str] = Query(None, description="Filter by underlying symbol"),
     account_id: Optional[str] = Query(None, description="Filter by account ID"),
     limit: int = Query(PLANS_LIMIT_DEFAULT, ge=1, le=PLANS_LIMIT_MAX),
+    source_kind: Optional[SourceKind] = Query(
+        None, description="Where the plan came from: manual, symbol, hypothesis, inbox_draft or roll (exact)"
+    ),
+    source_ref: Optional[str] = Query(
+        None, description="The source's own id, exact match (for hypothesis: the hypothesis id)"
+    ),
 ) -> Dict[str, Any]:
     """Plans, newest first. `status` filters the stored status; each row also
     carries `effective_status`, where an intent past its expiry reads expired.
+
+    `source_kind` / `source_ref` (api 0.11.0, TD-178) filter by provenance before
+    `limit` caps the rows, so one kind is not crowded out by the newest plans of
+    every other kind. An unknown `source_kind` is a 422.
 
     A read that fails is a 500. An empty list means the account has no plans and
     nothing else -- it must never stand in for a query that did not run."""
@@ -86,6 +97,8 @@ def list_plans_endpoint(
             symbol=symbol,
             account_id=account_id,
             limit=limit,
+            source_kind=source_kind,
+            source_ref=source_ref,
         )
     except Exception as e:
         logger.warning("list_plans failed: %s", e)
