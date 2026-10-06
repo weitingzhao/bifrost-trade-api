@@ -11,6 +11,7 @@ from bifrost_api.account.app import create_account_app
 from bifrost_core.monitor.reader import write_support
 from bifrost_core.portfolio.reader import instrument_class as instrument_class_module
 from tests.contract.helpers import operator_server_config
+from tests.reader_mock import reader_mock
 
 
 def _client(reader: MagicMock, control_via_db: Any = None) -> TestClient:
@@ -30,7 +31,7 @@ def test_mounted_where_the_gateway_strips_to() -> None:
 
 
 def test_list_and_set_pass_through(monkeypatch) -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     # Invented key (fixtures are never copied from DEV).
     reader.list_instrument_classes.return_value = [{"contract_key": "ZZFI", "instrument_class": "fixed_income"}]
     row = {"contract_key": "ZZFI", "instrument_class": "cash_like", "note": "T-bill fund"}

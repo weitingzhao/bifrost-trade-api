@@ -11,7 +11,6 @@ pairs what went with what had to stay.
 from __future__ import annotations
 
 from typing import Any, Dict, Set, Tuple
-from unittest.mock import MagicMock
 
 import pytest
 from starlette.testclient import TestClient
@@ -22,6 +21,7 @@ from bifrost_api.monitor.app import create_app as create_monitor_app
 from bifrost_api.research.app import create_research_app
 from tests.contract.helpers import full_server_config
 from tests.route_listing import served_routes
+from tests.reader_mock import reader_mock
 
 R = "/research/data/readiness"
 
@@ -182,7 +182,7 @@ KEPT: Dict[str, Set[Tuple[str, str]]] = {
 
 
 def _app(app_name: str) -> Any:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = full_server_config()
     cfg = reader.config
     return {

@@ -20,13 +20,14 @@ from bifrost_api.account.app import create_account_app
 from bifrost_core.monitor.reader.errors import WriteNotFound
 from tests.contract.helpers import operator_server_config
 from tests.envelope_asserts import assert_error, assert_list
+from tests.reader_mock import reader_mock
 
 PG = {"sink": "postgres"}
 ACC = "U0000001"
 
 
 def _client(reader: Optional[MagicMock] = None, control_via_db: Any = PG, gateway: Any = None) -> TestClient:
-    reader = reader or MagicMock()
+    reader = reader or reader_mock()
     reader.config = operator_server_config()
     app = create_account_app(
         reader=reader,
@@ -42,7 +43,7 @@ def _client(reader: Optional[MagicMock] = None, control_via_db: Any = PG, gatewa
 
 
 def test_executions_list_has_items_count_and_the_old_key() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     rows = [{"account_executions_id": 1, "symbol": "ZZQ"}, {"account_executions_id": 2, "symbol": "ZZQ"}]
     reader.get_executions_page.return_value = {"items": rows, "next_cursor": None}
     body = assert_list(_client(reader).get("/executions"), "executions", rows)
@@ -50,7 +51,7 @@ def test_executions_list_has_items_count_and_the_old_key() -> None:
 
 
 def test_executions_with_opt_pairs_keeps_its_pairs() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     rows = [{"account_executions_id": 1}]
     reader.get_executions_with_opt_pairs.return_value = {"executions": rows, "opt_pairs": [[1, 2]]}
     body = assert_list(_client(reader).get("/executions?include_opt_pairs=true"), "executions", rows)
@@ -66,7 +67,7 @@ def test_executions_with_opt_pairs_keeps_its_pairs() -> None:
     ],
 )
 def test_list_routes(path: str, reader_method: str, legacy_key: Optional[str]) -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     rows = [{"id": 1}, {"id": 2}, {"id": 3}]
     # the paged readers (core 0.40.0) answer {"items", "next_cursor"}
     paged = reader_method.endswith("_page")
@@ -75,7 +76,7 @@ def test_list_routes(path: str, reader_method: str, legacy_key: Optional[str]) -
 
 
 def test_option_stock_links_list_keeps_slippage_total() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     links = [{"stock_account_executions_id": 5}]
     reader.get_option_stock_links.return_value = {"links": links, "slippage_total": 1.5}
     body = assert_list(
@@ -85,7 +86,7 @@ def test_option_stock_links_list_keeps_slippage_total() -> None:
 
 
 def test_stock_link_candidates_list_keeps_its_window() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     rows = [{"account_executions_id": 9}]
     reader.get_stock_link_candidates.return_value = {
         "executions": rows,
@@ -178,7 +179,7 @@ def test_put_a_missing_execution_is_404(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_stock_link_candidates_for_a_missing_option_is_404() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_stock_link_candidates.return_value = {"executions": [], "error": "Option execution not found in performance book."}
     r = _client(reader).get(f"/executions/stock-link-candidates?account_id={ACC}&option_account_executions_id=4")
     assert_error(r, 404, "not found", {"executions": []})
@@ -214,14 +215,14 @@ def test_without_postgres_writes_are_503(method: str, path: str, body: Any, cont
 
 
 def test_option_stock_links_without_a_connection_is_503() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_option_stock_links.return_value = {"links": [], "slippage_total": None, "error": "database_unavailable"}
     r = _client(reader).get(f"/executions/option-stock-links?account_id={ACC}&option_account_executions_id=4")
     assert_error(r, 503, "database_unavailable", {"links": [], "slippage_total": None})
 
 
 def test_links_query_without_a_connection_is_503() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_option_stock_links_bulk.return_value = {"by_option_id": {}, "error": "database_unavailable"}
     body = {"batches": [{"account_id": ACC, "option_account_executions_ids": [1]}]}
     assert_error(_client(reader).post("/executions/option-stock-links/query", json=body), 503, "database_unavailable")

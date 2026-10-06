@@ -10,6 +10,7 @@ from starlette.testclient import TestClient
 from bifrost_api.account.app import create_account_app
 from bifrost_core.monitor.reader.errors import ReadFailed
 from tests.contract.helpers import full_server_config
+from tests.reader_mock import reader_mock
 
 LISTS = [
     ("/strategies/structures", "list_structures"),
@@ -28,7 +29,7 @@ def _client(reader: MagicMock) -> TestClient:
 
 @pytest.mark.parametrize("path, method", LISTS)
 def test_a_failed_read_is_503_with_the_reason(path: str, method: str) -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     getattr(reader, method).side_effect = ReadFailed(f"{method}: database unavailable")
     r = _client(reader).get(path)
     assert r.status_code == 503
@@ -37,7 +38,7 @@ def test_a_failed_read_is_503_with_the_reason(path: str, method: str) -> None:
 
 @pytest.mark.parametrize("path, method", LISTS)
 def test_an_empty_read_is_still_200(path: str, method: str) -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     getattr(reader, method).return_value = []
     r = _client(reader).get(path)
     assert r.status_code == 200

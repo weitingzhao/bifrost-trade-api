@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
 
 from starlette.testclient import TestClient
 
 from bifrost_api.research.app import create_research_app
+from tests.reader_mock import reader_mock
 
 _FULL_SERVER = {
     "monitor_port": 8765,
@@ -27,7 +27,7 @@ def _make_client(
     reader_config: dict | None = None,
     merged_config: dict | None = None,
 ) -> TestClient:
-    reader = MagicMock()
+    reader = reader_mock()
     base = {"server": dict(_FULL_SERVER)}
     if reader_config is not None:
         rc = {**base, **reader_config}

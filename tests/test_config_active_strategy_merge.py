@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List
-from unittest.mock import MagicMock
 
 import pytest
 from starlette.testclient import TestClient
@@ -11,6 +10,7 @@ from starlette.testclient import TestClient
 import bifrost_api.monitor.routers.config as config_router
 from bifrost_api.monitor.app import create_app
 from tests.contract.helpers import operator_server_config
+from tests.reader_mock import reader_mock
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> List[Dict[str, Any]]:
 
 
 def _client() -> TestClient:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = operator_server_config()
     app = create_app(
         reader=reader, control_via_db={"sink": "postgres"}, data_lag_threshold_ms=1000, merged_config=reader.config

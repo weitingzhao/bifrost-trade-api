@@ -8,7 +8,6 @@ That is the first test here.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -19,6 +18,7 @@ from bifrost_api.strategy.routers import plans_router
 from bifrost_core.monitor.reader import strategy_plan as strategy_plan_module
 from bifrost_core.monitor.reader.strategy_plan import PlanRuleError
 from tests.contract.helpers import operator_server_config
+from tests.reader_mock import reader_mock
 
 PLAN_ROUTES = {
     "/strategies/plans",
@@ -36,7 +36,7 @@ def _paths(app: FastAPI) -> set:
 
 
 def _account_client(control_via_db: Any = None) -> TestClient:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = operator_server_config()
     app = create_account_app(
         reader=reader,

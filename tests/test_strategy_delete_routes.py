@@ -8,7 +8,6 @@ when there is no database (503). Strict since TD-15 (core ``*_strict``).
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 from starlette.testclient import TestClient
@@ -20,6 +19,7 @@ from bifrost_core.monitor.reader.errors import WriteNotFound
 from bifrost_core.monitor.reader.strategy_plan import PlanRuleError
 from bifrost_core.monitor.reader.strategy_rules_delete import RuleInUseError
 from tests.contract.helpers import operator_server_config
+from tests.reader_mock import reader_mock
 
 RULE_ROUTES = [
     ("/strategies/opportunities/5", "delete_opportunity_strict"),
@@ -29,7 +29,7 @@ RULE_ROUTES = [
 
 
 def _client(control_via_db: Any = None) -> TestClient:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = operator_server_config()
     app = create_account_app(
         reader=reader,

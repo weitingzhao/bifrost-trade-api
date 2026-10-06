@@ -8,12 +8,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from bifrost_api.market.routers.quotes import router
+from tests.reader_mock import reader_mock
 
 
 def _app_with_rq(rq: MagicMock) -> TestClient:
     app = FastAPI()
     app.include_router(router)
-    app.state.reader = MagicMock()
+    app.state.reader = reader_mock()
     app.state.redis_quotes = rq
     return TestClient(app)
 

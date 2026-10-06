@@ -22,13 +22,14 @@ from bifrost_core.monitor.reader import write_support
 from tests import strategy_rows
 from tests.contract.helpers import operator_server_config
 from tests.envelope_asserts import assert_error
+from tests.reader_mock import reader_mock
 
 PG = {"sink": "postgres"}
 BODY = {"strategy_opportunity_id": 3, "account_id": "U0000001", "opened_at": "2031-01-02T15:00:00Z"}
 
 
 def _client(control_via_db: Any = PG) -> TestClient:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = operator_server_config()
     app = create_account_app(
         reader=reader, control_via_db=control_via_db, status_cfg_for_read=control_via_db, merged_config=reader.config

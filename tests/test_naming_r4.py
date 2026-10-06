@@ -37,6 +37,7 @@ from bifrost_core.monitor.reader.errors import ReadFailed
 from tests import strategy_rows as rows
 from tests.contract.helpers import full_server_config, operator_server_config
 from tests.route_listing import route_paths
+from tests.reader_mock import reader_mock
 
 PG = {"sink": "postgres"}
 ACC = "U0000001"
@@ -254,14 +255,14 @@ def _monitor(reader: MagicMock) -> TestClient:
 
 @pytest.mark.parametrize("path", ["/data-probe", "/ops/data-probe"])
 def test_the_data_probe_answers_what_core_reads(path: str) -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_data_probe.return_value = PROBE
     r = _monitor(reader).get(path)
     assert r.status_code == 200 and r.json() == PROBE
 
 
 def test_a_probe_that_cannot_read_is_503_not_an_empty_answer() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_data_probe.side_effect = ReadFailed("data_probe: database unavailable")
     r = _monitor(reader).get("/data-probe")
     assert r.status_code == 503 and r.json() == {"detail": "data_probe: database unavailable", "reason": "read_failed"}

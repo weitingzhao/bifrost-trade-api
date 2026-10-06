@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from typing import Any, Dict, Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from starlette.testclient import TestClient
@@ -16,10 +16,11 @@ from starlette.testclient import TestClient
 import bifrost_api.monitor.routers.status as status_mod
 from bifrost_api.monitor.app import create_app
 from tests.contract.helpers import full_server_config
+from tests.reader_mock import reader_mock
 
 
 def _daemon_heartbeat(age_s: float, interval: Optional[float]) -> Dict[str, Any]:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = full_server_config()
     reader.get_daemon_heartbeat.return_value = {
         "last_ts": time.time() - age_s,

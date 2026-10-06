@@ -13,6 +13,7 @@ from bifrost_api.market.app import create_market_app
 from bifrost_core.monitor.reader.errors import WriteFailed, WriteNotFound
 from tests.contract.helpers import operator_server_config
 from tests.envelope_asserts import assert_error, assert_list
+from tests.reader_mock import reader_mock
 
 PG = {"sink": "postgres"}
 
@@ -24,7 +25,7 @@ def _client(reader: MagicMock, control_via_db: Any = PG) -> TestClient:
 
 
 def test_list_has_items_and_count() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     rows = [{"contract_key": "ZZQ|STK|||"}, {"contract_key": "ZZR|STK|||"}]
     reader.get_watchlist.return_value = rows
     assert_list(_client(reader).get("/watchlist"), expected=rows)
@@ -39,7 +40,7 @@ def test_list_has_items_and_count() -> None:
     ],
 )
 def test_without_postgres_is_503(method: str, path: str, body: Any) -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     c = _client(reader, None)
     r = c.request(method, path, json=body) if body is not None else c.request(method, path)
     assert_error(r, 503, "Postgres is not configured")

@@ -14,19 +14,20 @@ from bifrost_api.strategy.schemas import responses as models
 from bifrost_core.monitor.reader.errors import WriteConflict, WriteInvalid
 from bifrost_core.portfolio.reader import position_categories
 from tests.contract.helpers import operator_server_config
+from tests.reader_mock import reader_mock
 
 PG = {"sink": "postgres"}
 
 
 def _client(reader: Any = None) -> TestClient:
-    reader = reader or MagicMock()
+    reader = reader or reader_mock()
     reader.config = operator_server_config()
     app = create_account_app(reader=reader, control_via_db=PG, status_cfg_for_read=PG, merged_config=reader.config)
     return TestClient(app, raise_server_exceptions=False)
 
 
 def test_the_instance_list_sends_state_and_closed_on() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     row = {
         "trade_id": 41,
         "strategy_opportunity_id": 5,
@@ -51,7 +52,7 @@ def test_the_instance_list_sends_state_and_closed_on() -> None:
 
 
 def test_category_rows_are_keyed_category_id_only() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_position_categories.return_value = [{"id": 3, "name": "Income", "description": None, "sort_order": 1}]
     body = _client(reader).get("/position-categories").json()
     assert body["items"] == [{"name": "Income", "description": None, "sort_order": 1, "category_id": 3}]

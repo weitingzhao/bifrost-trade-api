@@ -7,7 +7,6 @@ writer refuses nested dates before it opens a connection.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 from starlette.testclient import TestClient
@@ -16,10 +15,11 @@ from bifrost_api.account.app import create_account_app
 from bifrost_core.monitor.schemas.gate_params import default_gates
 from tests.contract.helpers import operator_server_config
 from tests.route_listing import route_paths
+from tests.reader_mock import reader_mock
 
 
 def _client(control_via_db: Any = None) -> TestClient:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = operator_server_config()
     app = create_account_app(
         reader=reader,
@@ -52,7 +52,7 @@ def test_defaults_is_not_read_as_an_id() -> None:
 
 
 def test_a_viewer_reads_the_defaults() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = {**operator_server_config(), "ops": {"auth": {"default_role": "viewer"}}}
     app = create_account_app(reader=reader, control_via_db=None, merged_config=reader.config)
     assert TestClient(app).get("/gate-sets/defaults").status_code == 200

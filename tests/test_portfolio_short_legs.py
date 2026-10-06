@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from bifrost_api.portfolio.routers.short_legs import router
+from tests.reader_mock import reader_mock
 
 LEG = {
     "account_id": "U1",
@@ -29,7 +30,7 @@ def _client(reader: MagicMock) -> TestClient:
 
 
 def test_returns_the_legs_and_their_count() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_short_option_legs.return_value = [LEG]
     r = _client(reader).get("/portfolio/short-legs")
     assert r.status_code == 200
@@ -37,7 +38,7 @@ def test_returns_the_legs_and_their_count() -> None:
 
 
 def test_passes_the_account_filter_through_and_defaults_to_every_account() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_short_option_legs.return_value = []
     client = _client(reader)
     client.get("/portfolio/short-legs?account_id=U1&account_id=U2")
@@ -48,13 +49,13 @@ def test_passes_the_account_filter_through_and_defaults_to_every_account() -> No
 
 def test_an_unreachable_database_is_503_not_an_empty_book() -> None:
     """Zero short legs and "we could not look" must never render the same."""
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_short_option_legs.return_value = None
     assert _client(reader).get("/portfolio/short-legs").status_code == 503
 
 
 def test_carries_no_cushion_and_no_verdict() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_short_option_legs.return_value = [LEG]
     leg = _client(reader).get("/portfolio/short-legs").json()["legs"][0]
     assert "cushion" not in leg and "band" not in leg and "tight" not in leg

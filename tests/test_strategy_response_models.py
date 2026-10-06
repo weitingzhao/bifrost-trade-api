@@ -24,6 +24,7 @@ from bifrost_core.monitor.reader import strategy_opportunity_write
 from bifrost_core.monitor.reader import strategy_plan
 from tests import strategy_rows as rows
 from tests.contract.helpers import operator_server_config
+from tests.reader_mock import reader_mock
 
 PG = {"sink": "postgres"}
 
@@ -55,7 +56,7 @@ def test_reader_answer_validates_and_reaches_the_wire_unchanged(
     path: str, method: str, answer: Callable[[], Any], model: Any
 ) -> None:
     out = answer()
-    reader = MagicMock()
+    reader = reader_mock()
     getattr(reader, method).return_value = out
     r = _client(reader).get(path)
     assert r.status_code == 200, r.text
@@ -101,7 +102,7 @@ def test_plans_list_and_one_validate_and_reach_the_wire_unchanged(monkeypatch: p
 
 
 def test_the_wire_formats_are_the_ones_the_ui_already_reads(monkeypatch: pytest.MonkeyPatch) -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_allocation_by_id.return_value = rows.allocation()
     monkeypatch.setattr(strategy_plan, "get_plan", lambda *_a, **_kw: rows.plan())
     c = _client(reader)
@@ -118,7 +119,7 @@ def test_the_wire_formats_are_the_ones_the_ui_already_reads(monkeypatch: pytest.
 
 
 def test_a_field_the_reader_did_not_send_is_not_added() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_trade_by_id.return_value = rows.instance()
     body = _client(reader).get("/trades/41").json()
     assert "executions_count" not in body  # list-only
@@ -126,13 +127,13 @@ def test_a_field_the_reader_did_not_send_is_not_added() -> None:
 
 
 def test_an_undeclared_reader_field_still_goes_out() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_allocation_by_id.return_value = {**rows.allocation(), "added_by_a_newer_core": [1, 2]}
     assert _client(reader).get("/strategies/allocations/3").json()["added_by_a_newer_core"] == [1, 2]
 
 
 def test_a_reader_row_missing_an_always_present_field_is_a_500_not_a_silent_gap() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     row = rows.allocation()
     del row["strategy_opportunity_ids"]
     reader.get_allocation_by_id.return_value = row

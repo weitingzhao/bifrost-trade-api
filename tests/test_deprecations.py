@@ -29,6 +29,7 @@ from bifrost_api.monitor.app import create_app as create_monitor_app
 from bifrost_api.research.app import create_research_app
 from tests.contract.helpers import full_server_config, operator_server_config
 from tests.route_listing import served_routes
+from tests.reader_mock import reader_mock
 
 
 def _apps() -> Dict[str, Any]:
@@ -157,7 +158,7 @@ def test_the_marker_still_names_a_successor_and_logs_its_caller(
 
 def test_the_puts_left_carry_no_marker() -> None:
     """PUT /instrument-classes is a create-or-replace now and PUT /executions/{id} has no PATCH yet."""
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = operator_server_config()
     app = create_account_app(reader=reader, control_via_db=None, merged_config=reader.config)
     client = TestClient(app, raise_server_exceptions=False)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 from starlette.testclient import TestClient
@@ -12,13 +11,14 @@ import bifrost_api.monitor.routers.config as config_router
 from bifrost_api.monitor.app import create_app
 from tests.contract.helpers import operator_server_config
 from tests.envelope_asserts import assert_error
+from tests.reader_mock import reader_mock
 
 
 PG = {"sink": "postgres"}
 
 
 def _client(control_via_db: Any = PG) -> TestClient:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = operator_server_config()
     reader.get_ib_config.return_value = {}
     app = create_app(reader=reader, control_via_db=control_via_db, data_lag_threshold_ms=1000, merged_config=reader.config)

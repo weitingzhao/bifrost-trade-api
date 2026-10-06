@@ -10,7 +10,7 @@ logged by name from 0.3.1 until a week of logs showed no caller sending one).
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, create_autospec
 
 import pytest
 from pydantic import BaseModel
@@ -29,20 +29,21 @@ from bifrost_core.monitor.schemas.gate_params import default_gates
 from bifrost_core.portfolio.reader import instrument_class
 from bifrost_core.portfolio.reader import position_categories
 from tests.contract.helpers import operator_server_config
+from tests.reader_mock import reader_mock
 
 PG = {"sink": "postgres"}
 ACC = "U0000001"
 
 
 def _account(reader: Optional[MagicMock] = None) -> Tuple[TestClient, MagicMock]:
-    reader = reader or MagicMock()
+    reader = reader or reader_mock()
     reader.config = operator_server_config()
     app = create_account_app(reader=reader, control_via_db=PG, status_cfg_for_read=PG, merged_config=reader.config)
     return TestClient(app, raise_server_exceptions=False), reader
 
 
 def _market() -> TestClient:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = {**operator_server_config(), "redis": {"enabled": False}}
     app = create_market_app(reader=reader, control_via_db=PG, merged_config=reader.config)
     return TestClient(app, raise_server_exceptions=False)
@@ -149,7 +150,7 @@ def test_the_frontends_payload_passes(
 ) -> None:
     module, fn = target
     writer = MagicMock(return_value=answer)
-    reader = MagicMock()
+    reader = reader_mock()
     if module is None:
         getattr(reader, fn).return_value = answer
     else:
@@ -318,14 +319,21 @@ def test_a_wrong_watchlist_type_is_422(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_an_unknown_field_is_422_named_and_writes_nothing(
     monkeypatch: pytest.MonkeyPatch, method: str, path: str, body: Dict[str, Any], extra: str
 ) -> None:
-    writers = [MagicMock() for _ in range(6)]
-    for w, (module, fn) in zip(writers, [
+    # Every writer these routes can reach (the *_strict writers since core 0.49.0), each an
+    # autospec of the real function: monkeypatch refuses a name the module lacks (TD-154).
+    writers = []
+    for module, fn in [
         (gate_safety_write, "create_gate_safety"), (strategy_structure_write, "create_structure"),
         (template_config_write, "create_template"), (saved_search, "create_saved_search"),
-        (ex, "insert_one_execution"), (ex, "update_one_execution"),
-    ]):
+        (position_categories, "create_position_category_strict"),
+        (position_categories, "set_position_category_tag_strict"),
+        (position_categories, "set_market_streams_symbol_order_strict"),
+        (instrument_class, "set_instrument_class_strict"),
+        (ex, "insert_one_execution"), (ex, "update_one_execution"), (ex, "insert_option_stock_link"),
+    ]:
+        w = create_autospec(getattr(module, fn))
         monkeypatch.setattr(module, fn, w)
-    monkeypatch.setattr(ex, "insert_option_stock_link", MagicMock())
+        writers.append(w)
     c, reader = _account()
     r = c.request(method, path, json=body)
     assert r.status_code == 422, r.text
@@ -334,10 +342,7 @@ def test_an_unknown_field_is_422_named_and_writes_nothing(
     assert errors[0]["loc"] == ["body", extra]
     for w in writers:
         w.assert_not_called()
-    ex.insert_option_stock_link.assert_not_called()
-    for fn in ("create_position_category", "set_position_category_tag", "set_market_streams_symbol_order",
-               "set_instrument_class", "get_option_stock_links_bulk"):
-        getattr(reader, fn).assert_not_called()
+    reader.get_option_stock_links_bulk.assert_not_called()
 
 
 def test_a_nested_unknown_field_is_422_with_its_path(monkeypatch: pytest.MonkeyPatch) -> None:

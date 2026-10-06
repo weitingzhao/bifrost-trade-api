@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
 
 from starlette.testclient import TestClient
 
 from bifrost_api.account.app import create_account_app
 from tests.contract.helpers import full_server_config
+from tests.reader_mock import reader_mock
 
 
 def _client() -> TestClient:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = full_server_config()
     app = create_account_app(reader=reader, control_via_db=None, merged_config=reader.config)
     return TestClient(app, raise_server_exceptions=False)

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
-from unittest.mock import MagicMock
 
 import pytest
 from fastapi import APIRouter
@@ -21,12 +20,13 @@ from fastapi import APIRouter
 from bifrost_api.account.app import create_account_app
 from tests.contract.helpers import full_server_config
 from tests.route_listing import served_routes
+from tests.reader_mock import reader_mock
 
 PACKAGES = ("bifrost_api.strategy.routers", "bifrost_api.trading.routers", "bifrost_api.portfolio.routers")
 
 
 def _served() -> set:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = full_server_config()
     app = create_account_app(reader=reader, control_via_db=None, merged_config=reader.config)
     return served_routes(app)

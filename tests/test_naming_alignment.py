@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import re
 from typing import Any, Dict, Set
-from unittest.mock import MagicMock
 
 import pytest
 from starlette.testclient import TestClient
@@ -27,6 +26,7 @@ from bifrost_core.monitor.reader.errors import WriteNotFound
 from tests.contract.helpers import operator_server_config
 from tests.route_listing import served_routes
 from tests.test_deprecations import _apps
+from tests.reader_mock import reader_mock
 
 ACC = "U0000001"
 
@@ -73,7 +73,7 @@ def test_path_ids_are_named_for_their_table() -> None:
 
 
 def _client(reader: Any = None) -> TestClient:
-    reader = reader or MagicMock()
+    reader = reader or reader_mock()
     reader.config = operator_server_config()
     pg = {"sink": "postgres"}
     app = create_account_app(reader=reader, control_via_db=pg, status_cfg_for_read=pg, merged_config=reader.config)
@@ -145,7 +145,7 @@ def test_saved_search_takes_state_json(monkeypatch: pytest.MonkeyPatch, sent: Di
 
 
 def test_dims_by_column_is_by_type_keyed_by_the_column() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.list_dims_grouped.return_value = {"direction": [{"code": "bull"}], "time": [{"code": "short"}]}
     body = _client(reader).get("/strategies/dims").json()
     assert body["by_type"] == {"direction": [{"code": "bull"}], "time": [{"code": "short"}]}
@@ -153,7 +153,7 @@ def test_dims_by_column_is_by_type_keyed_by_the_column() -> None:
 
 
 def test_link_rows_carry_the_table_id() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_option_stock_links.return_value = {"links": [{"link_id": 3}], "slippage_total": None}
     reader.get_option_stock_links_bulk.return_value = {"by_option_id": {"4": {"links": [{"link_id": 3}], "slippage_total": None}}}
     client = _client(reader)
@@ -167,7 +167,7 @@ def test_link_rows_carry_the_table_id() -> None:
 
 
 def test_stock_link_candidates_echo_the_window_under_the_query_names() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_stock_link_candidates.return_value = {
         "executions": [],
         "underlying_symbol": "ZZQ",

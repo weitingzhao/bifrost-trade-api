@@ -23,6 +23,7 @@ from bifrost_core.portfolio.reader import instrument_class
 from bifrost_core.portfolio.reader import position_categories
 from tests.contract.helpers import operator_server_config
 from tests.envelope_asserts import assert_error, assert_list
+from tests.reader_mock import reader_mock
 
 PG = {"sink": "postgres"}
 
@@ -157,7 +158,7 @@ def test_tagging_with_a_category_that_does_not_exist_is_400(monkeypatch: pytest.
 
 
 def test_position_categories_list_has_items_and_count_and_no_ok() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     rows = [{"id": 1, "name": "Core"}, {"id": 2, "name": "Hedge"}]
     reader.get_position_categories.return_value = rows
     # Keyed category_id only (TD-57 api 0.6.7 sent both; id dropped in 0.6.12, TD-56)

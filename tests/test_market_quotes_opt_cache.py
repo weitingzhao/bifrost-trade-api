@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from bifrost_api.market.routers.quotes import router
+from tests.reader_mock import reader_mock
 
 CK = "GOOG|OPT|20260717|300.0|C"
 
@@ -15,7 +16,7 @@ CK = "GOOG|OPT|20260717|300.0|C"
 def _app(rq: MagicMock | None, reader: MagicMock | None = None) -> TestClient:
     app = FastAPI()
     app.include_router(router)
-    app.state.reader = reader or MagicMock()
+    app.state.reader = reader or reader_mock()
     app.state.redis_quotes = rq
     return TestClient(app)
 
@@ -35,7 +36,7 @@ def test_get_quotes_opt_from_redis_cache() -> None:
         "updated_ts": 1000.0,
         "ts": 1000.0,
     }
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_contract_quotes.return_value = []
 
     with patch("bifrost_core.core.realtime.on_demand_opt.ensure_on_demand_opt") as ensure:
@@ -55,7 +56,7 @@ def test_get_quotes_opt_fallback_on_cache_miss() -> None:
     rq.available = True
     rq.ib_redis_client = MagicMock()
     rq.get_option_cache.return_value = None
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_contract_quotes.return_value = [
         {"symbol": "GOOG", "contract_key": CK, "last": 0.5, "bid": None, "ask": None}
     ]

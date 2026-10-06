@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
 
 import pytest
 from starlette.testclient import TestClient
@@ -12,10 +11,11 @@ from bifrost_api.ops.market_ingest_config import market_ingest_services_from_con
 from bifrost_api.ops.workload_map import deployment_for_unit
 from tests.contract.helpers import full_server_config
 from tests.route_listing import served_routes
+from tests.reader_mock import reader_mock
 
 
 def _monitor() -> TestClient:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = full_server_config()
     app = create_app(reader=reader, control_via_db={"sink": "postgres"}, data_lag_threshold_ms=1000, merged_config=reader.config)
     return TestClient(app, raise_server_exceptions=False)

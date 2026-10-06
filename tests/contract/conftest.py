@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
 
 import pytest
 
 from tests.contract.helpers import _FULL_SERVER
+from tests.reader_mock import reader_mock
 
 
 @pytest.fixture
 def mock_reader():
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = {"server": dict(_FULL_SERVER)}
     return reader
 

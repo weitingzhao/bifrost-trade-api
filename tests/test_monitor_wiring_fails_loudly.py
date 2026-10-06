@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -10,10 +9,11 @@ import bifrost_api.docs_api.app as docs_app
 import bifrost_api.ops.app as ops_app
 from bifrost_api.monitor.app import create_app
 from tests.contract.helpers import full_server_config
+from tests.reader_mock import reader_mock
 
 
 def _build() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = full_server_config()
     create_app(
         reader=reader,

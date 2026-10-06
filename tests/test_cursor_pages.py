@@ -21,6 +21,7 @@ from bifrost_api.account.app import create_account_app
 from bifrost_core.portfolio.reader import keyset
 from tests.contract.helpers import full_server_config
 from tests.envelope_asserts import assert_error
+from tests.reader_mock import reader_mock
 
 TS = datetime(2026, 9, 18, 15, 0, 0, 1, tzinfo=timezone.utc)
 EXEC_CURSOR = keyset.encode_executions(date(2026, 9, 18), TS, 41)
@@ -35,7 +36,7 @@ def _client(reader: MagicMock) -> TestClient:
 
 def _validating_reader() -> MagicMock:
     """Page methods that decode the cursor as core's StatusReader does, before reading."""
-    reader = MagicMock()
+    reader = reader_mock()
 
     def exec_page(**kw: Any) -> Dict[str, Any]:
         if kw.get("cursor") is not None:
@@ -56,7 +57,7 @@ def _validating_reader() -> MagicMock:
 
 
 def test_executions_first_page_hands_out_the_next_cursor() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_executions_page.return_value = {"items": [{"account_executions_id": 42}], "next_cursor": EXEC_CURSOR}
     body = _client(reader).get("/executions?limit=1&account_id=U0000001&source_scope=performance_book").json()
     kw = reader.get_executions_page.call_args.kwargs
@@ -81,7 +82,7 @@ def test_executions_bad_cursor_is_400(bad: str) -> None:
 
 
 def test_executions_cursor_with_opt_pairs_is_400_and_reads_nothing() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     r = _client(reader).get("/executions", params={"include_opt_pairs": "true", "cursor": EXEC_CURSOR,
                                                     "from_ts": 1, "to_ts": 2})
     assert_error(r, 400, "include_opt_pairs")
@@ -90,7 +91,7 @@ def test_executions_cursor_with_opt_pairs_is_400_and_reads_nothing() -> None:
 
 
 def test_executions_with_opt_pairs_sends_no_next_cursor() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_executions_with_opt_pairs.return_value = {"executions": [{"account_executions_id": 1}], "opt_pairs": []}
     body = _client(reader).get("/executions?include_opt_pairs=true").json()
     assert "next_cursor" not in body and body["total"] == 1
@@ -100,7 +101,7 @@ def test_executions_with_opt_pairs_sends_no_next_cursor() -> None:
 
 
 def test_transactions_first_page_hands_out_the_next_cursor() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_transactions_page.return_value = {"items": [{"account_transactions_id": 8}], "next_cursor": TXN_CURSOR}
     body = _client(reader).get("/transactions?limit=1").json()
     assert reader.get_transactions_page.call_args.kwargs["cursor"] is None
@@ -121,7 +122,7 @@ def test_transactions_bad_cursor_is_400(bad: str) -> None:
 
 @pytest.mark.parametrize("limit, status", [(10000, 200), (10001, 422), (500, 200)])
 def test_transactions_limit_is_capped_at_10000(limit: int, status: int) -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_transactions_page.return_value = {"items": [], "next_cursor": None}
     r = _client(reader).get(f"/transactions?limit={limit}")
     assert r.status_code == status, r.text
@@ -130,7 +131,7 @@ def test_transactions_limit_is_capped_at_10000(limit: int, status: int) -> None:
 
 
 def test_openapi_documents_cursor_and_the_cap() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = full_server_config()
     spec = create_account_app(reader=reader, control_via_db=None, merged_config=reader.config).openapi()
     for path in ("/executions", "/transactions"):

@@ -12,6 +12,7 @@ from bifrost_api.account.app import create_account_app
 from tests import strategy_rows
 from tests.contract.helpers import full_server_config
 from tests.envelope_asserts import assert_list
+from tests.reader_mock import reader_mock
 
 # Lists with a response model (TD-24) take their reader's real answer; the others any rows.
 _ANY_ROWS = lambda: [{"id": 1}, {"id": 2}]  # noqa: E731
@@ -34,7 +35,7 @@ def _client(reader: MagicMock) -> TestClient:
 
 @pytest.mark.parametrize("path, method, answer", LISTS)
 def test_list_has_items_and_count(path: str, method: str, answer: Callable[[], List[Dict[str, Any]]]) -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     rows = answer()
     getattr(reader, method).return_value = rows
     assert_list(_client(reader).get(path), expected=strategy_rows.as_sent_before(rows)["items"])

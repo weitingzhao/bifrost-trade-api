@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
 
 from starlette.testclient import TestClient
 
 from bifrost_api.research.app import create_research_app
+from tests.reader_mock import reader_mock
 
 _SERVER = {
     "monitor_port": 8765,
@@ -28,7 +28,7 @@ _RETIRED_PATH_PREFIXES = (
 
 
 def _client() -> TestClient:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = {"server": dict(_SERVER)}
     app = create_research_app(
         reader=reader,

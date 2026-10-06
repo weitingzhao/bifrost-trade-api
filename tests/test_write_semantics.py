@@ -57,12 +57,13 @@ from bifrost_core.portfolio.reader import position_categories
 from tests import strategy_rows
 from tests.contract.helpers import full_server_config, operator_server_config
 from tests.envelope_asserts import assert_error
+from tests.reader_mock import reader_mock
 
 PG = {"sink": "postgres"}
 
 
 def _account(control_via_db: Any = PG, config: Optional[dict] = None) -> TestClient:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = config or operator_server_config()
     app = create_account_app(
         reader=reader, control_via_db=control_via_db, status_cfg_for_read=control_via_db, merged_config=reader.config
@@ -71,7 +72,7 @@ def _account(control_via_db: Any = PG, config: Optional[dict] = None) -> TestCli
 
 
 def _market(control_via_db: Any = PG) -> TestClient:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = {**operator_server_config(), "redis": {"enabled": False}}
     app = create_market_app(reader=reader, control_via_db=control_via_db, merged_config=reader.config)
     return TestClient(app, raise_server_exceptions=False)

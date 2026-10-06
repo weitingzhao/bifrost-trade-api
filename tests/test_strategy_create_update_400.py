@@ -8,7 +8,6 @@ database is never reached: core refuses before connecting. Ids are made up.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 from starlette.testclient import TestClient
@@ -17,6 +16,7 @@ from bifrost_api.account.app import create_account_app
 from bifrost_core.monitor.reader import write_support as ws
 from tests.contract.helpers import operator_server_config
 from tests.envelope_asserts import assert_error
+from tests.reader_mock import reader_mock
 
 PG = {"sink": "postgres"}
 
@@ -26,7 +26,7 @@ def _client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
         raise AssertionError("the database must not be reached")
 
     monkeypatch.setattr(ws, "conn_from_config", no_db)
-    reader = MagicMock()
+    reader = reader_mock()
     reader.config = operator_server_config()
     app = create_account_app(reader=reader, control_via_db=PG, status_cfg_for_read=PG, merged_config=reader.config)
     return TestClient(app, raise_server_exceptions=False)

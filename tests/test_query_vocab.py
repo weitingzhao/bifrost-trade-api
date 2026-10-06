@@ -32,6 +32,7 @@ from bifrost_api.research.app import create_research_app
 from tests.contract.helpers import full_server_config
 from tests.route_listing import served_routes
 from tests.test_deprecations import _apps
+from tests.reader_mock import reader_mock
 
 ACC = "U0000001"
 
@@ -122,7 +123,7 @@ def _account(reader: MagicMock) -> TestClient:
 
 
 def test_an_old_time_name_is_422_and_reaches_no_reader(caplog: pytest.LogCaptureFixture) -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_transactions_page.return_value = {"items": [], "next_cursor": None}
     client = _account(reader)
     with caplog.at_level(logging.WARNING, logger="bifrost_api.common.query_vocab"):
@@ -156,7 +157,7 @@ def test_an_old_time_name_is_422_and_reaches_no_reader(caplog: pytest.LogCapture
 def test_each_new_time_name_filters_and_its_old_name_is_422(
     path: str, reader_method: str, old: str, new: str, kwarg: tuple
 ) -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     getattr(reader, reader_method).return_value = [] if path == "/executions" else {}
     client = _account(reader)  # one app per test: the metrics registry is per test
     name, value = kwarg
@@ -170,7 +171,7 @@ def test_each_new_time_name_filters_and_its_old_name_is_422(
 
 
 def test_stock_link_candidates_take_from_date_and_refuse_the_old_names() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_stock_link_candidates.return_value = {"executions": []}
     client = _account(reader)
     base = f"/executions/stock-link-candidates?account_id={ACC}&option_account_executions_id=4"
@@ -274,7 +275,7 @@ def _page(rows: list, next_cursor: Optional[str] = None) -> dict:
 
 @pytest.mark.parametrize("returned, more, total", [(3, False, 3), (5, False, 5), (5, True, None)])
 def test_executions_total_is_sent_only_when_the_limit_did_not_cut(returned: int, more: bool, total: Optional[int]) -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_executions_page.return_value = _page(_rows(returned), "c1" if more else None)
     body = _account(reader).get("/executions?limit=5").json()
     kwargs = reader.get_executions_page.call_args.kwargs
@@ -286,7 +287,7 @@ def test_executions_total_is_sent_only_when_the_limit_did_not_cut(returned: int,
 
 
 def test_executions_limit_zero_reads_everything_and_counts_it() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_executions_page.return_value = _page(_rows(4))
     body = _account(reader).get("/executions?limit=0").json()
     assert reader.get_executions_page.call_args.kwargs["limit"] is None
@@ -295,14 +296,14 @@ def test_executions_limit_zero_reads_everything_and_counts_it() -> None:
 
 
 def test_executions_default_limit_is_still_200() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_executions_page.return_value = _page(_rows(2))
     _account(reader).get("/executions")
     assert reader.get_executions_page.call_args.kwargs["limit"] == 200
 
 
 def test_executions_with_pairs_total_under_the_cap_only() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_executions_with_opt_pairs.return_value = {"executions": _rows(2), "opt_pairs": []}
     client = _account(reader)
     body = client.get("/executions?include_opt_pairs=true&limit=2").json()
@@ -314,7 +315,7 @@ def test_executions_with_pairs_total_under_the_cap_only() -> None:
 
 @pytest.mark.parametrize("returned, more, total", [(0, False, 0), (500, False, 500), (500, True, None)])
 def test_transactions_total(returned: int, more: bool, total: Optional[int]) -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     rows = [{"account_transactions_id": i} for i in range(returned)]
     reader.get_transactions_page.return_value = _page(rows, "c1" if more else None)
     body = _account(reader).get("/transactions").json()
@@ -325,7 +326,7 @@ def test_transactions_total(returned: int, more: bool, total: Optional[int]) -> 
 
 
 def test_transactions_limit_zero_is_passed_as_before() -> None:
-    reader = MagicMock()
+    reader = reader_mock()
     reader.get_transactions_page.return_value = _page([])
     body = _account(reader).get("/transactions?limit=0").json()
     assert reader.get_transactions_page.call_args.kwargs["limit"] == 0
