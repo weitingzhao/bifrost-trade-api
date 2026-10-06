@@ -3,7 +3,7 @@
 ``fixtures/bs_research_golden.json`` was recorded from the api's own copies before they were
 deleted (synthetic grid: S, K, T incl. <= 0, sigma incl. 0, both rates in use, C / P / odd
 right strings, IV prices incl. <= 0 and below intrinsic). The functions the routes call now
-come from core; this test holds them to the recording -- floats to 1e-9 relative (see REL_TOL),
+come from core; this test holds them to the recording -- floats to a tolerance (see REL_TOL),
 the same None and the same exception class.
 
 Record (only on purpose, with the old code):  PYTHONPATH=src python tests/research/test_bs_core_switch.py
@@ -60,17 +60,19 @@ def build() -> Dict[str, List[Any]]:
     return out
 
 
-# Floats agree to 1e-9 relative, not bit for bit: the recording was made on the Mac (arm64 libm) and
-# CI runs on x86; the iterative IV solve lands 1e-14..1e-12 apart there (1,950 of 16,200 on 10-06).
-# None, the exception class and "nan" still have to match exactly.
-REL_TOL = 1e-9
+# Floats agree to a tolerance, not bit for bit: the recording was made on the Mac (arm64 libm) and
+# CI runs on x86. Closed-form values (greeks, prob ITM) land 1e-14..1e-12 apart: 1e-9 relative.
+# The research IV solve stops once |price - market| < 1e-8, so its answer is only fixed to about
+# 1e-8 / vega -- near-expiry far-OTM legs moved 2.6e-8 relative on x86 (90 of 16,200 on 10-06):
+# 1e-6 relative for "iv". None, the exception class and "nan" still have to match exactly.
+REL_TOL = {"greeks": 1e-9, "prob_itm_put": 1e-9, "iv": 1e-6}
 
 
-def _same(a: Any, b: Any) -> bool:
+def _same(a: Any, b: Any, rel: float) -> bool:
     if isinstance(a, float) and isinstance(b, float):
-        return math.isclose(a, b, rel_tol=REL_TOL, abs_tol=1e-12)
+        return math.isclose(a, b, rel_tol=rel, abs_tol=1e-12)
     if isinstance(a, dict) and isinstance(b, dict):
-        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+        return a.keys() == b.keys() and all(_same(a[k], b[k], rel) for k in a)
     return a == b
 
 
@@ -79,7 +81,7 @@ def test_core_reproduces_the_recorded_research_math() -> None:
     now = json.loads(json.dumps(build()))
     for key in ("greeks", "iv", "prob_itm_put"):
         assert len(now[key]) == len(recorded[key]), key
-        bad = [(i, a, b) for i, (a, b) in enumerate(zip(now[key], recorded[key])) if not _same(a, b)]
+        bad = [(i, a, b) for i, (a, b) in enumerate(zip(now[key], recorded[key])) if not _same(a, b, REL_TOL[key])]
         assert not bad, f"{key}: {len(bad)} of {len(now[key])} differ, first {bad[:3]}"
 
 
