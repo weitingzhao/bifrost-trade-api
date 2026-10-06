@@ -3,8 +3,8 @@
 ``fixtures/bs_research_golden.json`` was recorded from the api's own copies before they were
 deleted (synthetic grid: S, K, T incl. <= 0, sigma incl. 0, both rates in use, C / P / odd
 right strings, IV prices incl. <= 0 and below intrinsic). The functions the routes call now
-come from core; this test holds them to the recording bit for bit -- same floats, same
-None, same exception class.
+come from core; this test holds them to the recording -- floats to 1e-9 relative (see REL_TOL),
+the same None and the same exception class.
 
 Record (only on purpose, with the old code):  PYTHONPATH=src python tests/research/test_bs_core_switch.py
 """
@@ -60,12 +60,26 @@ def build() -> Dict[str, List[Any]]:
     return out
 
 
+# Floats agree to 1e-9 relative, not bit for bit: the recording was made on the Mac (arm64 libm) and
+# CI runs on x86; the iterative IV solve lands 1e-14..1e-12 apart there (1,950 of 16,200 on 10-06).
+# None, the exception class and "nan" still have to match exactly.
+REL_TOL = 1e-9
+
+
+def _same(a: Any, b: Any) -> bool:
+    if isinstance(a, float) and isinstance(b, float):
+        return math.isclose(a, b, rel_tol=REL_TOL, abs_tol=1e-12)
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    return a == b
+
+
 def test_core_reproduces_the_recorded_research_math() -> None:
     recorded = json.loads(FIXTURE.read_text())
     now = json.loads(json.dumps(build()))
     for key in ("greeks", "iv", "prob_itm_put"):
         assert len(now[key]) == len(recorded[key]), key
-        bad = [(i, a, b) for i, (a, b) in enumerate(zip(now[key], recorded[key])) if a != b]
+        bad = [(i, a, b) for i, (a, b) in enumerate(zip(now[key], recorded[key])) if not _same(a, b)]
         assert not bad, f"{key}: {len(bad)} of {len(now[key])} differ, first {bad[:3]}"
 
 
