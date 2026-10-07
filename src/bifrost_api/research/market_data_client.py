@@ -214,12 +214,63 @@ def fetch_short_volume(symbols: List[str], trade_days: int = 60) -> Dict[str, Li
 def fetch_pcr_aggregate(
     symbol: str, pcr_type: str = "oi", lookback_days: int = 365
 ) -> Dict[str, Any]:
-    """GET /options/analytics/pcr → full PCR aggregate response."""
-    return _get_json(
-        "/options/analytics/pcr",
-        {"symbol": symbol, "type": pcr_type, "lookback_days": str(lookback_days)},
-        timeout=45,
-    )
+    """Research ``GET /analytics/options/pcr``, already limited to standard contracts.
+
+    The plugin route summed every OCC root, including adjusted ones. Research
+    writes ``features.option_metric_pcr_daily`` after that filter. The returned
+    shape is the one ``stock_option_pcr`` already reads.
+    """
+    from bifrost_api.research.analytics_reader import ResearchUnavailable, _research_get
+
+    kind = "volume" if str(pcr_type).strip().lower() == "volume" else "oi"
+    lookback = max(1, min(int(lookback_days), 365))
+    empty: Dict[str, Any] = {
+        "ok": False,
+        "symbol": str(symbol).strip().upper(),
+        "type": kind,
+        "source": "research_filtered_pcr",
+        "trend": [],
+        "latest_ratio": None,
+    }
+    try:
+        data = _research_get(
+            "/analytics/options/pcr",
+            {"symbol": symbol, "lookback_days": lookback},
+            missing_is_none=True,
+        )
+    except ResearchUnavailable:
+        return empty
+    if not data:
+        return empty
+    put_key = "total_put_volume" if kind == "volume" else "total_put_oi"
+    call_key = "total_call_volume" if kind == "volume" else "total_call_oi"
+    ratio_key = "pcr_volume" if kind == "volume" else "pcr_oi"
+    trend: List[Dict[str, Any]] = []
+    for row in data.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        trade_date = str(row.get("trade_date") or "")[:10]
+        if not trade_date:
+            continue
+        trend.append(
+            {
+                "trade_date": trade_date,
+                "put_value": int(row.get(put_key) or 0),
+                "call_value": int(row.get(call_key) or 0),
+                "ratio": row.get(ratio_key),
+            }
+        )
+    trend.sort(key=lambda item: str(item["trade_date"]))
+    return {
+        "ok": True,
+        "symbol": str(symbol).strip().upper(),
+        "type": kind,
+        "source": "research_filtered_pcr",
+        "lookback_days": lookback,
+        "count": len(trend),
+        "latest_ratio": trend[-1]["ratio"] if trend else None,
+        "trend": trend,
+    }
 
 
 def fetch_option_daily(
