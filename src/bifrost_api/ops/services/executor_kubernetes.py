@@ -98,33 +98,35 @@ class KubernetesExecutor:
     async def _run_sync(self, fn, *args, **kwargs):
         return await asyncio.to_thread(fn, *args, **kwargs)
 
-    async def _read_deployment(self, name: str):
+    async def _read_deployment(self, name: str, namespace: Optional[str] = None):
         if not self._apps:
             raise RuntimeError("Kubernetes API client is not initialized")
-        return await self._run_sync(self._apps.read_namespaced_deployment, name, self._namespace)
+        ns = (namespace or self._namespace).strip() or self._namespace
+        return await self._run_sync(self._apps.read_namespaced_deployment, name, ns)
 
-    async def _read_statefulset(self, name: str):
+    async def _read_statefulset(self, name: str, namespace: Optional[str] = None):
         if not self._apps:
             raise RuntimeError("Kubernetes API client is not initialized")
+        ns = (namespace or self._namespace).strip() or self._namespace
         return await self._run_sync(
             self._apps.read_namespaced_stateful_set,
             name,
-            self._namespace,
+            ns,
         )
 
-    async def _read_workload(self, name: str) -> tuple[str, Any]:
+    async def _read_workload(self, name: str, namespace: Optional[str] = None) -> tuple[str, Any]:
         from kubernetes.client.rest import ApiException
 
         try:
-            return "deployment", await self._read_deployment(name)
+            return "deployment", await self._read_deployment(name, namespace)
         except ApiException as exc:
             if getattr(exc, "status", None) != 404:
                 raise
-            return "statefulset", await self._read_statefulset(name)
+            return "statefulset", await self._read_statefulset(name, namespace)
 
-    async def _workload_ready_replicas(self, name: str) -> tuple[int, int, str]:
+    async def _workload_ready_replicas(self, name: str, namespace: Optional[str] = None) -> tuple[int, int, str]:
         try:
-            kind, obj = await self._read_workload(name)
+            kind, obj = await self._read_workload(name, namespace)
         except Exception as exc:  # noqa: BLE001
             logger.debug("read workload %s: %s", name, exc)
             return 0, 0, "deployment"
@@ -153,11 +155,12 @@ class KubernetesExecutor:
     async def deployment_replica_counts(
         self,
         deployment: str,
+        namespace: Optional[str] = None,
     ) -> tuple[Optional[int], Optional[int]]:
         if not deployment or not self._k8s_reachable:
             return None, None
         try:
-            spec_replicas, ready, _kind = await self._workload_ready_replicas(deployment)
+            spec_replicas, ready, _kind = await self._workload_ready_replicas(deployment, namespace)
             return spec_replicas, ready
         except Exception:  # noqa: BLE001
             return None, None

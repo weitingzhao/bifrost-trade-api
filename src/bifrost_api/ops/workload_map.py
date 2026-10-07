@@ -8,14 +8,6 @@ from typing import Optional
 UNIT_TO_DEPLOYMENT: dict[str, str] = {
     "bifrost-engine": "daemon",
     "bifrost-engine.service": "daemon",
-    "bifrost-ib-operator": "ib-operator",
-    "bifrost-ib-operator.service": "ib-operator",
-    "bifrost-ib-market-gateway": "ib-market-gateway",
-    "bifrost-ib-market-gateway.service": "ib-market-gateway",
-    "bifrost-ib-ingestor": "ib-market-gateway",
-    "bifrost-ib-ingestor.service": "ib-market-gateway",
-    "bifrost-ib-account-agent": "ib-account-agent",
-    "bifrost-ib-account-agent.service": "ib-account-agent",
 }
 
 

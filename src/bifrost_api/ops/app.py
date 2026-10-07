@@ -33,10 +33,6 @@ class AccessControlAllowPrivateNetworkMiddleware(BaseHTTPMiddleware):
 
 
 DEFAULT_ALLOWED_UNITS = [
-    "bifrost-ib-operator",
-    "bifrost-ib-market-gateway",
-    "bifrost-ib-ingestor",
-    "bifrost-ib-account-agent",
     "bifrost-engine",
 ]
 

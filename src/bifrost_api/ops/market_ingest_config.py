@@ -64,23 +64,31 @@ def _ensure_socket_feed_rows_for_daemon_only_yaml(out: List[Dict[str, str]]) -> 
     return head + out
 
 
+# The three gateway health rows are one Deployment, not the retired socket units (TD-104).
+_IB_GATEWAY_SERVICE_IDS = frozenset({"ib_operator", "ib_ingestor", "ib_account_agent"})
+IB_GATEWAY_NAMESPACE = "data"
+IB_GATEWAY_DEPLOYMENT = "ib-gateway"
+
 DEFAULT_MARKET_INGEST_SERVICES: List[Dict[str, str]] = [
     {
         "id": "ib_operator",
         "label": "Platform IB Gateway · Operator RPC",
-        "systemd_unit": "bifrost-ib-operator.service",
+        "k8s_namespace": IB_GATEWAY_NAMESPACE,
+        "k8s_deployment": IB_GATEWAY_DEPLOYMENT,
         "redis_meta_key": BIFROST_HEALTH_IB_OPERATOR,
     },
     {
         "id": "ib_ingestor",
         "label": "Platform IB Gateway · Market ingest",
-        "systemd_unit": "bifrost-ib-market-gateway.service",
+        "k8s_namespace": IB_GATEWAY_NAMESPACE,
+        "k8s_deployment": IB_GATEWAY_DEPLOYMENT,
         "redis_meta_key": BIFROST_HEALTH_IB_INGESTOR,
     },
     {
         "id": "ib_account_agent",
         "label": "Platform IB Gateway · Account agent",
-        "systemd_unit": "bifrost-ib-account-agent.service",
+        "k8s_namespace": IB_GATEWAY_NAMESPACE,
+        "k8s_deployment": IB_GATEWAY_DEPLOYMENT,
         "redis_meta_key": BIFROST_HEALTH_IB_ACCOUNT_AGENT,
     },
     {
@@ -106,11 +114,20 @@ def market_ingest_services_from_config(config: dict) -> List[Dict[str, str]]:
         label = str(row.get("label") or sid).strip()
         unit = str(row.get("systemd_unit") or "").strip()
         meta = str(row.get("redis_meta_key") or "").strip()
-        if not sid or not unit:
+        k8s_namespace = str(row.get("k8s_namespace") or "").strip()
+        k8s_deployment = str(row.get("k8s_deployment") or "").strip()
+        if sid in _IB_GATEWAY_SERVICE_IDS:
+            # YAML may still name the retired socket units. The live workload is data/ib-gateway.
+            unit = ""
+            k8s_namespace = IB_GATEWAY_NAMESPACE
+            k8s_deployment = IB_GATEWAY_DEPLOYMENT
+        if not sid or (not unit and not k8s_deployment):
             continue
         if sid in _RETIRED_SERVICE_IDS:
             continue
-        norm_unit = unit if unit.endswith(".service") else f"{unit}.service"
+        norm_unit = ""
+        if unit:
+            norm_unit = unit if unit.endswith(".service") else f"{unit}.service"
         if sid == "ib_ingestor" and meta in (
             _LEGACY_IB_INGESTER_META_HEALTH,
             LEGACY_BIFROST_IB_INGESTOR,
@@ -129,12 +146,17 @@ def market_ingest_services_from_config(config: dict) -> List[Dict[str, str]]:
             meta = BIFROST_HEALTH_DAEMON_STRATEGY_TRADING
         if sid == "trading_engine" and not meta:
             meta = BIFROST_HEALTH_DAEMON_STRATEGY_TRADING
-        out.append({
+        built: Dict[str, str] = {
             "id": sid,
             "label": label or sid,
-            "systemd_unit": norm_unit,
             "redis_meta_key": meta,
-        })
+        }
+        if norm_unit:
+            built["systemd_unit"] = norm_unit
+        if k8s_deployment:
+            built["k8s_namespace"] = k8s_namespace or IB_GATEWAY_NAMESPACE
+            built["k8s_deployment"] = k8s_deployment
+        out.append(built)
     if not out:
         return list(DEFAULT_MARKET_INGEST_SERVICES)
     return _ensure_socket_feed_rows_for_daemon_only_yaml(out)

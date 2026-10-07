@@ -28,7 +28,6 @@ def executor(monkeypatch):
     ex = KubernetesExecutor(
         namespace="bifrost-stg",
         allowed_units=[
-            "bifrost-ib-ingestor",
             "bifrost-engine",
         ],
         daemon_scale_guard="freeze",
@@ -83,22 +82,31 @@ async def test_ib_statefulset_is_active(executor):
 
     executor._read_deployment = AsyncMock(side_effect=ApiException(status=404))
     executor._read_statefulset = AsyncMock(return_value=_fake_statefulset(1, 1))
-    state = await executor.systemctl_is_active("bifrost-ib-ingestor.service")
+    state = await executor.systemctl_is_active("bifrost-engine.service")
     assert state == "active"
 
 
 @pytest.mark.asyncio
 async def test_systemctl_is_active_running(executor):
     executor._read_deployment = AsyncMock(return_value=_fake_deployment(1, 1))
-    state = await executor.systemctl_is_active("bifrost-ib-ingestor.service")
+    state = await executor.systemctl_is_active("bifrost-engine.service")
     assert state == "active"
 
 
 @pytest.mark.asyncio
 async def test_systemctl_is_active_scaled_zero(executor):
     executor._read_deployment = AsyncMock(return_value=_fake_deployment(0, 0))
-    state = await executor.systemctl_is_active("bifrost-ib-ingestor.service")
+    state = await executor.systemctl_is_active("bifrost-engine.service")
     assert state == "inactive"
+
+
+@pytest.mark.asyncio
+async def test_retired_ib_unit_is_not_a_workload(executor):
+    executor._allowed = ["bifrost-engine", "bifrost-ib-ingestor"]
+    executor._read_deployment = AsyncMock(return_value=_fake_deployment(1, 1))
+    state = await executor.systemctl_is_active("bifrost-ib-ingestor.service")
+    assert state == "unknown"
+    executor._read_deployment.assert_not_called()
 
 
 @pytest.mark.asyncio

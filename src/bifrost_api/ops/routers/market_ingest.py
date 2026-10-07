@@ -87,9 +87,9 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
     ops_profile = _effective_ops_control_profile(request)
     out: List[Dict[str, Any]] = []
     for row in rows:
-        unit = row["systemd_unit"]
+        unit = str(row.get("systemd_unit") or "")
         try:
-            active = await exc.systemctl_is_active(unit)
+            active = await exc.systemctl_is_active(unit) if unit else "inactive"
         except Exception as e:
             active = "unknown"
             logger.debug("systemctl_is_active %s: %s", unit, e)
@@ -191,10 +191,13 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
         if platform_gateway_managed:
             item["transport"] = "platform_gateway"
         if isinstance(exc, KubernetesExecutor):
-            dep = exc.deployment_for_unit(unit)
+            dep = str(row.get("k8s_deployment") or "") or (exc.deployment_for_unit(unit) if unit else "")
+            ns = str(row.get("k8s_namespace") or "")
             if dep:
                 item["k8s_deployment"] = dep
-                replicas, ready = await exc.deployment_replica_counts(dep)
+                if ns:
+                    item["k8s_namespace"] = ns
+                replicas, ready = await exc.deployment_replica_counts(dep, namespace=ns or None)
                 if replicas is not None:
                     item["k8s_replicas"] = replicas
                 if ready is not None:
