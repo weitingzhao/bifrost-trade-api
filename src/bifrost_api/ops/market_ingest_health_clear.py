@@ -84,6 +84,18 @@ def read_health_hash(redis_url: str, meta_key: str) -> Dict[str, str]:
         return {}
 
 
+def read_health_updated_at(redis_url: str, meta_key: str) -> Optional[float]:
+    """Heartbeat time on the health hash (``updated_at``).
+
+    This is not ``bifrost_ops_control_updated_at``. The gateway writes the
+    heartbeat on redis-ib and does not write the ops-control field.
+    """
+    updated = _parse_ts(read_health_hash(redis_url, meta_key).get("updated_at"))
+    if updated <= 0:
+        return None
+    return updated
+
+
 def ingest_health_is_platform_gateway(redis_url: str, meta_key: str) -> bool:
     """True when health hash is written by Platform IB Gateway plugin (plugin=ib-gateway)."""
     from bifrost_core.monitor.integrations.platform_ib_gateway import is_platform_ib_gateway_health

@@ -15,7 +15,10 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Request
 
-from bifrost_api.ops.market_ingest_config import market_ingest_services_from_config
+from bifrost_api.ops.market_ingest_config import (
+    IB_GATEWAY_DEPLOYMENT,
+    market_ingest_services_from_config,
+)
 from bifrost_api.ops.market_ingest_control_env import (
     clear_control_env,
     meta_redis_url_from_ops_config,
@@ -27,12 +30,15 @@ from bifrost_api.ops.market_ingest_control_env import (
 from bifrost_api.ops.market_ingest_display import (
     derive_ingest_display_state,
     platform_gateway_managed_for_service,
+    process_active_from_replica_counts,
 )
 from bifrost_api.ops.market_ingest_health_clear import (
     ingest_redis_health_looks_live,
     ingest_redis_health_writer_recent,
     read_health_stack_profile,
+    read_health_updated_at,
 )
+from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
 from bifrost_core.core.redis_url import ib_redis_url_from_config
 
 logger = logging.getLogger(__name__)
@@ -88,11 +94,21 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
     out: List[Dict[str, Any]] = []
     for row in rows:
         unit = str(row.get("systemd_unit") or "")
-        try:
-            active = await exc.systemctl_is_active(unit) if unit else "inactive"
-        except Exception as e:
-            active = "unknown"
-            logger.debug("systemctl_is_active %s: %s", unit, e)
+        k8s_dep = str(row.get("k8s_deployment") or "")
+        k8s_ns = str(row.get("k8s_namespace") or "")
+        k8s_replicas: Optional[int] = None
+        k8s_ready: Optional[int] = None
+        if isinstance(exc, KubernetesExecutor) and k8s_dep:
+            k8s_replicas, k8s_ready = await exc.deployment_replica_counts(
+                k8s_dep, namespace=k8s_ns or None
+            )
+            active = process_active_from_replica_counts(k8s_replicas, k8s_ready)
+        else:
+            try:
+                active = await exc.systemctl_is_active(unit) if unit else "inactive"
+            except Exception as e:
+                active = "unknown"
+                logger.debug("systemctl_is_active %s: %s", unit, e)
         meta_key = (row.get("redis_meta_key") or "").strip()
         redis_control_env: Optional[str] = None
         redis_control_host: Optional[str] = None
@@ -163,7 +179,14 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
             runtime_externally_managed = True
             if not redis_control_host:
                 redis_control_host = "platform-ib-gateway"
-        from bifrost_api.ops.services.executor_kubernetes import KubernetesExecutor
+        # The gateway heartbeat is ``updated_at`` on redis-ib. The ops-control
+        # field is not written there, and redis-live does not hold these hashes.
+        if k8s_dep == IB_GATEWAY_DEPLOYMENT and redis_control_updated_at is None:
+            health_url = ib_rurl or rurl
+            if health_url and meta_key:
+                redis_control_updated_at = await asyncio.to_thread(
+                    read_health_updated_at, health_url, meta_key
+                )
 
         runtime_kind = "kubernetes"
         display = derive_ingest_display_state(
@@ -191,17 +214,20 @@ async def market_ingest_services(request: Request) -> Dict[str, Any]:
         if platform_gateway_managed:
             item["transport"] = "platform_gateway"
         if isinstance(exc, KubernetesExecutor):
-            dep = str(row.get("k8s_deployment") or "") or (exc.deployment_for_unit(unit) if unit else "")
-            ns = str(row.get("k8s_namespace") or "")
+            dep = k8s_dep or (exc.deployment_for_unit(unit) if unit else "")
+            ns = k8s_ns
             if dep:
                 item["k8s_deployment"] = dep
                 if ns:
                     item["k8s_namespace"] = ns
-                replicas, ready = await exc.deployment_replica_counts(dep, namespace=ns or None)
-                if replicas is not None:
-                    item["k8s_replicas"] = replicas
-                if ready is not None:
-                    item["k8s_ready"] = ready
+                if k8s_replicas is None and k8s_ready is None:
+                    k8s_replicas, k8s_ready = await exc.deployment_replica_counts(
+                        dep, namespace=ns or None
+                    )
+                if k8s_replicas is not None:
+                    item["k8s_replicas"] = k8s_replicas
+                if k8s_ready is not None:
+                    item["k8s_ready"] = k8s_ready
                 guard = exc.scale_guard_for_deployment(dep)
                 if guard is not None:
                     item["k8s_scale_guard"] = guard

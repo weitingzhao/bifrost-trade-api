@@ -95,6 +95,26 @@ def derive_ingest_display_state(
     return {"runtime_status": "unknown", "display_active": active or "unknown"}
 
 
+def process_active_from_replica_counts(
+    replicas: Optional[int],
+    ready: Optional[int],
+) -> str:
+    """Map Deployment spec/ready counts onto ``process_active``.
+
+    ``None`` means the API client could not answer. A zero count is a real
+    answer (missing, forbidden-as-empty, or scaled to zero).
+    """
+    if replicas is None or ready is None:
+        return "unknown"
+    if replicas <= 0:
+        return "inactive"
+    if ready >= replicas:
+        return "active"
+    if ready > 0:
+        return "activating"
+    return "inactive"
+
+
 def platform_gateway_managed_for_service(
     ib_redis_url: Optional[str],
     live_redis_url: Optional[str],
