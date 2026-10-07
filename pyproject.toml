@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bifrost-api"
-version = "0.11.0"
+version = "0.12.0"
 description = "FastAPI backend services (9 domains) — Bifrost Trade system"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "bifrost-core>=0.53.0",
+    "bifrost-core>=0.54.0",
     "fastapi>=0.100.0",
     "uvicorn[standard]>=0.22.0",
     "kubernetes>=28.0.0",
@@ -31,6 +31,10 @@ where = ["src"]
 asyncio_mode = "auto"
 addopts = "-v"
 pythonpath = ["."]
+markers = [
+    "db: needs a throwaway PostgreSQL (PGHOST); skipped by make test",
+    "ib: needs a live IB connection",
+]
 
 [tool.ruff]
 line-length = 100

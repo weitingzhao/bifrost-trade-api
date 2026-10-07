@@ -93,6 +93,7 @@ def create_account_app(
         portfolio_config_router,
         portfolio_model_router,
         portfolio_short_legs_router,
+        portfolio_snapshots_router,
     )
     from bifrost_api.strategy.routers import (
         gate_sets_router,
@@ -111,6 +112,8 @@ def create_account_app(
     app.include_router(portfolio_model_router)
     app.include_router(portfolio_config_router)
     app.include_router(portfolio_short_legs_router)
+    # TD-138 / TD-139 (api 0.12.0): the daily snapshots, read-only.
+    app.include_router(portfolio_snapshots_router)
     # Phase B Wave B3: strategy CRUD absorbed into account-service
     app.include_router(strategies_router)
     app.include_router(plans_router)

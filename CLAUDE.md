@@ -27,7 +27,7 @@
 | Deployment / 镜像 | 端口 | `run_server.py` domain（别名） | 网关前缀（Service） | 挂载的 router |
 |------|------|--------|--------|--------|
 | `api-monitor` / `bifrost-api-monitor` | 8765 `monitor_port` | `monitor`（`docs`、`ops` 也起它） | `/api/monitor`；`/api/docs`、`/api/ops`（Service `api-docs` / `api-ops` 选的是 monitor 的 Pod，IngressRoute 只放行 `/api/docs/health`、`/api/docs/research/docs/*`、`/api/ops/health`、`/api/ops/ops/*`） | `monitor/routers`（core · messages · status · daemon · config）+ `docs_api.attach_docs_routes` + `ops.wire_ops_control_plane`（workers · market_ingest） |
-| `api-account` / `bifrost-api-account` | 8769 `trading_port` | `account`（`trading`、`strategy`、`portfolio`） | `/api/trading`、`/api/strategy`、`/api/portfolio`（三个 Service 都选 account 的 Pod） | `trading/routers/executions` · `portfolio/routers`（model · config · short_legs） · `strategy/routers`（strategies · plans · saved_searches · reviews） |
+| `api-account` / `bifrost-api-account` | 8769 `trading_port` | `account`（`trading`、`strategy`、`portfolio`） | `/api/trading`、`/api/strategy`、`/api/portfolio`（三个 Service 都选 account 的 Pod） | `trading/routers/executions` · `portfolio/routers`（model · config · short_legs · snapshots） · `strategy/routers`（strategies · plans · saved_searches · reviews） |
 | `api-market` / `bifrost-api-market` | 8772 `market_port` | `market` | `/api/market` | `market/routers`（market_data · quotes · watchlist） |
 | `api-research` / `bifrost-api-research` | 8773 `research_port` | `research` | `/api/research` | `research/routers`（option_discovery · screener · greeks · data_readiness · feedback） |
 
