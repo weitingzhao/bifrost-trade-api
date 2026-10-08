@@ -37,7 +37,6 @@ def test_get_quotes_opt_from_redis_cache() -> None:
         "ts": 1000.0,
     }
     reader = reader_mock()
-    reader.get_contract_quotes.return_value = []
 
     with patch("bifrost_core.core.realtime.on_demand_opt.ensure_on_demand_opt") as ensure:
         ensure.return_value = [CK]
@@ -48,26 +47,23 @@ def test_get_quotes_opt_from_redis_cache() -> None:
         body = resp.json()
         assert len(body["quotes"]) == 1
         assert body["quotes"][0]["contract_key"] == CK
-        reader.get_contract_quotes.assert_not_called()
 
 
-def test_get_quotes_opt_fallback_on_cache_miss() -> None:
+def test_get_quotes_opt_cache_miss_omits_the_contract() -> None:
     rq = MagicMock()
     rq.available = True
     rq.ib_redis_client = MagicMock()
     rq.get_option_cache.return_value = None
     reader = reader_mock()
-    reader.get_contract_quotes.return_value = [
-        {"symbol": "GOOG", "contract_key": CK, "last": 0.5, "bid": None, "ask": None}
-    ]
 
     with patch("bifrost_core.core.realtime.on_demand_opt.ensure_on_demand_opt") as ensure:
         ensure.return_value = [CK]
         client = _app(rq, reader)
         resp = client.get(f"/quotes?contract_keys={CK}")
         assert resp.status_code == 200
-        reader.get_contract_quotes.assert_called_once_with([CK])
-        assert len(resp.json()["quotes"]) == 1
+        body = resp.json()
+        assert body["quotes"] == []
+        assert body["message"] == "No option quotes"
 
 
 def test_post_quotes_refresh_options() -> None:

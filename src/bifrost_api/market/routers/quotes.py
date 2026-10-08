@@ -50,7 +50,7 @@ def get_quotes(
         description="Comma-separated OPT contract_key values; merged with watchlist OPT keys when symbols omitted",
     ),
 ) -> Dict[str, Any]:
-    """STK from Redis tick keys; OPT from ``ib:option:cache:*`` (primary) with contract_quote_live fallback."""
+    """STK from Redis tick keys; OPT from ``ib:option:cache:*``. A cache miss is omitted."""
     app = request.app
     reader = app.state.reader
     rq = getattr(app.state, "redis_quotes", None)
@@ -81,7 +81,7 @@ def get_quotes(
             c = ck.strip()
             if not c or c in contract_keys_opt:
                 continue
-            # STK live quotes come from Redis only; contract_quote_live rows are stale snapshots.
+            # STK quotes are read from Redis tick keys below, not from this OPT list.
             if "|STK|" in c.upper():
                 continue
             contract_keys_opt.append(c)
@@ -117,28 +117,19 @@ def get_quotes(
         except Exception as e:
             logger.warning("GET /quotes Redis failed: %s", e)
 
-    if contract_keys_opt:
-        missing: List[str] = []
-        if rq and getattr(rq, "available", False) and hasattr(rq, "get_option_cache"):
-            try:
-                for ck in contract_keys_opt:
-                    q = rq.get_option_cache(ck)
-                    if q is not None:
-                        quotes.append(q)
-                    else:
-                        missing.append(ck)
-            except Exception as e:
-                logger.warning("GET /quotes OPT Redis cache failed: %s", e)
-                missing = list(contract_keys_opt)
-        else:
-            missing = list(contract_keys_opt)
-        if missing:
-            try:
-                opt_quotes = reader.get_contract_quotes(missing)
-                for q in opt_quotes or []:
+    if (
+        contract_keys_opt
+        and rq
+        and getattr(rq, "available", False)
+        and hasattr(rq, "get_option_cache")
+    ):
+        try:
+            for ck in contract_keys_opt:
+                q = rq.get_option_cache(ck)
+                if q is not None:
                     quotes.append(q)
-            except Exception as e:
-                logger.warning("GET /quotes contract_quote_live fallback failed: %s", e)
+        except Exception as e:
+            logger.warning("GET /quotes OPT Redis cache failed: %s", e)
 
     if not symbol_list and not contract_keys_opt:
         return {"quotes": [], "message": "No symbols in watchlist"}
