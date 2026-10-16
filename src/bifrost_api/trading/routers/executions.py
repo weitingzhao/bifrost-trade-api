@@ -210,7 +210,7 @@ def get_executions(
         description=(
             "Which execution view to read. all (default): brokerage.executions, every fill | "
             "performance_book: brokerage.executions_final, the Flex-confirmed book | "
-            "on_the_fly: brokerage.executions_fly, TWS fills Flex has not confirmed yet (no BAG) | "
+            "on_the_fly: brokerage.executions_fly, TWS fills Flex has not confirmed yet: no Flex row with the fill's exec_id and a trading day after the last day Flex covers for its account (core 0.61.0; no BAG, no row without an account) | "
             "tws_raw: brokerage.executions_raw_tws only, with synthetic negative ids. "
             "quantity is signed from side alone: SELL / SLD / S negative, anything else positive, "
             "whatever the source or the stored sign (core 0.35.0, TD-30) -- except under tws_raw, "
@@ -441,7 +441,7 @@ def get_performance(
     trade_id: Optional[int] = trade_id_query(),
     source_scope: str = Query(
         "performance_book",
-        description="performance_book (default, account_executions_final) | on_the_fly (account_executions_fly)",
+        description="performance_book (default, account_executions_final) | on_the_fly (account_executions_fly: TWS fills Flex has not confirmed yet, by exec_id, core 0.61.0)",
     ),
     summary_only: bool = Query(
         False,
