@@ -1,4 +1,4 @@
-"""ops_feedback.* DDL — run by db-init, never on a request (TD-77, Owner 2026-10-03).
+"""ops_feedback.* DDL — run by db-init, never on a request (TD-77).
 
 ``scripts/run_db_refresh_schema.py`` (the db-init Job, api-monitor image) calls
 ``ensure_feedback_schema`` on its Golden Source connection after
@@ -20,7 +20,7 @@ Rules for changing it:
 - **DDL and DML are two roles.** This DDL runs as ``bifrost`` (the owner) in
   db-init; the service reads and writes as ``feedback_writer`` (api 0.8.1),
   which has SELECT / INSERT / UPDATE on these tables, no DELETE and no CREATE
-  (Owner 2026-10-04): a report is closed by status, the service never deletes one.
+  (决定 2026-10-04): a report is closed by status, the service never deletes one.
   Its grants on tables a later step adds come from ``ALTER DEFAULT PRIVILEGES
   FOR ROLE bifrost IN SCHEMA ops_feedback`` (infra db-step
   ``2026-10-04-td49-feedback-writer-role``), so a new table needs no grant here;

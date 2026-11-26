@@ -3,7 +3,7 @@
 The SEPA mart reads (criteria stats, per-name evals, filters, distributions,
 screener-wide) go to Research only. A Research failure raises
 ``ResearchUnavailable`` and the route answers 503 naming Research; nothing
-falls back to direct SQL (TD-49 step 1, Owner 2026-10-03).
+falls back to direct SQL (TD-49 step 1).
 
 The tier marts (``dw_stock.mart_sepa_tier_*``), the momentum grades
 (``features.stock_signal_momentum_daily``) and the criteria-stats pass-count

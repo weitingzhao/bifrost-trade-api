@@ -1,7 +1,7 @@
 """`/preferences/saved-searches` -- a page's scope kept under a name.
 
 Trade design Rev .139: Plans' Save as list writes one, the sidebar lists them
-on every page. Stored server-side for the one operator (Owner 2026-10-01); the
+on every page. Stored server-side for the one operator (决定 2026-10-01); the
 rules and the table are core's (`saved_search`, core 0.28.0). The rows are a
 preference, not part of the rule chain: naming R1 (api 0.7.0, D5-A) moved them
 out of ``/strategies/saved-searches``, whose routes went in naming R4 (api 0.9.0).
